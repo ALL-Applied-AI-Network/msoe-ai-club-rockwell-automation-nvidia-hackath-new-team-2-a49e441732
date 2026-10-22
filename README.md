@@ -4,7 +4,7 @@ Rockwell Automation + NVIDIA Physical AI Hackathon (Fall 2026), **Dataset 3: Gra
 
 **Goal:** a cell that handles unfamiliar rigid parts without reprogramming. It looks closely with depth, nudges things to
 find out what is one object, grasps by 3D shape, checks its own work, and leaves the meaning ("those are jacks, line them up")
-to a vision-language model that never drives the arm. See [docs/plan.md](docs/plan.md).
+to a vision-language model that never drives the arm. See [docs/architecture.md](docs/architecture.md) (three-phase design, tools, reading list) and [docs/plan.md](docs/plan.md).
 
 > Work in progress. This README becomes the project write-up (problem, approach, results, how to run, credits) before the finals.
 
@@ -14,6 +14,7 @@ to a vision-language model that never drives the arm. See [docs/plan.md](docs/pl
 |---|---|
 | `cell/` | SIDC's client package for the real cell, with our policy. `policy.py` is the policy the cell runs. |
 | `cell/lab/` | Perception and planning experiments. `scene_viewer.py` renders a synthetic scene through the cell's real depth-camera calibration and logs it to [Rerun](https://rerun.io). |
+| `docs/architecture.md` | The three-phase architecture (whiteboard + diagram), internal tools, simulators, reading list. |
 | `docs/plan.md` | Approach, build order, open questions. |
 | `docs/event-guide.md` | The organizers' original README: dates, links, submission requirements. |
 
