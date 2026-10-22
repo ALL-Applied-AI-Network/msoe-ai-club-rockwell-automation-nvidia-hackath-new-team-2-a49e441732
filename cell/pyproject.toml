@@ -1,0 +1,18 @@
+[project]
+name = "fanuc-cell-client"
+version = "0.1.0"
+description = "Client for Track 3 of the Physical AI Hackathon for the Factory Floor (2026): run a policy on the FANUC ER-4iA cell"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "open3d>=0.20.0",
+    "opencv-python-headless",
+    "pyyaml>=6.0.3",
+    "requests",
+    "rerun-sdk>=0.39.0",
+    "scipy>=1.15.3",
+    "trimesh>=5.1.1",
+]
+
+[tool.uv]
+package = false

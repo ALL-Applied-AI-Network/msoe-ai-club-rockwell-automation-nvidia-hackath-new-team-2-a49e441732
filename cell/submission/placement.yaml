@@ -1,0 +1,7 @@
+# Baseline v0: one screw at a fixed spot, the yellow bin at a fixed spot. Same every rollout.
+# A screw's position is its head; yaw points to its tip (0 = +x, 90 = +y).
+rollouts:
+  - objects:
+      screw: [400, -30, 90]
+      bin: [470, 120]
+    prompt: Put the screw into the yellow bin.

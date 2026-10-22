@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+.DS_Store
+
+# the submission's private key: never commit
+.request.json
+
+# generated: recordings, viewer files, datasets, weights
+cell/lab/out/
+*.rrd
+*.npz
+data/
+datasets/
+*.pt
+*.pth
+*.safetensors
+*.ckpt
