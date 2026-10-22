@@ -32,6 +32,21 @@ No programming, no training on your parts, no fixtures. You brief it like a new 
     and bigger objects are actually *easier* for depth cameras. Our 12 mm gripper is the limit of this cell, not of the idea.
   - Quality checks: compare the scanned shape with the expected shape and flag damage.
 
+## It explains itself, and takes edits
+
+- Given no direction ("here's a pile, sort it"), it makes up a sorting rule from what it sees, **and says why**:
+  "I grouped by shape, because there were several of each shape and the colors were mixed."
+- Ask "what are the groups?" and it answers in plain words. Say "I like it, but put the red ones separately" and it re-plans.
+- Nothing irreversible (dropping parts into cups) happens until the rule is settled. That's the operator approval step:
+  people stay in charge and can see the reasoning, which builds trust.
+- If it still gets it wrong: "dump the cup out and try again." The robot can do that itself, which makes a memorable demo.
+
+## Not just picking
+
+- Things too big for the gripper, or flat, or round, can still be **pushed**: into piles, toward an edge, or rolled.
+  A marker rolls; a toy car rolls along its wheels. The robot can learn which by pushing a little and watching.
+- The whole loop is **look first, grip when you can, nudge when you can't** (in research terms, active and interactive perception).
+
 ## How success is judged
 
 - Pass/fail is the honest human question: **given what the person asked for, did it sort them?**

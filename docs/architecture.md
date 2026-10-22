@@ -91,6 +91,10 @@ Nudges serve understanding, not sorting. Knocking something over, or briefly mak
 - **Rule:** the VLM turns the instruction and the labelled objects into a sorting rule, which it **states before anything moves**:
   "Group by shape: bricks in cup A, screws in cup B." That statement is also what pass/fail is judged against: did it follow its own
   rule, and is the rule sensible?
+- **Explain and revise:** with no instruction, the VLM invents a rule from what it sees and **explains why**
+  ("grouped by shape: most parts were screws or bricks, and color varied within each"). The person can approve it or edit it
+  ("fine, but put the red ones in their own pile"), and the plan is redone before anything irreversible happens. This is also the
+  operator approval step the business case calls for.
 - **End state:** a symbolic assignment (`#7 → cup A`, `#3 → pile 2`), then a **geometric placer** turns it into concrete, reachable,
   collision-free target poses. A physics check confirms each object will stay where it's put: stable resting pose, fits inside the cup.
   The VLM picks *what goes where*; geometry decides *exactly where*.
@@ -123,6 +127,16 @@ Every action either **teaches us something** about the scene, **makes progress**
 | **Grip and lift** | Strongest test of "one rigid object": whatever comes up together *is* one object. Lifted clear, it can be shown to the table and side cameras against a clean background | Yes, if it's the right part | Needs a grippable feature (a local spot under 12 mm wide with room for the fingers, not the whole object); may drag or topple neighbors; may drop it | A grippable feature is exposed and clear |
 | **Place** | Nothing new | Yes | Needs a stable, free, reachable target | Holding a part and the goal is known |
 
+**Some actions can't be undone.** A part dropped into a deep cup, especially with others on top, is effectively gone. So:
+- Treat containers as one-way. Drop a part into a cup only after its label and the plan are settled (after the person approves the stated rule).
+- Fill cups late; sort into piles on the table first if the rule might still change.
+- The recovery for a wrong cup is to **dump the cup out and redo it**: grip the cup's rim (a thin wall fits the 12 mm gripper),
+  tilt and pour, then re-scan. This is also a good demo moment: "I don't like it, dump it and try again."
+
+**Things that roll or slide on wheels** (markers, toy cars) push very differently: a cylinder rolls at right angles to its axis, and a car
+rolls along its wheels but resists sideways. The robot can find this out the same way: push a little, see what happens, update.
+Rolling objects can also leave the reachable area, so push gently. Stretch goal; needs the physics check.
+
 Rule of thumb: **look first, grip when you can, nudge when you can't.** Pick whichever action most reduces uncertainty
 or most advances the goal for its risk. Because sorting into **piles** on the table works by pushing too, nudging also covers parts
 the gripper can't hold (16 mm cubes, 2×4 Lego bricks, dice). Cups and buckets still need a grip.
@@ -146,6 +160,22 @@ the gripper can't hold (16 mm cubes, 2×4 Lego bricks, dice). Cups and buckets s
 | **VLM interface** | Object crops with ID marks → labels; instruction → rule → assignment | Structured JSON in and out; every prompt and answer logged. |
 | **Inspector** | See what the system believes at every step | Rerun: point clouds, meshes, grasps, pushes, plans, VLM answers on one timeline. |
 | **Trial log** | Every rollout: code version, setup, outcome, interventions | Required by the judges; CSV + Rerun files. |
+
+## Grip finding: what exists
+
+Our gripper is unusual (opens only about 12 mm, with 76 mm fingers), so most off-the-shelf grasp models don't fit it as trained.
+
+| Option | What it is | Fit for us |
+|---|---|---|
+| **Own analytic finder** (Open3D + NumPy) | Find two opposing surface spots under 12 mm apart; check both finger volumes are empty along the approach; score | **Core.** Exact gripper dimensions; fast; explainable; works on Mac and Spark |
+| **GPD** (Grasp Pose Detection, ten Pas et al.) | C++/PCL. Samples grasp candidates on a point cloud using a **configurable hand geometry**, then a neural net ranks them | Its candidate sampler can be set to our finger sizes. The ranking net was trained on a wider hand. Install is C++ work |
+| **Contact-GraspNet** (NVIDIA) | Network: point cloud → 6-DoF grasps with predicted width | Trained for a Franka (about 8 cm opening): filter to widths under 12 mm and few will remain. PyTorch ports exist; needs CUDA (Spark) |
+| **GraspNet-1Billion baseline / AnyGrasp** | Large-scale learned grasping | AnyGrasp is a closed binary with a license key, probably x86 only. The baseline needs compiled CUDA ops |
+| **Dex-Net / GQ-CNN** | Ranks planar grasps on a depth image | Old TensorFlow stack; trained for another gripper |
+| **NVIDIA GraspGen, M2T2** | Recent NVIDIA models (grasp generation; pick-and-place) | Worth a look for the sponsor story; check gripper support before investing |
+
+**Plan:** own analytic finder generates and ranks grips, MuJoCo with a floating gripper checks the top few (does it hold when lifted?).
+Optionally add GPD's sampler or a learned model as a second opinion, and as a comparison in the results.
 
 ## Simulation: which one, for what
 
