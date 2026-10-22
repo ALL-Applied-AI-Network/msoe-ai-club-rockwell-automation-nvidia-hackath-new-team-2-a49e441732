@@ -16,6 +16,7 @@ to a vision-language model that never drives the arm. See [docs/architecture.md]
 | `cell/lab/` | Perception and planning experiments. `scene_viewer.py` renders a synthetic scene through the cell's real depth-camera calibration and logs it to [Rerun](https://rerun.io). |
 | `docs/architecture.md` | The three-phase architecture (whiteboard + diagram), internal tools, simulators, reading list. |
 | `docs/plan.md` | Approach, build order, open questions. |
+| `docs/pitch-notes.md` | Raw material for the business case and video: plain-language story, extensions, limits. |
 | `docs/event-guide.md` | The organizers' original README: dates, links, submission requirements. |
 
 ## Run

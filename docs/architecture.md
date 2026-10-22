@@ -112,6 +112,21 @@ while scene ≠ end state:
 Errors are expected and handled, not fatal. The same loop shape works at every level:
 "arrange 10 parts" → "move #4 to cup A" → "free #4, grasp, verify".
 
+## Choosing an action: look, nudge, or grip
+
+Every action either **teaches us something** about the scene, **makes progress** toward the goal, or both. Each has a cost and a risk:
+
+| Action | Learns | Progresses | Cost / risk | Use when |
+|---|---|---|---|---|
+| **Look** (move the wrist camera) | Shape, gaps, hidden sides | No | Cheap, no risk | Anything is uncertain and a better view could settle it |
+| **Nudge** (push, gripper closed) | Which pieces move together (common fate); reveals what was underneath | Sometimes: separates things, or slides a part into a pile | Cheap; imprecise; may disturb neighbors | Nothing is grippable; parts are flush or stacked; the part is too big to grip; the part lies flat (push it to an edge first) |
+| **Grip and lift** | Strongest test of "one rigid object": whatever comes up together *is* one object. Lifted clear, it can be shown to the table and side cameras against a clean background | Yes, if it's the right part | Needs a grippable feature (a local spot under 12 mm wide with room for the fingers, not the whole object); may drag or topple neighbors; may drop it | A grippable feature is exposed and clear |
+| **Place** | Nothing new | Yes | Needs a stable, free, reachable target | Holding a part and the goal is known |
+
+Rule of thumb: **look first, grip when you can, nudge when you can't.** Pick whichever action most reduces uncertainty
+or most advances the goal for its risk. Because sorting into **piles** on the table works by pushing too, nudging also covers parts
+the gripper can't hold (16 mm cubes, 2×4 Lego bricks, dice). Cups and buckets still need a grip.
+
 ## Internal tools we need
 
 | Tool | Does | Notes |
