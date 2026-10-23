@@ -16,3 +16,7 @@ datasets/
 *.safetensors
 *.ckpt
 runs/
+
+# API keys: never commit
+.env
+*.env

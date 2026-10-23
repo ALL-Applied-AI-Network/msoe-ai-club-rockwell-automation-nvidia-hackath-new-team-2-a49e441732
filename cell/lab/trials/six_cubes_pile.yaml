@@ -1,0 +1,8 @@
+# Same cubes, dumped in a pile: touching and stacked. Rung 2.
+instruction: Sort the cubes by color.
+layout: dump
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+  - {kind: cube_10, color: blue, count: 2}

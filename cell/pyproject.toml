@@ -4,9 +4,12 @@ version = "0.1.0"
 description = "Client for Track 3 of the Physical AI Hackathon for the Factory Floor (2026): run a policy on the FANUC ER-4iA cell"
 requires-python = ">=3.10"
 dependencies = [
+    "mujoco>=3.17.0",
     "numpy",
     "open3d>=0.20.0",
+    "openai>=3.37.0",
     "opencv-python-headless",
+    "python-dotenv>=1.2.4",
     "pyyaml>=6.0.3",
     "requests",
     "rerun-sdk>=0.39.0",

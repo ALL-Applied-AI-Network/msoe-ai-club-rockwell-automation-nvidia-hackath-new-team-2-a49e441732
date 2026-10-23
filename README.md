@@ -13,7 +13,7 @@ to a vision-language model that never drives the arm. See [docs/architecture.md]
 | Path | What |
 |---|---|
 | `cell/` | SIDC's client package for the real cell, with our policy. `policy.py` is the policy the cell runs. |
-| `cell/lab/` | Perception, planning and visualisation. `viz.py` (one Rerun layout for everything), `recorder.py` (every observation saved to `cell/runs/`), `replay.py` (any run into the viewer), `synth.py` (a known scene rendered through the real camera calibration, saved like a real run), `fusion.py` (depth → height map). |
+| `cell/lab/` | The lab: `simcell.py` (MuJoCo sim cell), `catalog.py` (object kinds), `trial.py` (run trials), `perception.py` (the robot's own segmentation, scored against truth), `session.py` + `viz.py` (one Rerun layout for live and replayed runs), `recorder.py`/`replay.py` (every observation saved and replayable), `vlm.py` (vision-language model), `policies/scan.py` (look-before-touching sweep, also runs on the real cell). |
 | `docs/architecture.md` | The three-phase architecture (whiteboard + diagram), internal tools, simulators, reading list. |
 | `docs/plan.md` | Approach, build order, open questions. |
 | `docs/pitch-notes.md` | Raw material for the business case and video: plain-language story, extensions, limits. |
@@ -27,12 +27,28 @@ Install [uv](https://docs.astral.sh/uv/), then:
 cd cell
 uv sync
 uv run run.py --mock                    # check the policy against a local stand-in for the cell (records to runs/)
-uv run python -m lab.synth              # synthetic scene through the real camera calibration -> runs/, opens the viewer
-uv run python -m lab.replay             # replay the newest run (real, mock or synthetic) into the viewer
+uv run python -m lab.trial list         # simulated trials (lab/trials/*.yaml)
+uv run python -m lab.trial run junk_drawer   # dump a pile in the simulated cell, watch the robot look at it
+uv run python -m lab.replay             # replay the newest run (real, mock or sim) into the viewer
 ```
 
 Real-cell runs: see `cell/README.md` (submit, book a slot on hackathon.sidclab.org, `uv run run.py`).
 Never commit `cell/.request.json`: it holds the secret for the team's submission.
+
+## The lab (runs on a Mac)
+
+A simulated cell for trying everything before using real robot time. It speaks the same language as the real cell,
+so a policy can't tell the difference.
+
+- **Order objects** in a small YAML file (`cell/lab/trials/`): kinds from `uv run python -m lab.trial kinds`
+  (10 mm cubes, dice, screws, jacks, a ring, Lego, a toy soldier, dowels, a cup, the bin, ...), colors and counts.
+- **Layout:** `spread` (set down apart) or `dump` (poured from a tube into a pile, with MuJoCo physics).
+- **Cameras** are rendered through the real cell's calibration: table, side and wrist RGB, table and wrist depth.
+- **The viewer** shows the true world and the robot's mind side by side, the raw camera inputs, what the VLM thinks,
+  a table of what the robot has found, and a narration line per step. The robot's mind is built only from its cameras;
+  in sim it's scored against the truth every step.
+- **VLM (optional):** copy `cell/.env.example` to `cell/.env` and add a key for any OpenAI-compatible vision model
+  (NVIDIA build.nvidia.com works). `cell/.env` is git-ignored.
 
 ## Status
 

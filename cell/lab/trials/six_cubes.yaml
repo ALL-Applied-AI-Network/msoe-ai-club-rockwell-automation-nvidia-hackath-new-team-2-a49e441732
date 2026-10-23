@@ -1,0 +1,8 @@
+# The cell's own task: two each of red, yellow and blue 10 mm cubes, set apart. Rung 1 of the ladder.
+instruction: Sort the cubes by color.
+layout: spread
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+  - {kind: cube_10, color: blue, count: 2}

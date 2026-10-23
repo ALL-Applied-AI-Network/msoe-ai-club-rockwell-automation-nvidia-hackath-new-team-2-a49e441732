@@ -1,0 +1,13 @@
+# Unrelated odds and ends: no obvious rule, so the robot has to invent one and explain it. Rung 4.
+instruction: Sort these.
+layout: dump
+seed: 0
+objects:
+  - {kind: soldier, color: olive, count: 1}
+  - {kind: ring, color: gold, count: 1}
+  - {kind: jack, color: gold, count: 2}
+  - {kind: screw_m6x30, color: steel, count: 2}
+  - {kind: dowel, color: wood, count: 2}
+  - {kind: lego_1x2, color: red, count: 1}
+  - {kind: lego_1x2, color: blue, count: 1}
+  - {kind: cube_10, color: yellow, count: 1}

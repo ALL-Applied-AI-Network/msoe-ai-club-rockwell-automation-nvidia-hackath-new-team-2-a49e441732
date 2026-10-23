@@ -1,11 +1,10 @@
-"""Replay a recorded run (real cell, mock, or synthetic) into the viewer.
+"""Replay a recorded run (real cell, mock, or sim) into the viewer, step by step, through the same Session as live runs.
 
     uv run python -m lab.replay                 # the newest run in runs/
     uv run python -m lab.replay runs/<dir>      # a specific one
     uv run python -m lab.replay --no-spawn ...  # only write <dir>/replay.rrd
 
-Per step: the camera images, the depth images and the 3D points they give, the arm, the actions it was sent, and a
-narration line. If the run has truth/ (synthetic), the true objects are drawn too, with their ids on every image.
+Runs with truth/ (sim) show the true objects (as they were at the start) in the World view; real runs leave it empty.
 """
 from __future__ import annotations
 
@@ -13,14 +12,13 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 import rerun as rr
 import trimesh
 
-from calibration.geometry import depth_to_base, flange_pose, load
+from calibration.geometry import load
 from lab import viz
-from lab.fusion import height_map
 from lab.recorder import RUNS, load_step
+from lab.session import Session
 
 
 def _truth(run: Path) -> list[dict]:
@@ -30,50 +28,23 @@ def _truth(run: Path) -> list[dict]:
     objs = json.loads(f.read_text())
     for o in objs:
         o["mesh"] = trimesh.load(run / "truth" / o["mesh"])
-        o["label"] = o["name"]
-        o["alpha"] = 0.35
+        o.setdefault("rgb", (200, 200, 200))
     return objs
 
 
 def replay(run: Path, spawn: bool = True) -> Path:
     run = Path(run)
     out = run / "replay.rrd"
-    viz.start(f"replay {run.name}", save_to=out, spawn=spawn)
-    cams = load()
-    truth = _truth(run)
     meta = json.loads((run / "meta.json").read_text()) if (run / "meta.json").exists() else {}
-    step = 0
+    viz.start(f"replay {run.name}", save_to=out, spawn=spawn)
+    truth = _truth(run)
     for rdir in sorted(run.glob("rollout_*")):
-        fused: list[np.ndarray] = []
-        steps = sorted(rdir.glob("step_*.json"))
-        for k, f in enumerate(steps):
+        s = Session(load(), truth=truth or None)
+        viz.set_step(0)
+        viz.narrate(f"{rdir.name} of {run.name} (source {meta.get('source', meta.get('tag', '?'))}, commit {meta.get('commit', '?')})")
+        for f in sorted(rdir.glob("step_*.json")):
             obs = load_step(f)
-            viz.set_step(step)
-            if k == 0:
-                viz.narrate(f"── {rdir.name} ({meta.get('source', meta.get('tag', 'run'))}, commit {meta.get('commit', '?')}) ──")
-            viz.images(obs)
-            if obs["joints"] is not None:
-                viz.arm(obs["joints"])
-            for cam, d in obs["depth"].items():
-                c = cams[f"{cam}_depth"]
-                if c["frame"] == "flange" and obs["joints"] is None:
-                    continue
-                T = flange_pose(obs["joints"]) @ c["T"] if c["frame"] == "flange" else c["T"]
-                viz.camera_frustum(f"world/cameras/{cam}", c, T)
-                pts = depth_to_base(c, d, stride=2, joints=obs["joints"] if c["frame"] == "flange" else None)
-                rr.log(f"world/points/{cam}", rr.Points3D(pts, colors=viz.height_colors(pts), radii=0.0007))
-                fused.append(pts)
-            if fused:
-                viz.heightmap(height_map(np.concatenate(fused)))
-            if obs.get("actions"):
-                viz.path(obs["actions"], name="sent_actions")
-            if truth:
-                viz.objects(truth, cams, obs, kind="truth")
-            n = len(obs["actions"]) if obs.get("actions") else 0
-            act = f", act() took {obs['act_s'] * 1000:.0f} ms" if obs.get("act_s") is not None else ""
-            viz.narrate(f"step {k}: {obs.get('note') or 'observation'}"
-                        + (f"; sent {n} targets" if n else "") + act)
-            step += 1
+            s.step(obs, note=obs.get("note", ""), actions=obs.get("actions"))
     rr.disconnect()
     return out
 

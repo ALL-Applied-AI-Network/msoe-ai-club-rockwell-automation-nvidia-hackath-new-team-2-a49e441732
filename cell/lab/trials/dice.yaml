@@ -1,0 +1,9 @@
+# A pile a VLM should recognise at a glance ("I know this one"): dice by type.
+instruction: Sort these.
+layout: dump
+seed: 0
+objects:
+  - {kind: d4, color: purple, count: 2}
+  - {kind: d6, color: white, count: 3}
+  - {kind: d8, color: green, count: 2}
+  - {kind: d20, color: orange, count: 2}

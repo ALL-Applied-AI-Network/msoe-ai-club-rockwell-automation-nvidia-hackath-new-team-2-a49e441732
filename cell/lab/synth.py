@@ -191,4 +191,4 @@ if __name__ == "__main__":
     from lab.replay import replay
     d = make_run()
     print(f"wrote {d}")
-    replay(d, spawn=True)
+    replay(d, spawn=True)  # for physics, random dumps and policies, use: uv run python -m lab.trial
