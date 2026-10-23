@@ -1,6 +1,7 @@
 """Explore: lay the pieces out like a jigsaw puzzle, testing one hypothesis at a time.
 
     1. sweep: look at the pile from a few close wrist-camera spots, fuse the depth into a map, find the blobs
+    1b. spread: while there's a big clump, rake through it (across, then along): tip the jigsaw out before picking
     2. pick the next hypothesis to test: "blob #k is one object"
     3. test it: grip part of it and carry it to a clear staging spot; or, if nothing can be gripped, rake through it
     4. look again, only where something should have changed (the source and the drop spot, or the raked area), fold
@@ -79,6 +80,7 @@ class ExplorePolicy:
         segs, _ = perception.segment(pts)
         self._say(self.world.first_scan(segs))
         self._show(obs)
+        obs, pts = yield from self._spread(obs, off, pts)
         for n in range(1, self.budget + 1):
             for t in self.world.blobs():
                 if not P.reachable(*t.centroid[:2]):
@@ -151,8 +153,13 @@ class ExplorePolicy:
     def _test_grip(T, good):
         """A test has to be able to fail. Gripping the middle of two touching parts lifts both and proves nothing, so for
         anything bigger than one grip's worth, grab near one end: if it's really several things, only one comes along."""
+        xy = T.points[:, :2] - T.points[:, :2].mean(0)
+        ev = np.sort(np.linalg.eigvalsh(np.cov(xy.T)))
+        aspect = float(np.sqrt(ev[1] / max(ev[0], 1e-12)))
         if T.area <= 160:  # about one 10 mm cube plus noise
             return good[0], "gripping it in the middle"
+        if aspect >= 2.6:  # long and thin (a screw, a dowel): gripped at one end it tips and slides out
+            return good[0], f"it's long and thin ({aspect:.1f}:1), so gripping it in the middle, across"
         c = T.centroid[:2]
         strong = [g for g in good if g.material >= 0.8 * good[0].material]
         g = max(strong, key=lambda g: np.hypot(g.x - c[0], g.y - c[1]))
@@ -230,12 +237,38 @@ class ExplorePolicy:
             return self.pile_center
         return np.mean([t.centroid[:2] for t in blobs], axis=0)
 
-    def _rake_line(self, T):
-        """Through the middle of the blob, across its long axis, heading away from the staging area; 25 mm past each edge."""
+    def _spread(self, obs, off, pts, max_rakes: int = 4, big_mm2: int = 350):
+        """Like tipping out a jigsaw: before picking anything, rake through big clumps (across, then along) to spread them."""
+        for k in range(max_rakes):
+            big = [t for t in self.world.blobs() if t.area > big_mm2]
+            if not big:
+                if k:
+                    viz.narrate("The pile is spread out: no big clumps left. Now I'll test the pieces one by one.")
+                break
+            T = max(big, key=lambda t: t.area)
+            along = k % 2 == 1
+            s, e = self._rake_line(T, along=along)
+            viz.plan_rake(s, e, 3.0)
+            viz.narrate(f"Spread {k + 1}: #{T.id} is a big clump ({T.area} mm²). Before picking anything, rake "
+                        f"{'along' if along else 'across'} it to spread the pile out, like tipping out a jigsaw.")
+            rows, self.note = P.rake(obs["tcp_pose"], s, e)
+            obs = yield rows
+            obs, fresh = yield from self._sweep(obs, off, [(s + e) / 2])
+            pts = carve_merge(pts, fresh)
+            rest, events, tracked = self.world.track(pts, skip=T.id)
+            segs, _ = perception.segment(rest)
+            self._say(events + self.world.update(segs, {"kind": "rake", "target": T.id, "line": (s, e), "spread": True}, tracked))
+            viz.clear_plan()
+            self._show(obs)
+        return obs, pts
+
+    def _rake_line(self, T, along: bool = False):
+        """Through the middle of the blob, across its long axis (or along it), heading away from the staging area;
+        25 mm past each edge."""
         xy = T.points[:, :2]
         c = xy.mean(0)
         w, v = np.linalg.eigh(np.cov((xy - c).T))
-        d = v[:, 0]  # across the long axis
+        d = v[:, 1] if along else v[:, 0]
         if np.dot(d, np.array(STAGING_CENTER) - c) > 0:
             d = -d
         reach = T.radius + 0.025

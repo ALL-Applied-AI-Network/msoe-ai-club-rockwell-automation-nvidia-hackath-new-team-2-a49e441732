@@ -195,6 +195,16 @@ class World:
             px, py, pyaw = action["place"]
             dest = [k for k, (pts, fp) in enumerate(new) if k not in used and k not in src
                     and np.hypot(*(pts[:, :2].mean(0) - [px, py])) < 0.03]
+            fell = ""
+            if not dest:  # not at the drop spot: did it land somewhere else, on its own? That's good enough.
+                loose = [k for k, (pts, fp) in enumerate(new) if k not in used and k not in src
+                         and self._clear_of_others(pts, new, k)]
+                if loose:
+                    k = min(loose, key=lambda k: _dist_to_segment(new[k][0][:, :2].mean(0), np.array([gx, gy]), np.array([px, py])))
+                    dest = [k]
+                    c = new[k][0][:, :2].mean(0) * 1000
+                    fell = (f"It slipped out on the way and landed at ({c[0]:.0f}, {c[1]:.0f}) mm, clear of everything: "
+                            f"good enough, it only needed to be on its own. ")
             for k in src + dest:
                 used.add(k)
             if not dest:
@@ -212,13 +222,13 @@ class World:
                 T.model = None
                 T.status = "one"
                 T.history.append("lifted and moved as one piece, nothing left behind")
-                return [f"#{T.id} came along whole and nothing stayed behind: it moved as one piece. "
+                return [fell + f"#{T.id} came along whole and nothing stayed behind: it moved as one piece. "
                         f"Hypothesis confirmed: #{T.id} is one object."]
             self.things.pop(T.id)
             if len(dest) == 1:
                 piece = self._new(new[dest[0]][0], "blob", T.id, f"came out of #{T.id} in one piece; not yet carried as a whole")
                 rest = [self._new(new[k][0], parent=T.id, note=f"left behind when part of #{T.id} was carried off") for k in src]
-                return [f"Only part of #{T.id} came along. Hypothesis rejected: #{T.id} was several things. "
+                return [fell + f"Only part of #{T.id} came along. Hypothesis rejected: #{T.id} was several things. "
                         f"The piece I carried is #{piece.id}; it stayed together, but that could still be two touching "
                         f"things, so it gets tested on its own. What stayed behind: {self._ids(rest)} "
                         f"(new blob{'s' if len(rest) != 1 else ''})."]
@@ -235,6 +245,9 @@ class World:
             used.add(k)
         self.things.pop(T.id)
         kids = [self._new(new[k][0], parent=T.id, note=f"after raking through #{T.id}") for k in kids_k]
+        if len(kids) == 1 and action.get("spread"):
+            kids[0].tries = T.tries
+            return [f"Raked through #{T.id}: still one clump (#{kids[0].id}). I'll pick pieces off it instead."]
         if len(kids) == 1:  # it didn't split: carry the history over, and give up after the second time
             k = kids[0]
             k.tries, k.rakes = T.tries, T.rakes + 1
@@ -245,6 +258,15 @@ class World:
                         f"Probably one object I can't pick up with these fingers. Leaving it there."]
             return [f"Raked through #{T.id}: still one piece (#{k.id}). One more try later."]
         return [f"Raked through #{T.id}: it's now {len(kids)} separate things ({self._ids(kids)}). Each is a new hypothesis."]
+
+    def _clear_of_others(self, pts, new, k, gap: float = 0.012) -> bool:
+        """Is this new segment on its own: nothing else (new or known) within gap of it?"""
+        xy = pts[:, :2]
+        others = [p for j, (p, _) in enumerate(new) if j != k]
+        for p in others:
+            if np.min(np.linalg.norm(p[::7, None, :2] - xy[None, ::7], axis=2)) < gap:
+                return False
+        return True
 
     @staticmethod
     def _ids(things) -> str:

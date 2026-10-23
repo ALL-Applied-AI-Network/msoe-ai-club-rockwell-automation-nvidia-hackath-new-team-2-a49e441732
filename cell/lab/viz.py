@@ -120,17 +120,14 @@ def thin(pts: np.ndarray, voxel: float = 0.0015) -> np.ndarray:
 # ---------------------------------------------------------------- robot
 
 def arm(root: str, joints, tcp_offset: float = 0.293) -> None:
-    """The arm as a stick figure from forward kinematics, plus the fingertip (green open, red closed)."""
+    """The arm as a stick figure from forward kinematics, base to wrist."""
     R, p, pts = np.eye(3), np.zeros(3), [np.zeros(3)]
     for (off, axis, sign), q in zip(CHAIN, np.radians(np.asarray(joints, float)[:6])):
         p = p + R @ np.array(off)
         R = R @ _rot(axis, sign * q)
         pts.append(p.copy())
-    tip = p + R[:, 0] * tcp_offset
-    pts.append(tip)
-    closed = len(joints) > 6 and float(joints[6]) >= 0.5
+    # stop at the wrist (flange): below it is the gripper, drawn as itself
     rr.log(f"{root}/arm", rr.LineStrips3D([np.array(pts)], colors=[[240, 200, 40]], radii=0.005))
-    rr.log(f"{root}/arm/fingertip", rr.Points3D([tip], colors=[[220, 40, 40] if closed else [40, 200, 40]], radii=0.006))
 
 
 def uf0_to_base(xyz_mm) -> np.ndarray:

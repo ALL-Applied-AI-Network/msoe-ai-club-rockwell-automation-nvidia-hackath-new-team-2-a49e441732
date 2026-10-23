@@ -8,8 +8,10 @@ jaws close along the rows of a 1 mm grid; then, for every grid cell as the grip 
     grip height, so the fingers can come straight down beside the material without landing on anything,
   - unseen cells next to seen ones take the lowest nearby height (most are shadows: table hidden behind an object
     from the camera's point of view); cells with nothing seen within 4 mm count as blocked.
-Valid grips are ranked by how much target material sits between the jaws, how centred it is, and how close the grip height
-is to the lower part of the object (a deeper grip holds better). Everything is box sums on integral images, so it's fast.
+  - the fingertips must close below the middle of what's between them: with these hooked fingers a small part is held
+    by the lips closing under its widest point (caged in the pocket); lips at or above its middle squeeze it out.
+Valid grips are ranked by how much target material sits between the jaws, how centred it is between them, and how close
+they are to the middle of the part (a part gripped at one end tips and slides out). Box sums on integral images: fast.
 """
 from __future__ import annotations
 
@@ -20,7 +22,9 @@ from scipy import ndimage
 
 from calibration.geometry import SURFACE_Z
 
-GAP = 12          # mm between the open fingers' flat faces (the hooked tips open to 16)
+GAP = 12          # mm between the open fingers' flat faces
+GAP_TIP = 16      # mm between the hooked tips: a part that sits entirely in the hook zone has this much room
+HOOK_ZONE = 14    # mm above the fingertips where the recess (and so the wider opening) ends
 FINGER = 12       # mm finger depth along the closing direction
 WIDTH = 6         # mm finger thickness across it
 MARGIN = 1        # mm clearance beside the material
@@ -80,19 +84,28 @@ def find(scene_pts: np.ndarray, target_pts: np.ndarray, top_k: int = 8) -> tuple
         for L in LEVELS:
             occ = Hf > L
             mat = occ & T
-            jaw = _box(mat, -half_gap, half_gap - 1, -half_w, half_w - 1)
+            top = ndimage.maximum_filter(np.where(T, Hf, 0), size=GAP)
+            in_hooks = top <= L + HOOK_ZONE  # the whole part sits between the hooks: 16 mm of room, not 12
+            jaw12 = _box(mat, -half_gap, half_gap - 1, -half_w, half_w - 1)
+            jaw16 = _box(mat, -GAP_TIP // 2, GAP_TIP // 2 - 1, -half_w, half_w - 1)
+            jaw = np.where(in_hooks, jaw16, jaw12)
             if jaw.max() < 6:
                 continue
-            slots = (_box(occ, -slot_out - 1, -slot_in - 1, -half_w, half_w - 1)
-                     + _box(occ, slot_in, slot_out, -half_w, half_w - 1))
+            s_in, s_out = GAP_TIP // 2, GAP_TIP // 2 + FINGER + MARGIN - 1
+            slots12 = (_box(occ, -slot_out - 1, -slot_in - 1, -half_w, half_w - 1) + _box(occ, slot_in, slot_out, -half_w, half_w - 1))
+            slots16 = (_box(occ, -s_out - 1, -s_in - 1, -half_w, half_w - 1) + _box(occ, s_in, s_out, -half_w, half_w - 1))
+            slots = np.where(in_hooks, slots16, slots12)
             other = _box(occ & ~T, -half_gap, half_gap - 1, -half_w, half_w - 1)
             rows = np.arange(n, dtype=float)[:, None] * np.ones((1, n))
-            moment = _box(mat * rows, -half_gap, half_gap - 1, -half_w, half_w - 1)
+            moment = np.where(in_hooks, _box(mat * rows, -GAP_TIP // 2, GAP_TIP // 2 - 1, -half_w, half_w - 1),
+                              _box(mat * rows, -half_gap, half_gap - 1, -half_w, half_w - 1))
             off = np.abs(moment / np.maximum(jaw, 1) - rows)
-            top = ndimage.maximum_filter(np.where(T, Hf, 0), size=GAP)
+            below_middle = L <= np.maximum(0.5 * top - 1.0, LEVELS[0])  # lips at least 1 mm under the part's widest point
             depth_pref = 1 - np.clip(np.abs(L - 0.4 * top) / np.maximum(top, 1), 0, 1)
-            ok = (jaw >= 6) & (slots == 0) & (off < 2.5)
-            score = jaw / (GAP * WIDTH) - 0.15 * off + 0.5 * depth_pref - 0.01 * other
+            ii, jj = np.mgrid[0:n, 0:n]
+            from_middle = np.hypot(ii + 0.5 - n / 2, jj + 0.5 - n / 2)  # mm from the part's centre
+            ok = (jaw >= 6) & (slots == 0) & (off < 2.5) & below_middle
+            score = jaw / (GAP * WIDTH) - 0.15 * off + 0.5 * depth_pref - 0.01 * other - 0.04 * from_middle
             for valid, sel in ((True, ok), (False, (jaw >= 6) & ~ok)):
                 idx = np.flatnonzero(sel)
                 if len(idx) == 0:
