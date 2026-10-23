@@ -230,7 +230,7 @@ def segments(segs, cams: dict | None = None, obs: dict | None = None) -> None:
 
 # ---------------------------------------------------------------- the robot's things (world model)
 
-STATUS_MARK = {"blob": "?", "one": "✓", "stuck": "⊘"}
+STATUS_MARK = {"blob": "?", "one": "✓", "stuck": "⊘", "bin": "▣ box"}
 
 
 def things(world, cams: dict | None = None, obs: dict | None = None) -> None:
@@ -250,19 +250,33 @@ def things(world, cams: dict | None = None, obs: dict | None = None) -> None:
         rr.log(f"mind/objects/{t.id}", rr.Mesh3D(vertex_positions=m.vertices, triangle_indices=m.faces,
                                                  vertex_normals=m.vertex_normals, albedo_factor=col + [255]))
         rr.log(f"mind/segments/{t.id}", rr.Clear(recursive=False))
-    rows = ["| id | status | VLM says | group | model | from | size mm² | height mm | what happened |",
-            "|---|---|---|---|---|---|---|---|---|"]
+    # where each thing is headed: an arrow to its box
+    arrows = [(t.centroid, world.things[t.dest].centroid, t.dest) for t in ts
+              if getattr(t, "dest", None) in world.things and str(getattr(t, "plan", "")).startswith("sort")]
+    if arrows:
+        rr.log("mind/plan_boxes", rr.Arrows3D(origins=[a[0] + [0, 0, 0.02] for a in arrows],
+                                              vectors=[(b - a) * [1, 1, 0] for a, b, _ in arrows],
+                                              colors=[id_color(d) for _, _, d in arrows], radii=0.0008))
+    else:
+        rr.log("mind/plan_boxes", rr.Clear(recursive=False))
+    rows = ["| id | status | VLM says | group | plan | model | from | size mm² | height mm | what happened |",
+            "|---|---|---|---|---|---|---|---|---|---|"]
     for t in sorted(ts, key=lambda t: t.id):
-        st = {"one": "one object ✓", "stuck": "stuck ⊘"}.get(t.status, "blob: untested ?")
+        st = {"one": "one object ✓", "stuck": "stuck ⊘", "bin": "box ▣"}.get(t.status, "blob: untested ?")
         md = f"{t.model.kind}, {t.model.world_mesh().volume * 1e9:.0f} mm³" if getattr(t, "model", None) else ""
         lab = getattr(t, "label", None) or {}
-        said = f"{lab.get('color', '')} {lab.get('name', '')} ({float(lab.get('confidence') or 0):.0%})" if lab else ""
-        rows.append(f"| #{t.id} | {st} | {said} | {getattr(t, 'group', '') or ''} | {md} | {f'#{t.parent}' if t.parent else ''} | {t.area} | {t.height_mm:.0f} | "
+        said = (f"{lab.get('color', '')} {lab.get('name', '')} ({float(lab.get('confidence') or 0):.0%}"
+                + (f", {lab.get('count')} things" if int(lab.get('count') or 1) > 1 else "") + ")") if lab else ""
+        rows.append(f"| #{t.id} | {st} | {said} | {getattr(t, 'group', '') or ''} | {getattr(t, 'plan', '') or ''} | {md} | {f'#{t.parent}' if t.parent else ''} | {t.area} | {t.height_mm:.0f} | "
                     f"{'; '.join(t.history[-2:])} |")
     n1, n2 = sum(t.status == "one" for t in ts), sum(t.status == "stuck" for t in ts)
-    roster(f"**The robot's world model**: {len(ts)} things, {n1} confirmed as one object, {n2} stuck, "
-           f"{len(ts) - n1 - n2} untested\n\n"
-           + "\n".join(rows))
+    done = getattr(world, "sorted", [])
+    sorted_md = ("\n\n**Sorted**: " + "; ".join(f"#{d['id']} {d.get('color') or ''} {d.get('name') or '?'} → box #{d['bin']}"
+                                               + ("" if d.get("whole", True) else " (part)") for d in done)) if done else ""
+    nb = sum(t.status == "bin" for t in ts)
+    roster(f"**The robot's world model**: {len(ts) - nb} things, {n1} confirmed as one object, {n2} stuck, "
+           f"{len(ts) - n1 - n2 - nb} untested" + (f", {nb} boxes" if nb else "") + "\n\n"
+           + "\n".join(rows) + sorted_md)
 
 
 def clear_plan() -> None:

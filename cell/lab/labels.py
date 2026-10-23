@@ -9,7 +9,8 @@ For each confirmed thing:
     2. crop around it (square, with a margin, scaled up) and put the full view next to it with the thing outlined
     3. tell the model what the depth camera measured (size, height, volume): from a crop alone it can't judge scale
     4. ask in the background (a thread per call), so the arm keeps working; answers are picked up by poll()
-       (the free NVIDIA endpoint often answers 500 or times out: each call is retried, then tried on the next model)
+       (the free NVIDIA endpoint often answers 500 or times out: each call is retried, then tried on the next model;
+       thinking is off: Nemotron gave the same labels in ~3 s instead of ~90 s)
 
 The label sticks to the thing (its id), not to a picture: the thing's 3D model is tracked when it gets bumped, so the
 name follows it. When all things are named, plan_sort() asks once, in text only, how to group them for the instruction.
@@ -33,20 +34,25 @@ from lab.viz import project_to_image
 
 CROP = 448  # px, the close-up's side
 
-LABEL = """This is one object on a robot's sorting table. Left: a close-up (the object is in the middle; parts of other
-objects may show at the edges). Right: the camera view it came from, with the object outlined in white.
+LABEL = """This is a photo of something on a robot's sorting table. Left: a close-up (the outlined thing is in the
+middle; other things may show at the edges). Right: the camera view it came from, with it outlined in white.
 The robot measured it with a depth camera: footprint about {L:.0f} x {W:.0f} mm, {H:.0f} mm tall, volume about {V:.0f} mm³.
+{status}
 Answer in JSON only:
 {{
   "name": "short common name, as specific as you can tell (e.g. '10 mm cube', 'M6 screw', 'six-sided die')",
   "category": "the kind of thing, for sorting (e.g. 'fastener', 'building block', 'game piece')",
   "color": "main colour",
   "material": "best guess",
+  "count": 1,
   "confidence": 0.0,
-  "several": false,
+  "attached": false,
   "why": "one sentence: what in the image tells you"
 }}
-"several" is true only if the outlined object looks like more than one object touching."""
+"count": how many separate objects are inside the outline (a clump of touching things is more than 1).
+"confidence": 0 to 1, how sure you are of BOTH the name and the count. Be honest: 0.9+ only if it's a familiar
+object you'd bet on; low if it's odd, partly hidden, or might be two things.
+"attached": true if it looks like separate parts joined together (a screw in a nut, something stuck to it)."""
 
 SORT = """A robot has laid out these objects on a table, one at a time, and named each from a close-up photo:
 {things}
@@ -115,7 +121,7 @@ class Labeler:
         self.models = list(dict.fromkeys(([vlm.model_id(model)] if model else []) + FALLBACKS))
         self.pool = ThreadPoolExecutor(max_workers=6)
         self.pending: dict[int, Future] = {}
-        self.asked: set[int] = set()
+        self.asked: dict[int, tuple[str, int]] = {}  # id -> (status, footprint mm²) when last asked
         self.views: list[dict] = []  # observations since the last time something moved
 
     @property
@@ -129,17 +135,31 @@ class Labeler:
         """Something is about to move: older views no longer show where things are."""
         self.views = []
 
+    def due(self, t) -> bool:
+        """Never asked, or it has changed since: it was a blob then and is confirmed now (a cleaner picture of one
+        object), or its footprint grew or shrank by a third (part of it was carried off: the old name is stale)."""
+        if t.id in self.pending:
+            return False
+        if t.id not in self.asked:
+            return True
+        status, area = self.asked[t.id]
+        return (status != "one" and t.status == "one") or not (0.67 < t.area / max(area, 1) < 1.5)
+
+    def stale(self, t) -> bool:
+        """Its name is out of date or a new one is on the way."""
+        return t.id in self.pending or self.due(t)
+
     def needs_look(self, t) -> bool:
-        """Confirmed, not yet asked, and no recent picture shows it whole: the arm should go and look at it."""
-        return self.on and t.id not in self.asked and best_view(self._pts(t), self.views, self.cams) is None
+        """Due a question, and no recent picture shows it whole: the arm should go and look at it."""
+        return self.on and self.due(t) and best_view(self._pts(t), self.views, self.cams) is None
 
     @staticmethod
     def _pts(t) -> np.ndarray:
         return t.model.samples(600) if t.model is not None else t.points[:, :3]
 
     def ask(self, t) -> str | None:
-        """Start naming a confirmed thing in the background. Returns what to narrate, or None if it can't be asked yet."""
-        if not self.on or t.id in self.asked:
+        """Start naming a thing in the background. Returns what to narrate, or None if it can't be asked yet."""
+        if not self.on or not self.due(t):
             return None
         v = best_view(self._pts(t), self.views, self.cams)
         if v is None:
@@ -148,10 +168,15 @@ class Labeler:
         picture, close = compose(obs["images"][cam], uv)
         m = measure(t.points)
         m["V"] = t.model.world_mesh().volume * 1e9 if t.model is not None else m["L"] * m["W"] * m["H"]
-        prompt = LABEL.format(**m)
-        self.asked.add(t.id)
+        status = {"one": "The robot has moved it and it moved as one rigid piece: it IS one object.",
+                  "blob": "Nobody has touched it yet: it might be one object or several touching.",
+                  "bin": "It looks like a container."}.get(t.status, "")
+        prompt = LABEL.format(**m, status=status)
+        again = t.id in self.asked
+        self.asked[t.id] = (t.status, t.area)
         self.pending[t.id] = self.pool.submit(self._call, t.id, picture, close, cam, prompt, m)
-        return f"Asking the VLM what #{t.id} is (close-up from the {cam} camera, {m['L']:.0f} × {m['W']:.0f} × {m['H']:.0f} mm)."
+        return (f"Asking the VLM {'again ' if again else ''}what #{t.id} is (close-up from the {cam} camera, "
+                f"{m['L']:.0f} × {m['W']:.0f} × {m['H']:.0f} mm)" + (": it changed since the last answer." if again else "."))
 
     def _call(self, tid, picture, close, cam, prompt, m) -> dict:
         t0, tries = time.time(), []
@@ -159,7 +184,7 @@ class Labeler:
         for model in self.models:
             for k in range(2):
                 try:
-                    r = vlm.ask_image(picture, prompt, model=model, max_tokens=4000)
+                    r = vlm.ask_image(picture, prompt, model=model, max_tokens=2000, think=False)
                     err = None if usable(r and r["json"]) else "no usable answer: " + (r or {}).get("text", "")[:120]
                 except Exception as e:  # a failed call is an answer too: shown, not fatal
                     r, err = None, str(e)[:200]
@@ -206,7 +231,7 @@ class Labeler:
         prompt = SORT.format(things="\n".join(rows), instruction=instruction or "Sort these.")
         for model in self.models:
             try:
-                r = vlm.ask_text(prompt, model=model, max_tokens=4000)
+                r = vlm.ask_text(prompt, model=model, max_tokens=4000, think=False)
             except Exception:
                 continue
             if r and r["json"]:

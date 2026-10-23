@@ -65,12 +65,16 @@ def travel(cur, goal_xy_m, r1, g, height_mm=SAFE_MM) -> list[list[float]]:
     return line(p0, up, r0, r0, g, TRAVEL) + line(up, over, r0, r1, g, TRAVEL)
 
 
-def pick_and_place(cur, grip_xy_m, grip_mm, grip_yaw, place_xy_m, place_yaw=None) -> tuple[list, str]:
-    """Open, go over the grip, descend to grip_mm above the table, close, lift, carry, set down, open, lift."""
+def pick_and_place(cur, grip_xy_m, grip_mm, grip_yaw, place_xy_m, place_yaw=None, drop_mm: float | None = None,
+                   safe_mm: float = SAFE_MM) -> tuple[list, str]:
+    """Open, go over the grip, descend to grip_mm above the table, close, lift, carry, set down, open, lift.
+    drop_mm: let go with the part's bottom this high above the table (over a box: just above its rim) instead of
+    setting it down. safe_mm: travel height of the fingertips (the part hangs grip_mm below them)."""
     place_yaw = grip_yaw if place_yaw is None else place_yaw
-    over_g, at_g = uf0(*grip_xy_m, SAFE_MM), uf0(*grip_xy_m, grip_mm)
-    over_p, at_p = uf0(*place_xy_m, SAFE_MM), uf0(*place_xy_m, grip_mm + 1.5)
-    rows = travel(cur, grip_xy_m, grip_yaw, 0)
+    over_g, at_g = uf0(*grip_xy_m, safe_mm), uf0(*grip_xy_m, grip_mm)
+    over_p = uf0(*place_xy_m, safe_mm)
+    at_p = uf0(*place_xy_m, grip_mm + 1.5 if drop_mm is None else drop_mm + grip_mm)
+    rows = travel(cur, grip_xy_m, grip_yaw, 0, safe_mm)
     rows += line(over_g, at_g, grip_yaw, grip_yaw, 0, APPROACH) + hold(at_g, grip_yaw, 0)          # arrive, then
     rows += hold(at_g, grip_yaw, 1, 8)                                                              # close
     rows += line(at_g, over_g, grip_yaw, grip_yaw, 1, APPROACH)                                     # lift
@@ -79,12 +83,14 @@ def pick_and_place(cur, grip_xy_m, grip_mm, grip_yaw, place_xy_m, place_yaw=None
     rows += hold(at_p, place_yaw, 0, 6) + line(at_p, over_p, place_yaw, place_yaw, 0, APPROACH)    # open, lift
     rows += hold(over_p, place_yaw, 0)
     what = (f"grip at ({grip_xy_m[0] * 1000:.0f}, {grip_xy_m[1] * 1000:.0f}) mm, {grip_mm:.0f} mm up, jaws at {grip_yaw:.0f}°; "
-            f"set down at ({place_xy_m[0] * 1000:.0f}, {place_xy_m[1] * 1000:.0f})")
+            f"{'set down' if drop_mm is None else 'drop'} at ({place_xy_m[0] * 1000:.0f}, {place_xy_m[1] * 1000:.0f})")
     return rows, what
 
 
 def rake(cur, start_xy_m, end_xy_m, height_mm=3.0) -> tuple[list, str]:
-    """Close the fingers, lower them just above the table at start, drag slowly to end, lift. A shuffle, not a push."""
+    """Close the fingers, lower them just above the table at start, drag slowly to end, lift. A shuffle, not a push.
+    Both ends are pulled inside what the arm can reach (a rake 25 mm past a part near the edge would leave the cell's box)."""
+    start_xy_m, end_xy_m = clamp_xy(*start_xy_m), clamp_xy(*end_xy_m)
     d = np.asarray(end_xy_m) - np.asarray(start_xy_m)
     r = float(np.degrees(np.arctan2(d[1], d[0])))  # jaws along the drag: the closed fingers make a 12 mm wide blade
     over_s, at_s = uf0(*start_xy_m, SAFE_MM), uf0(*start_xy_m, height_mm)

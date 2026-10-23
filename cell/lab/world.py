@@ -11,6 +11,12 @@ expected (common fate: what moved together is one thing):
     carried, but it landed as several pieces  -> at least two things that moved together: each is a new "blob"
     nothing arrived and the source looks same -> the grip slipped: same blob, one more try counted
     raked                                     -> whatever is in the raked area now is a new "blob" each
+    sorted (carried into a box)               -> gone from the table, nothing left behind or dropped on the way: one
+                                                 object, and sorted (the carry was the test); part left behind: it was
+                                                 several (the rest are new blobs); dropped on the way: same thing, there
+
+Boxes are things too (status "bin"): big, tall, hollow in the middle. They're never tested, raked or gripped; they're
+where sorted things go. Things that vanish without a trace go on a missing list, so the robot can go and look for them.
 
 Things nobody touched are matched to the fresh scan by footprint overlap and colour and keep their ids ("unchanged");
 things that got nudged (close by, similar size, same colour) keep their ids too.
@@ -59,7 +65,8 @@ def overlap(a: np.ndarray, b: np.ndarray) -> float:
 class Thing:
     id: int
     points: np.ndarray
-    status: str = "blob"            # "blob" untested, "one" moved as one rigid piece, "stuck" can't grip/split/reach
+    status: str = "blob"            # "blob" untested, "one" moved as one rigid piece, "stuck" can't grip/split/reach,
+                                    # "bin" a box to sort into
     parent: int | None = None
     history: list[str] = field(default_factory=list)
     model: object = None            # lab.objects.Model once it's confirmed as one object
@@ -91,6 +98,8 @@ class World:
         self.things: dict[int, Thing] = {}
         self.next_id = 1
         self.reserved: list[np.ndarray] = []  # staging spots promised to things in flight
+        self.sorted: list[dict] = []           # what went into which box
+        self.missing: list[Thing] = []         # things that vanished without a trace (look for them)
 
     def _new(self, points, status="blob", parent=None, note="") -> Thing:
         t = Thing(self.next_id, points, status, parent, [note] if note else [])
@@ -107,6 +116,52 @@ class World:
 
     def blobs(self) -> list[Thing]:
         return [t for t in self.things.values() if t.status == "blob"]
+
+    def bins(self) -> list[Thing]:
+        return [t for t in self.things.values() if t.status == "bin"]
+
+    def find_bins(self) -> list[str]:
+        """Boxes: big (over 1200 mm²), tall (over 25 mm), and hollow: the middle is lower than the rim (or unseen: the
+        camera can't see into a deep well from the side)."""
+        from scipy import ndimage
+        events = []
+        for t in self.blobs():
+            if t.area < 1200 or t.height_mm < 25:
+                continue
+            ix, iy = np.divmod(t.fp, NY)
+            ix, iy = ix - ix.min(), iy - iy.min()
+            mask = np.zeros((ix.max() + 1, iy.max() + 1), bool)
+            mask[ix, iy] = True
+            mask = ndimage.binary_fill_holes(mask)
+            inner = ndimage.binary_erosion(mask, iterations=12)
+            if inner.sum() < 50:
+                continue
+            p = t.points
+            px = ((p[:, 0] - X_RANGE[0]) / CELL).astype(int) - (t.fp // NY).min()
+            py = ((p[:, 1] - Y_RANGE[0]) / CELL).astype(int) - (t.fp % NY).min()
+            ok = (px >= 0) & (px < mask.shape[0]) & (py >= 0) & (py < mask.shape[1])
+            h = (p[:, 2] - SURFACE_Z) * 1000
+            in_mid = np.zeros(len(p), bool)
+            in_mid[ok] = inner[px[ok], py[ok]]
+            mid = np.percentile(h[in_mid], 90) if in_mid.sum() > 20 else 0.0
+            if mid < 0.7 * t.height_mm:
+                t.status = "bin"
+                t.history.append("big, tall and hollow: a box to sort into")
+                events.append(f"#{t.id} is a box ({t.area} mm², {t.height_mm:.0f} mm tall, hollow in the middle): "
+                              f"somewhere to sort things into, not something to sort.")
+        return events
+
+    def isolated(self, t: Thing, gap: float = 0.008) -> bool:
+        """Nothing else within gap of it (a finger's width): it isn't touching anything it could be attached to."""
+        xy = t.points[::5, :2]
+        for o in self.things.values():
+            if o is t:
+                continue
+            if np.hypot(*(o.centroid[:2] - t.centroid[:2])) > t.radius + o.radius + gap:
+                continue
+            if np.min(np.linalg.norm(o.points[::5, None, :2] - xy[None], axis=2)) < gap:
+                return False
+        return True
 
     def mark_out_of_reach(self, t: Thing) -> str:
         t.status = "stuck"
@@ -184,12 +239,15 @@ class World:
                 events.append(f"#{t.id} appeared: knocked loose or uncovered. New blob.")
         for t in old.values():
             self.things.pop(t.id, None)
+            self.missing.append(t)
             events.append(f"lost track of #{t.id} (it moved, or something covers it now)")
         self.reserved = []
         return events
 
     def _judge(self, T: Thing, action: dict, new, used) -> list[str]:
         src = [k for k, (pts, fp) in enumerate(new) if k not in used and overlap(fp, T.fp) > 0.2]
+        if action["kind"] == "sort":
+            return self._judge_sort(T, action, new, used, src)
         if action["kind"] == "carry":
             gx, gy, gyaw = action["grip"]
             px, py, pyaw = action["place"]
@@ -216,6 +274,10 @@ class World:
                             f"Still a blob (try {T.tries})."]
                 self.things.pop(T.id)
                 kids = [self._new(new[k][0], parent=T.id, note=f"disturbed when gripping #{T.id}") for k in src]
+                if not kids:
+                    self.missing.append(T)
+                    return [f"Nothing arrived at the drop spot and #{T.id} is gone from where it was: it fell somewhere "
+                            f"I haven't looked."]
                 return [f"Nothing arrived, but #{T.id} changed: now {self._ids(kids)} (blobs)."]
             if len(dest) == 1 and not src:
                 T.points, T.fp = new[dest[0]][0], new[dest[0]][1]
@@ -258,6 +320,44 @@ class World:
                         f"Probably one object I can't pick up with these fingers. Leaving it there."]
             return [f"Raked through #{T.id}: still one piece (#{k.id}). One more try later."]
         return [f"Raked through #{T.id}: it's now {len(kids)} separate things ({self._ids(kids)}). Each is a new hypothesis."]
+
+    def _judge_sort(self, T: Thing, action: dict, new, used, src) -> list[str]:
+        """Carried straight into a box: the carry is the test. Only a whole, single object leaves nothing behind."""
+        B = self.things.get(action["bin"])
+        where = f"box #{B.id}" if B is not None else "the box"
+        for k in src:
+            used.add(k)
+        if len(src) == 1 and iou(new[src[0]][1], T.fp) > 0.5:
+            T.points, T.fp = new[src[0]][0], new[src[0]][1]
+            T.tries += 1
+            T.history.append("grip slipped on the way to a box")
+            return [f"#{T.id} is still where it was: the grip slipped. Try {T.tries}."]
+        gx, gy, _ = action["grip"]
+        px, py = action["place"]
+        loose = [k for k, (pts, fp) in enumerate(new) if k not in used and k not in src and self._clear_of_others(pts, new, k)
+                 and _dist_to_segment(pts[:, :2].mean(0), np.array([gx, gy]), np.array([px, py])) < 0.06
+                 and not any(overlap(fp, b.fp) > 0.2 for b in self.bins())
+                 and 0.6 < len(fp) / max(T.area, 1) < 1.6 and colour_gap(T.points, pts) < 45]  # looks like T, not a neighbour
+        if not src and loose:  # fell out on the way: same thing, now there
+            k = loose[0]
+            used.add(k)
+            T.points, T.fp = new[k][0], new[k][1]
+            T.model = None
+            T.tries += 1
+            c = T.centroid * 1000
+            T.history.append("fell out on the way to a box")
+            return [f"#{T.id} fell out on the way and landed at ({c[0]:.0f}, {c[1]:.0f}) mm. Try {T.tries}."]
+        self.things.pop(T.id)
+        label = getattr(T, "label", None) or {}
+        entry = {"id": T.id, "name": label.get("name"), "color": label.get("color"), "bin": action["bin"],
+                 "group": getattr(T, "group", None), "whole": not src}
+        self.sorted.append(entry)
+        if src:
+            rest = [self._new(new[k][0], parent=T.id, note=f"left behind when part of #{T.id} went into {where}") for k in src]
+            return [f"Only part of #{T.id} went into {where}; {self._ids(rest)} stayed behind (new blob"
+                    f"{'s' if len(rest) != 1 else ''}). It was several things touching."]
+        return [f"#{T.id} is gone from the table and nothing fell on the way: it went into {where} in one piece. "
+                f"One object, and sorted."]
 
     def _clear_of_others(self, pts, new, k, gap: float = 0.012) -> bool:
         """Is this new segment on its own: nothing else (new or known) within gap of it?"""

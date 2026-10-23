@@ -30,7 +30,7 @@ STAGING_CENTER = (float(STAGING[0].mean()), float(STAGING[1].mean()))
 
 class ExplorePolicy:
     CAMERAS = ["table", "side", "wrist"]
-    IMAGE_SIZE = (640, 360)
+    IMAGE_SIZE = (1280, 720)  # the wrist camera's native size: at 640x360 a 10 mm part is ~30 px, too few to name it
     IMAGE_FORMAT = "jpeg"
     ACTION = "tcp"
     PREFETCH = False
@@ -330,7 +330,7 @@ class ExplorePolicy:
                 t.label = a
             viz.vlm(f"#{r['id']} is a {a.get('color', '')} {a.get('name')} ({a.get('category')}; "
                     f"{float(a.get('confidence') or 0):.0%} sure, {r['seconds']:.0f} s). {a.get('why', '')}")
-            if a.get("several"):
+            if int(a.get("count") or 1) > 1:
                 viz.narrate(f"The VLM thinks #{r['id']} might be several things touching, but it moved as one piece. "
                             f"I trust the motion; worth a second test later.", level="WARN")
         self.version += 1

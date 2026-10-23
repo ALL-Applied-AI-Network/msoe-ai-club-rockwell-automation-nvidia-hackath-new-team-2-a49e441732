@@ -1,0 +1,13 @@
+# Six cubes, spread out, and three coloured boxes. The easy one: everything is familiar and already apart.
+instruction: Sort the cubes by color into the matching boxes.
+layout: spread
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+  - {kind: cube_10, color: blue, count: 2}
+fixtures:
+  - {kind: box_60, color: red, at: [0.27, -0.24]}
+  - {kind: box_60, color: yellow, at: [0.36, -0.24]}
+  - {kind: box_60, color: blue, at: [0.45, -0.24]}
+expect: color

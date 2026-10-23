@@ -149,6 +149,7 @@ class SimCell:
         self.grip = 0.0
         self.q = np.array(HOME, float)
         self.t = 0.0
+        self.image_size = IMAGE_SIZE  # what observe() renders; a policy may ask for another size
         mujoco.mj_forward(self.model, self.data)
         self.cmd_pos = self.data.mocap_pos[0].copy()   # where the controller has been told to go
         n_lag = max(1, int(round(lag_s / self.model.opt.timestep)))
@@ -259,7 +260,7 @@ class SimCell:
             "trial": {"status": "running", "instruction": self.instruction},
             "joints": np.append(self.q, self.grip),
             "tcp_pose": [tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, -180.0, 0.0, np.degrees(self.actual_yaw())],
-            "images": {c: r.rgb(c, joints=self.q, size=IMAGE_SIZE) for c in ("table", "side", "wrist")},
+            "images": {c: r.rgb(c, joints=self.q, size=self.image_size) for c in ("table", "side", "wrist")},
             "depth": {c: r.depth(c, joints=self.q, rng=rng) for c in ("table", "wrist")},
         }
 

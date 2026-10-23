@@ -1,0 +1,16 @@
+# A dumped pile of mixed parts and three plain boxes, no hints: the robot (and its VLM) work out what's there and
+# how to sort it. Five kinds of thing, three boxes: it has to decide what shares a box or stays on the table.
+instruction: Sort these.
+layout: dump
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: blue, count: 1}
+  - {kind: lego_1x2, color: yellow, count: 2}
+  - {kind: screw_m6x30, color: steel, count: 2}
+  - {kind: dowel, color: wood, count: 2}
+fixtures:
+  - {kind: box_60, color: white, at: [0.27, -0.24]}
+  - {kind: box_60, color: gray, at: [0.36, -0.24]}
+  - {kind: box_60, color: black, at: [0.45, -0.24]}
+expect: kind

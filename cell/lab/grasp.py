@@ -12,11 +12,14 @@ jaws close along the rows of a 1 mm grid; then, for every grid cell as the grip 
     by the lips closing under its widest point (caged in the pocket); lips at or above its middle squeeze it out.
 Valid grips are ranked by how much target material sits between the jaws, how centred it is between them, and how close
 they are to the middle of the part (a part gripped at one end tips and slides out). Box sums on integral images: fast.
+For boxy parts (cubes, bricks) the jaws should close square onto two faces, not across the corners: a 10 mm cube is
+14 mm corner to corner, so it fits the 16 mm hook opening diagonally, and held by two edges it spins out or sits crooked.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 from scipy import ndimage
 
@@ -65,9 +68,20 @@ def _raster(pts: np.ndarray, n: int) -> np.ndarray:
     return H.reshape(n, n)
 
 
+def faces(target_pts: np.ndarray) -> tuple[float, float]:
+    """(the part's edge direction in degrees, mod 90; how boxy it is, 0..1: how much of its tightest rectangle it fills)."""
+    p = target_pts[(target_pts[:, 2] - SURFACE_Z) * 1000 > LEVELS[0], :2] * 1000
+    if len(p) < 10:
+        return 0.0, 0.0
+    (_, _), (w, h), ang = cv2.minAreaRect(p.astype(np.float32))
+    cells = len(np.unique(np.floor(p).astype(int), axis=0))
+    return float(ang % 90), float(np.clip(cells / max(w * h, 1.0), 0, 1))
+
+
 def find(scene_pts: np.ndarray, target_pts: np.ndarray, top_k: int = 8) -> tuple[list[Grip], list[Grip]]:
     """(valid grips best first, a sample of rejected candidates for display)."""
     c = np.median(target_pts[:, :2], axis=0)
+    edge, boxy = faces(target_pts)
     near = scene_pts[np.max(np.abs(scene_pts[:, :2] - c), axis=1) < CROP]
     n = int(2 * CROP * 1000)
     half_gap, slot_in, slot_out, half_w = GAP // 2, GAP // 2, GAP // 2 + FINGER + MARGIN - 1, WIDTH // 2
@@ -75,6 +89,8 @@ def find(scene_pts: np.ndarray, target_pts: np.ndarray, top_k: int = 8) -> tuple
     rejected: list[Grip] = []
     for yaw in YAWS:
         a = np.radians(yaw)
+        skew = abs((yaw - edge + 45) % 90 - 45)  # degrees off square to the faces (45 = across the corners)
+        square = 0.03 * skew * max(0.0, (boxy - 0.6) / 0.4)  # only matters for boxy parts (a jack has no faces)
         R = np.array([[np.cos(a), np.sin(a)], [-np.sin(a), np.cos(a)]])  # world -> (a along the jaws, b across)
         loc = lambda p: np.column_stack([(p[:, :2] - c) @ R.T, p[:, 2]])
         H = _raster(loc(near), n)
@@ -105,7 +121,7 @@ def find(scene_pts: np.ndarray, target_pts: np.ndarray, top_k: int = 8) -> tuple
             ii, jj = np.mgrid[0:n, 0:n]
             from_middle = np.hypot(ii + 0.5 - n / 2, jj + 0.5 - n / 2)  # mm from the part's centre
             ok = (jaw >= 6) & (slots == 0) & (off < 2.5) & below_middle
-            score = jaw / (GAP * WIDTH) - 0.15 * off + 0.5 * depth_pref - 0.01 * other - 0.04 * from_middle
+            score = jaw / (GAP * WIDTH) - 0.15 * off + 0.5 * depth_pref - 0.01 * other - 0.04 * from_middle - square
             for valid, sel in ((True, ok), (False, (jaw >= 6) & ~ok)):
                 idx = np.flatnonzero(sel)
                 if len(idx) == 0:

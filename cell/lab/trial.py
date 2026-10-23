@@ -15,6 +15,9 @@ A trial is a small YAML file in lab/trials/:
     seed: 0
     objects:
       - {kind: cube_10, color: red, count: 2}
+    fixtures:                 # optional: things set down at fixed spots before the objects arrive (boxes to sort into)
+      - {kind: box_60, color: red, at: [0.30, -0.24], yaw: 0}
+    expect: color             # optional: what a correct sort groups by (color | kind | name), for the truth check
 
 Every run is recorded to runs/ like a real one (plus truth/), so `python -m lab.replay` shows it again.
 """
@@ -30,16 +33,18 @@ import yaml
 
 from calibration.geometry import load
 from lab import viz, vlm
-from lab.catalog import COLORS, KINDS
+from calibration.geometry import SURFACE_Z
+from lab.catalog import COLORS, KINDS, kind_mesh
 from lab import perception
 from lab.policies.explore import ExplorePolicy
 from lab.policies.scan import ScanPolicy
+from lab.policies.sort import SortPolicy
 from lab.recorder import Recorder
 from lab.session import Session
-from lab.simcell import SimCell, dump_layout, spread_layout, tile_layout
+from lab.simcell import Instance, SimCell, dump_layout, spread_layout, tile_layout
 
 TRIALS = Path(__file__).resolve().parent / "trials"
-POLICIES = {"scan": ScanPolicy, "explore": ExplorePolicy}
+POLICIES = {"scan": ScanPolicy, "explore": ExplorePolicy, "sort": SortPolicy}
 
 
 def load_trial(name: str) -> dict:
@@ -48,7 +53,7 @@ def load_trial(name: str) -> dict:
         raise SystemExit(f"no trial {name!r}; see: uv run python -m lab.trial list")
     t = yaml.safe_load(f.read_text())
     t["name"] = name
-    for o in t["objects"]:
+    for o in t["objects"] + t.get("fixtures", []):
         if o["kind"] not in KINDS:
             raise SystemExit(f"unknown kind {o['kind']!r}; see: uv run python -m lab.trial kinds")
         o.setdefault("color", KINDS[o["kind"]].color)
@@ -60,17 +65,59 @@ def load_trial(name: str) -> dict:
 def build(trial: dict, seed: int) -> SimCell:
     order = [(o["kind"], o["color"]) for o in trial["objects"] for _ in range(o.get("count", 1))]
     rng = np.random.default_rng(seed)
+    fixed = lambda inst: inst + fixtures(trial, start=len(inst) + 1)
     if trial.get("layout") == "tile":
-        cell = SimCell(tile_layout(order, rng, cols=trial.get("cols", len(order))), trial.get("instruction", ""), seed)
+        cell = SimCell(fixed(tile_layout(order, rng, cols=trial.get("cols", len(order)))), trial.get("instruction", ""), seed)
         cell.settle(max_s=2.0)
     elif trial.get("layout", "spread") == "dump":
         inst, chute = dump_layout(order, rng)
-        cell = SimCell(inst, trial.get("instruction", ""), seed, chute=chute)
+        cell = SimCell(fixed(inst), trial.get("instruction", ""), seed, chute=chute)
         cell.dump()
     else:
-        cell = SimCell(spread_layout(order, rng), trial.get("instruction", ""), seed)
+        cell = SimCell(fixed(spread_layout(order, rng)), trial.get("instruction", ""), seed)
         cell.settle(max_s=2.0)
     return cell
+
+
+def fixtures(trial: dict, start: int) -> list[Instance]:
+    """Boxes and the like, set down where the trial says."""
+    out = []
+    for k, f in enumerate(trial.get("fixtures", [])):
+        m = kind_mesh(KINDS[f["kind"]])
+        yaw = np.radians(f.get("yaw", 0))
+        out.append(Instance(start + k, f["kind"], f["color"], np.array([*f["at"], SURFACE_Z - m.bounds[0][2] + 0.0005]),
+                            np.array([np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)])))
+    return out
+
+
+def objects_only(truth: list[dict]) -> list[dict]:
+    """The things to sort, without the boxes."""
+    return [o for o in truth if "container" not in KINDS[o["kind"]].tags]
+
+
+def sort_check(truth: list[dict], expect: str | None) -> dict:
+    """Where every object ended up: in which box (by box colour), or still on the table; and whether each box holds
+    one kind of thing (by the trial's `expect`: color, kind or name)."""
+    boxes = [o for o in truth if "container" in KINDS[o["kind"]].tags]
+    where, contents = {}, {b["color"] + " box": [] for b in boxes}
+    for o in objects_only(truth):
+        c = o["mesh"].centroid
+        inside = [b for b in boxes if np.all(np.abs(c[:2] - b["mesh"].centroid[:2]) < b["mesh"].extents[:2] / 2 - 0.004)]
+        dest = inside[0]["color"] + " box" if inside else "table"
+        where[o["name"]] = dest
+        if inside:
+            contents[dest].append(o)
+    key = {"color": lambda o: o["color"], "kind": lambda o: o["kind"], "name": lambda o: o["name"]}.get(expect or "")
+    mixed = [b for b, os_ in contents.items() if key and len({key(o) for o in os_}) > 1]
+    split = []
+    if key:
+        for v in {key(o) for o in objects_only(truth)}:
+            dests = {where[o["name"]] for o in objects_only(truth) if key(o) == v} - {"table"}
+            if len(dests) > 1:
+                split.append(v)
+    n_in = sum(len(v) for v in contents.values())
+    return {"in_boxes": n_in, "objects": len(objects_only(truth)), "mixed_boxes": mixed, "split_groups": split,
+            "contents": {b: [o["name"] for o in os_] for b, os_ in contents.items()}}
 
 
 def run(name: str, seed: int | None = None, policy: str = "explore", view: bool = True, use_vlm: bool = False,
@@ -85,9 +132,12 @@ def run(name: str, seed: int | None = None, policy: str = "explore", view: bool 
     viz.start(f"{name} (seed {seed}, {policy})", save_to=rec.dir / "replay.rrd", spawn=view)
     if policy == "explore":
         pol = ExplorePolicy(label_model=vlm_model, name_things=name_things, instruction=trial.get("instruction", ""))
+    elif policy == "sort":
+        pol = SortPolicy(label_model=vlm_model, instruction=trial.get("instruction", ""))
     else:
         pol = POLICIES[policy]()
     pol.reset()
+    cell.image_size = tuple(getattr(pol, "IMAGE_SIZE", cell.image_size))  # the cell serves the size the policy asks for
     if getattr(pol, "labeler", None) is not None:
         pol.labeler.save_dir = rec.dir / "labels"
         if not pol.labeler.on:
@@ -128,8 +178,8 @@ def run(name: str, seed: int | None = None, policy: str = "explore", view: bool 
                 _gist(obs, trial, vlm_model)
         if own_mind and pol.version != version:
             version = pol.version
-            truth = cell.object_meshes()
-            score = perception.score(list(pol.world.things.values()), truth)
+            truth = objects_only(cell.object_meshes())
+            score = perception.score([t for t in pol.world.things.values() if t.status != "bin"], truth)
             mq = _model_quality(pol.world, truth)
             if mq:
                 score["models"] = mq
@@ -144,6 +194,12 @@ def run(name: str, seed: int | None = None, policy: str = "explore", view: bool 
         fresh = getattr(pol, "wants_obs", True)
         if fresh:
             obs = cell.observe()
+    if trial.get("fixtures"):
+        sc = score["sort"] = sort_check(cell.object_meshes(), trial.get("expect"))
+        viz.narrate(f"(truth check of the sort: {sc['in_boxes']}/{sc['objects']} in boxes; "
+                    + "; ".join(f"{b}: {', '.join(c) or 'empty'}" for b, c in sc["contents"].items())
+                    + (f"; mixed: {', '.join(sc['mixed_boxes'])}" if sc["mixed_boxes"] else "")
+                    + (f"; split across boxes: {', '.join(sc['split_groups'])}" if sc["split_groups"] else "") + ")")
     if getattr(pol, "labeler", None) is not None:
         score["labels"] = _label_check(pol, cell.object_meshes(), rec.dir / "labels")
         lc = score["labels"]
@@ -180,7 +236,7 @@ KIND_WORDS = {"cube_10": ["cube", "block"], "cube_16": ["cube", "block"], "screw
               "d20": ["d20", "die", "dice", "icosahedr"], "lego_1x2": ["lego", "brick"], "lego_2x4": ["lego", "brick"],
               "soldier": ["soldier", "figure", "figurine"], "dowel": ["dowel", "rod", "peg", "stick", "cylinder", "pin"],
               "marker": ["marker", "pen"], "tongue_depressor": ["depressor", "stick", "popsicle"], "cup": ["cup"],
-              "bin": ["bin", "box"]}
+              "bin": ["bin", "box"], "box_60": ["box", "bin", "container", "tray"]}
 
 
 def _label_check(pol, truth: list[dict], out: Path) -> dict:

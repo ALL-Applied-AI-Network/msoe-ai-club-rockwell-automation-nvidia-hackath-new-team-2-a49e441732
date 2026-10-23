@@ -27,7 +27,8 @@ def describe(d: Path) -> str:
         return d.name
     s = json.loads(f.read_text())
     sc = s.get("score") or {}
-    res = f"{sc.get('separated', '?')}/{sc.get('objects', '?')} separated" if sc else "no score"
+    res = (f"{sc['sort']['in_boxes']}/{sc['sort']['objects']} in boxes" if "sort" in sc else
+           f"{sc.get('separated', '?')}/{sc.get('objects', '?')} separated" if sc else "no score")
     return f"{s['trial']:15s} seed {s['seed']}  {res:15s} robot {s['robot_s']:4d} s   ({d.name[:15]})"
 
 
@@ -48,7 +49,9 @@ def main() -> None:
             subprocess.Popen([sys.executable, "-m", "rerun", str(rs[int(c) - 1] / "replay.rrd")], cwd=CELL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         elif len(c) == 1 and c.isalpha() and ord(c) - 97 < len(ts):
-            subprocess.Popen([sys.executable, "-m", "lab.trial", "run", ts[ord(c) - 97]], cwd=CELL,
+            t = ts[ord(c) - 97]
+            pol = ["--policy", "sort"] if t.startswith("sort") else []  # sort_* trials have boxes: sort into them
+            subprocess.Popen([sys.executable, "-m", "lab.trial", "run", t, *pol], cwd=CELL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             print(f"started {ts[ord(c) - 97]}: the viewer opens in a moment")
 

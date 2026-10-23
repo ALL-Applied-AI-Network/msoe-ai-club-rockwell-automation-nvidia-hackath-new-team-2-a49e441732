@@ -1,0 +1,18 @@
+# Same pile, but the user says what's in it and how to sort it: the robot should check that against what it sees,
+# then just do it.
+instruction: >-
+  There are three cubes, two yellow Lego bricks, two screws and two wooden dowels.
+  Screws go in the black box, cubes in the white box, Lego in the gray box. Leave the dowels on the table.
+layout: dump
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: blue, count: 1}
+  - {kind: lego_1x2, color: yellow, count: 2}
+  - {kind: screw_m6x30, color: steel, count: 2}
+  - {kind: dowel, color: wood, count: 2}
+fixtures:
+  - {kind: box_60, color: white, at: [0.27, -0.24]}
+  - {kind: box_60, color: gray, at: [0.36, -0.24]}
+  - {kind: box_60, color: black, at: [0.45, -0.24]}
+expect: kind

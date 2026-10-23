@@ -163,4 +163,6 @@ KINDS: dict[str, Kind] = {k.name: k for k in [
     Kind("tongue_depressor", [Part("box", (150, 18, 2))], "wood", "wood", notes="flat: push to an edge", tags=["flat"]),
     Kind("cup", cup(), "white", "ceramic", notes="container; grip the brim", tags=["container"]),
     Kind("bin", bin_box(), "yellow", notes="the cell's 50x50x55 mm bin", tags=["container"]),
+    Kind("box_60", bin_box(60, 45, 10), "white", notes="a thick 3D-printed box: 10 mm walls, 40 mm well (sort into it)",
+         tags=["container"]),
 ]}

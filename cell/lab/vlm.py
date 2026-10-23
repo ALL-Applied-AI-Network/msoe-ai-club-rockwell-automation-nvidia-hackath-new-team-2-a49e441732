@@ -83,8 +83,10 @@ def ask(images: dict[str, np.ndarray], prompt: str, max_tokens: int = 8000, mode
     return ask_image(tile(images), prompt, max_tokens, model)
 
 
-def ask_image(image: np.ndarray | None, prompt: str, max_tokens: int = 8000, model: str | None = None) -> dict | None:
-    """One RGB picture (or none: text only) + prompt; same answer format as ask()."""
+def ask_image(image: np.ndarray | None, prompt: str, max_tokens: int = 8000, model: str | None = None,
+              think: bool | None = None) -> dict | None:
+    """One RGB picture (or none: text only) + prompt; same answer format as ask().
+    think=False turns off a reasoning model's thinking (Nemotron: same labels in ~3 s instead of ~90 s)."""
     if not configured(model):
         return None
     mid = model_id(model)
@@ -95,8 +97,9 @@ def ask_image(image: np.ndarray | None, prompt: str, max_tokens: int = 8000, mod
         ok, buf = cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
         content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()}})
     t0 = time.time()
+    extra = {"extra_body": {"chat_template_kwargs": {"enable_thinking": think}}} if think is not None and "nemotron" in mid else {}
     resp = client.chat.completions.create(model=mid, max_tokens=max_tokens, temperature=0.2,
-                                          messages=[{"role": "user", "content": content}])
+                                          messages=[{"role": "user", "content": content}], **extra)
     msg = resp.choices[0].message
     text = msg.content or ""
     thinking = (getattr(msg, "model_extra", None) or {}).get("reasoning_content") or ""
@@ -104,8 +107,8 @@ def ask_image(image: np.ndarray | None, prompt: str, max_tokens: int = 8000, mod
             "seconds": time.time() - t0, "model": mid}
 
 
-def ask_text(prompt: str, max_tokens: int = 4000, model: str | None = None) -> dict | None:
-    return ask_image(None, prompt, max_tokens, model)
+def ask_text(prompt: str, max_tokens: int = 4000, model: str | None = None, think: bool | None = None) -> dict | None:
+    return ask_image(None, prompt, max_tokens, model, think)
 
 
 def gist(images: dict[str, np.ndarray], instruction: str, model: str | None = None) -> dict | None:
