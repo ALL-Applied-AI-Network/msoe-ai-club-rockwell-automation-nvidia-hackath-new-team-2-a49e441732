@@ -171,12 +171,15 @@ def project_to_image(cam_name: str, cams: dict, pts_base: np.ndarray, image_wh, 
 def truth_objects(objs: list[dict]) -> None:
     """The real objects (sim only): solid meshes in their own colours, with names."""
     rr.log("truth/objects", rr.Clear(recursive=True))
+    tops, names = [], []
     for o in objs:
         m = o["mesh"]
         rr.log(f"truth/objects/{o['id']}", rr.Mesh3D(vertex_positions=m.vertices, triangle_indices=m.faces,
                                                      vertex_normals=m.vertex_normals, albedo_factor=list(o["rgb"]) + [255]))
-        top = m.vertices[np.argmax(m.vertices[:, 2])]
-        rr.log(f"truth/objects/{o['id']}/name", rr.Points3D([top + [0, 0, 0.008]], radii=0.0001, labels=[o["name"]]))
+        tops.append(m.vertices[np.argmax(m.vertices[:, 2])] + [0, 0, 0.008])
+        names.append(o["name"])
+    # all name tags in one entity: click its eye icon (left panel, "truth/labels") to hide or show them all
+    rr.log("truth/labels", rr.Points3D(tops, radii=0.0001, labels=names))
 
 
 def segments(segs, cams: dict | None = None, obs: dict | None = None) -> None:
@@ -184,12 +187,13 @@ def segments(segs, cams: dict | None = None, obs: dict | None = None) -> None:
     rr.log("mind/segments", rr.Clear(recursive=True))
     for c in ("table", "side", "wrist"):
         rr.log(f"cams/{c}/rgb/segments", rr.Clear(recursive=True))
+    tops, tags, cols = [], [], []
     for s in segs:
         col = id_color(s.id)
         rr.log(f"mind/segments/{s.id}", rr.Points3D(thin(s.points, 0.001), colors=col, radii=0.0009))
-        top = s.points[np.argmax(s.points[:, 2])]
-        rr.log(f"mind/segments/{s.id}/label", rr.Points3D([top + [0, 0, 0.008]], colors=col, radii=0.0015,
-                                                          labels=[f"#{s.id}"]))
+        tops.append(s.points[np.argmax(s.points[:, 2])] + [0, 0, 0.008])
+        tags.append(f"#{s.id}")
+        cols.append(col)
         if cams is None or obs is None:
             continue
         for cam_name, img in (obs.get("images") or {}).items():
@@ -200,3 +204,5 @@ def segments(segs, cams: dict | None = None, obs: dict | None = None) -> None:
             hull = cv2.convexHull(uv[ok].astype(np.float32)).reshape(-1, 2)
             rr.log(f"cams/{cam_name}/rgb/segments/{s.id}", rr.LineStrips2D([np.vstack([hull, hull[:1]])], colors=col,
                                                                            radii=0.8, labels=[f"#{s.id}"]))
+    # all id tags in one entity: click its eye icon (left panel, "mind/labels") to hide or show them all
+    rr.log("mind/labels", rr.Points3D(tops, colors=cols, radii=0.0015, labels=tags) if tops else rr.Clear(recursive=False))
