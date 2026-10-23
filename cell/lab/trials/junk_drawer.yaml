@@ -1,4 +1,5 @@
-# Unrelated odds and ends: no obvious rule, so the robot has to invent one and explain it. Rung 4.
+# Unrelated odds and ends. CONTAINS TANGLE-PRONE PARTS (jacks hook each other and the ring): out of scope for the
+# explore loop for now, which assumes things that move together are one object. Use mixed_pile instead.
 instruction: Sort these.
 layout: dump
 seed: 0

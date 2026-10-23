@@ -15,16 +15,25 @@ from lab import perception, viz
 
 
 class Session:
-    def __init__(self, cams: dict, truth: list[dict] | None = None, live_truth: Callable[[], list[dict]] | None = None):
+    def __init__(self, cams: dict, truth: list[dict] | None = None, live_truth: Callable[[], list[dict]] | None = None,
+                 perceive: bool = True, show_truth_meshes: bool = True):
+        """perceive=False: the policy keeps its own world model and draws the robot's mind itself.
+        show_truth_meshes=False: the true objects are drawn elsewhere (the sim animation)."""
         self.cams, self.truth, self.live_truth = cams, truth, live_truth
+        self.perceive, self.show_truth_meshes = perceive, show_truth_meshes
         self.k = 0
         self.fused: list[np.ndarray] = []  # assumes nothing moved yet (scanning only); nudges will need per-object fusion
         self.segs: list = []
         self.last_score: dict = {}
 
-    def step(self, obs: dict, note: str = "", actions=None) -> dict:
-        viz.set_step(self.k)
+    def step(self, obs: dict, note: str = "", actions=None, step: int | None = None, narrate: bool = True) -> dict:
+        viz.set_step(self.k if step is None else step)
         viz.images(obs)
+        if not self.perceive:
+            if actions is not None:
+                viz.path("mind", actions, name="sent")
+            self.k += 1
+            return {}
         if obs.get("joints") is not None:
             viz.arm("mind", obs["joints"])
             viz.arm("truth", obs["joints"])
@@ -50,10 +59,12 @@ class Session:
             viz.path("mind", actions, name="sent")
         truth = self.live_truth() if self.live_truth else self.truth
         if truth:
-            viz.truth_objects(truth)
+            if self.show_truth_meshes:
+                viz.truth_objects(truth)
             self.last_score = perception.score(self.segs, truth)
         viz.roster(self._roster())
-        viz.narrate(self._line(note))
+        if narrate:
+            viz.narrate(self._line(note))
         self.k += 1
         return self.last_score
 

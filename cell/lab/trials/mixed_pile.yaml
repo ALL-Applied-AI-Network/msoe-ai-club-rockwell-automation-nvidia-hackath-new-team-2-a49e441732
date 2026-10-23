@@ -1,0 +1,10 @@
+# A dumped pile of parts that don't hook on each other (no jacks, rings or chains: tangling is out of scope for now).
+instruction: Sort these.
+layout: dump
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: blue, count: 1}
+  - {kind: lego_1x2, color: yellow, count: 2}
+  - {kind: screw_m6x30, color: steel, count: 2}
+  - {kind: dowel, color: wood, count: 2}

@@ -28,7 +28,8 @@ cd cell
 uv sync
 uv run run.py --mock                    # check the policy against a local stand-in for the cell (records to runs/)
 uv run python -m lab.trial list         # simulated trials (lab/trials/*.yaml)
-uv run python -m lab.trial run junk_drawer   # dump a pile in the simulated cell, watch the robot look at it
+uv run python -m lab.trial run cube_tile     # watch the robot shuffle a flush tile apart and test each piece
+uv run python -m lab.trial run mixed_pile --print   # same on a dumped pile, narration printed too
 uv run python -m lab.replay             # replay the newest run (real, mock or sim) into the viewer
 ```
 
@@ -49,6 +50,30 @@ so a policy can't tell the difference.
   in sim it's scored against the truth every step.
 - **VLM (optional):** copy `cell/.env.example` to `cell/.env` and add a key for any OpenAI-compatible vision model
   (NVIDIA build.nvidia.com works). `cell/.env` is git-ignored.
+
+### The explore loop (`cell/lab/policies/explore.py`)
+
+Lay the pieces out like a jigsaw puzzle, one hypothesis at a time:
+1. **Sweep**: close wrist-camera looks at the pile, fused depth, blobs.
+2. **Hypothesis**: "blob #k is one object".
+3. **Test**: grip part of it (analytic grip finder, `grasp.py`) and carry it to a clear staging spot, or rake through it
+   if nothing can be gripped. A test has to be able to fail, so larger things are gripped near one end.
+4. **Look again and compare** (`world.py`): came along whole with nothing left behind = one object;
+   part stayed behind = several (each piece becomes a new hypothesis); nothing arrived = the grip slipped.
+5. Repeat until every thing has been carried whole once.
+
+Simulated results (seed 0, robot time):
+
+| Trial | Objects | Result | Robot time |
+|---|---|---|---|
+| six_cubes (spread) | 6 | 6/6 confirmed | 147 s |
+| six_cubes_pile (dumped) | 6 | 6/6 confirmed | 182 s |
+| cube_row (flush row) | 6 | 6/6 confirmed | 220 s |
+| cube_tile (flush 2×3) | 6 | 6/6 confirmed (2 slipped grips, then a rake) | 217 s |
+| mixed_pile (cubes, Lego, screws, dowels) | 9 | 9/9 confirmed | 440 s |
+
+Known limits: tangle-prone parts (jacks, rings, chains) are out of scope; the sim has the arm's lag but guesses friction
+and grip force; two parts glued or wedged together would pass as one.
 
 ## Status
 

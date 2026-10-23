@@ -5,11 +5,12 @@ and watch it live.
     uv run python -m lab.trial kinds                      # every object kind you can order
     uv run python -m lab.trial run six_cubes              # run one (opens the viewer)
     uv run python -m lab.trial run junk_drawer --seed 3   # same order, different dump
-    uv run python -m lab.trial run six_cubes --no-view --no-vlm
+    uv run python -m lab.trial run six_cubes --no-view
+    uv run python -m lab.trial run cube_tile --policy scan   # just look, don't touch
 
 A trial is a small YAML file in lab/trials/:
     instruction: Sort the cubes by color.
-    layout: spread            # spread (apart, flat) | dump (poured from a tube into a pile)
+    layout: spread            # spread (apart, flat) | dump (poured from a tube into a pile) | tile (flush rows; cols: N)
     seed: 0
     objects:
       - {kind: cube_10, color: red, count: 2}
@@ -28,13 +29,15 @@ import yaml
 from calibration.geometry import load
 from lab import viz, vlm
 from lab.catalog import COLORS, KINDS
+from lab import perception
+from lab.policies.explore import ExplorePolicy
 from lab.policies.scan import ScanPolicy
 from lab.recorder import Recorder
 from lab.session import Session
-from lab.simcell import SimCell, dump_layout, spread_layout
+from lab.simcell import SimCell, dump_layout, spread_layout, tile_layout
 
 TRIALS = Path(__file__).resolve().parent / "trials"
-POLICIES = {"scan": ScanPolicy}
+POLICIES = {"scan": ScanPolicy, "explore": ExplorePolicy}
 
 
 def load_trial(name: str) -> dict:
@@ -55,7 +58,10 @@ def load_trial(name: str) -> dict:
 def build(trial: dict, seed: int) -> SimCell:
     order = [(o["kind"], o["color"]) for o in trial["objects"] for _ in range(o.get("count", 1))]
     rng = np.random.default_rng(seed)
-    if trial.get("layout", "spread") == "dump":
+    if trial.get("layout") == "tile":
+        cell = SimCell(tile_layout(order, rng, cols=trial.get("cols", len(order))), trial.get("instruction", ""), seed)
+        cell.settle(max_s=2.0)
+    elif trial.get("layout", "spread") == "dump":
         inst, chute = dump_layout(order, rng)
         cell = SimCell(inst, trial.get("instruction", ""), seed, chute=chute)
         cell.dump()
@@ -65,36 +71,55 @@ def build(trial: dict, seed: int) -> SimCell:
     return cell
 
 
-def run(name: str, seed: int | None = None, policy: str = "scan", view: bool = True, use_vlm: bool = True,
-        max_steps: int = 40, vlm_model: str | None = None) -> Path:
+def run(name: str, seed: int | None = None, policy: str = "explore", view: bool = True, use_vlm: bool = False,
+        max_steps: int = 400, vlm_model: str | None = None) -> Path:
+    """Two timelines in the viewer: "step" (one per decision / observation) and "sim_time" (the motion, every 0.1 s)."""
     trial = load_trial(name)
     seed = trial.get("seed", 0) if seed is None else seed
     t0 = time.time()
     cell = build(trial, seed)
-    rec = Recorder(f"sim_{name}_s{seed}", meta={"source": "sim", "trial": trial, "seed": seed, "policy": policy})
+    rec = Recorder(f"sim_{name}_s{seed}_{policy}", meta={"source": "sim", "trial": trial, "seed": seed, "policy": policy})
     cell.save_truth(rec.dir / "truth")
-    viz.start(f"{name} (seed {seed})", save_to=rec.dir / "replay.rrd", spawn=view)
-    session = Session(load(), live_truth=cell.object_meshes)
-    viz.narrate(f"trial {name}, seed {seed}: {len(cell.instances)} objects, layout {trial.get('layout', 'spread')}. "
-                f"Instruction: \"{trial.get('instruction', '')}\" (scene built in {time.time() - t0:.1f} s)")
+    viz.start(f"{name} (seed {seed}, {policy})", save_to=rec.dir / "replay.rrd", spawn=view)
     pol = POLICIES[policy]()
     pol.reset()
+    own_mind = hasattr(pol, "world")
+    session = Session(load(), live_truth=cell.object_meshes, perceive=not own_mind, show_truth_meshes=False)
+    viz.truth_setup(cell)
+    anim = viz.Animator(cell)
+    viz.set_step(0)
+    anim(cell)
+    viz.narrate(f"trial {name}, seed {seed}: {len(cell.instances)} objects, layout {trial.get('layout', 'spread')}. "
+                f"Instruction: \"{trial.get('instruction', '')}\" (scene built in {time.time() - t0:.1f} s)")
     rec.new_rollout()
+    obs, fresh, version, score = cell.observe(), True, -1, {}
     for k in range(max_steps):
-        obs = cell.observe()
+        viz.set_step(k)
+        viz.set_sim_time(cell.t)
         a0 = time.time()
         chunk = pol.act(obs)
         act_s = time.time() - a0
         note = getattr(pol, "note", "")
-        rec.log(obs, chunk, act_s=act_s, note=note)
-        score = session.step(obs, note=note, actions=chunk)
-        if k == 0 and use_vlm:
-            _gist(obs, trial, vlm_model)
+        if fresh:
+            rec.log(obs, chunk, act_s=act_s, note=note)
+            session.step(obs, note=note, actions=chunk, step=k, narrate=not own_mind)
+            if k == 0 and use_vlm:
+                _gist(obs, trial, vlm_model)
+        if own_mind and pol.version != version:
+            version = pol.version
+            score = perception.score(list(pol.world.things.values()), cell.object_meshes())
+            viz.narrate(f"(truth check: {score['found']}/{score['objects']} objects found, {score['separated']} on their own, "
+                        f"{score['merged']} still clumped)", level="DEBUG")
+        elif not own_mind:
+            score = session.last_score
         if getattr(pol, "done", False):
             break
-        cell.play(chunk)
-    viz.narrate(f"done: {session.k} steps in {time.time() - t0:.0f} s wall time. Final truth check: {score}")
-    print(f"recorded {rec.dir}\nfinal: {score}")
+        cell.play(chunk, on_frame=anim)
+        fresh = getattr(pol, "wants_obs", True)
+        if fresh:
+            obs = cell.observe()
+    viz.narrate(f"done: {cell.t:.0f} s of robot time, {time.time() - t0:.0f} s on this computer. Truth check: {score}")
+    print(f"recorded {rec.dir}\nrobot time {cell.t:.0f} s, wall {time.time() - t0:.0f} s\nfinal: {score}")
     return rec.dir
 
 
@@ -132,9 +157,10 @@ def main() -> None:
     r = sub.add_parser("run")
     r.add_argument("name")
     r.add_argument("--seed", type=int)
-    r.add_argument("--policy", default="scan", choices=list(POLICIES))
+    r.add_argument("--policy", default="explore", choices=list(POLICIES))
     r.add_argument("--no-view", action="store_true")
-    r.add_argument("--no-vlm", action="store_true")
+    r.add_argument("--vlm-glance", action="store_true", help="ask the VLM for a first glance (off by default)")
+    r.add_argument("--print", action="store_true", help="also print the narration here")
     r.add_argument("--vlm", help="which VLM_<NAME> from cell/.env, e.g. nemotron or cosmos")
     a = p.parse_args()
     if a.cmd == "list":
@@ -147,7 +173,8 @@ def main() -> None:
             print(f"{k.name:18s} default {k.color:7s} {k.notes}")
         print(f"\ncolors: {', '.join(COLORS)}")
     else:
-        run(a.name, a.seed, a.policy, view=not a.no_view, use_vlm=not a.no_vlm, vlm_model=a.vlm)
+        viz.PRINT = a.print
+        run(a.name, a.seed, a.policy, view=not a.no_view, use_vlm=a.vlm_glance, vlm_model=a.vlm)
 
 
 if __name__ == "__main__":

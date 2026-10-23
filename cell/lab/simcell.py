@@ -5,11 +5,13 @@ It speaks the same language as the real cell, so a policy can't tell the differe
     cell.play(chunk)            # [[x, y, z mm, w, p, r deg, gripper], ...] in UF0, one row per DT
 
 The arm itself isn't simulated: the FANUC controller does that on the real cell. Only the gripper (two 76 x 12 x 6 mm
-fingers, 12 mm apart when open) moves, straight to each fingertip target. Not modelled yet: the real arm's ~0.8 s lag.
+fingers, 12 mm apart when open) moves, straight to each fingertip target. The real arm trails its targets by about
+0.8 s (lag_s); the gripper's open/close is not delayed, so a close sent the moment a target is sent happens early.
 """
 from __future__ import annotations
 
 import json
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -122,7 +124,8 @@ def _home_tip() -> np.ndarray:
 
 
 class SimCell:
-    def __init__(self, instances: list[Instance], instruction: str = "", seed: int = 0, chute: tuple | None = None):
+    def __init__(self, instances: list[Instance], instruction: str = "", seed: int = 0, chute: tuple | None = None,
+                 lag_s: float = 0.8):
         self.instances = instances
         self.model = mujoco.MjModel.from_xml_string(build_mjcf(instances, chute))
         self.data = mujoco.MjData(self.model)
@@ -135,6 +138,9 @@ class SimCell:
         self.q = np.array(HOME, float)
         self.t = 0.0
         mujoco.mj_forward(self.model, self.data)
+        self.cmd_pos = self.data.mocap_pos[0].copy()   # where the controller has been told to go
+        n_lag = max(1, int(round(lag_s / self.model.opt.timestep)))
+        self.lagged = deque([(self.cmd_pos.copy(), 0.0)] * n_lag, maxlen=n_lag)  # what the arm actually follows
 
     # ------------------------------------------------------------ state
 
@@ -192,27 +198,34 @@ class SimCell:
                 self.model.geom_contype[g] = 0
                 self.model.geom_conaffinity[g] = 0
 
-    def play(self, chunk, dt: float = 0.1) -> None:
-        """Move the gripper through fingertip targets (UF0 mm, deg), like the cell plays a chunk."""
+    def play(self, chunk, dt: float = 0.1, on_frame=None) -> None:
+        """Move the gripper through fingertip targets (UF0 mm, deg), like the cell plays a chunk.
+        on_frame(cell) is called after every target (every dt of simulated time): for animation."""
         a = np.atleast_2d(np.asarray(chunk, float))
         for k, (lo, hi) in enumerate(TCP_BOX):
             if a[:, k].min() < lo or a[:, k].max() > hi:
                 raise ValueError(f"tcp {'xyz'[k]} outside [{lo}, {hi}] mm (UF0)")
         n = max(1, int(round(dt / self.model.opt.timestep)))
         for row in a:
-            start = self.data.mocap_pos[0].copy()
+            start = self.cmd_pos.copy()
             goal = np.array([row[0] / 1000, row[1] / 1000, (row[2] - UF0_Z_MM) / 1000])
             yaw0, yaw1 = self.yaw, np.radians(row[5])
             self.grip = 1.0 if row[6] >= 0.5 else 0.0
-            self.data.ctrl[:] = OPEN_GAP / 2 * self.grip
+            self.data.ctrl[:] = OPEN_GAP / 2 * self.grip  # the gripper valve isn't delayed
             for s in range(1, n + 1):
                 f = s / n
-                self.data.mocap_pos[0] = start + f * (goal - start)
-                yaw = yaw0 + f * (yaw1 - yaw0)
+                self.lagged.append((start + f * (goal - start), yaw0 + f * (yaw1 - yaw0)))
+                pos, yaw = self.lagged[0]  # the arm is where it was told to be lag_s ago
+                self.data.mocap_pos[0] = pos
                 self.data.mocap_quat[0] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
                 mujoco.mj_step(self.model, self.data)
-            self.yaw = yaw1
+            self.cmd_pos, self.yaw = goal, yaw1
             self.t += dt
+            if on_frame is not None:
+                on_frame(self)
+
+    def actual_yaw(self) -> float:
+        return float(self.lagged[0][1])
 
     # ------------------------------------------------------------ cameras
 
@@ -220,7 +233,7 @@ class SimCell:
         """What the real cell would send: RGB from table/side/wrist, table + wrist depth, joints, fingertip pose."""
         tip = self.tip()
         try:
-            self.q = wrist_ik(tip, np.degrees(self.yaw), q0=self.q)
+            self.q = wrist_ik(tip, np.degrees(self.actual_yaw()), q0=self.q)
         except ValueError:
             pass  # keep the last joints: the wrist camera pose will be slightly off
         scene = [*self.object_meshes(), *self.finger_meshes()]
@@ -230,7 +243,7 @@ class SimCell:
             "t": self.t, "status": "running", "queued": 0,
             "trial": {"status": "running", "instruction": self.instruction},
             "joints": np.append(self.q, self.grip),
-            "tcp_pose": [tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, -180.0, 0.0, np.degrees(self.yaw)],
+            "tcp_pose": [tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, -180.0, 0.0, np.degrees(self.actual_yaw())],
             "images": {c: r.rgb(c, joints=self.q, size=IMAGE_SIZE) for c in ("table", "side", "wrist")},
             "depth": {c: r.depth(c, joints=self.q, rng=rng) for c in ("table", "wrist")},
         }
@@ -278,7 +291,7 @@ def dump_layout(order: list[tuple[str, str]], rng, center=(0.43, 0.0)) -> tuple[
     return out, (center[0], center[1], CHUTE_RADIUS, max(0.15, z - SURFACE_Z + 0.02))
 
 
-def spread_layout(order: list[tuple[str, str]], rng, center=(0.43, 0.0), half=(0.09, 0.16), gap=0.012) -> list[Instance]:
+def spread_layout(order: list[tuple[str, str]], rng, center=(0.43, -0.03), half=(0.07, 0.10), gap=0.012) -> list[Instance]:
     """Objects set down flat, apart from each other, at random spots and yaws."""
     out, placed = [], []
     for i, (kind, color) in enumerate(order, start=1):
@@ -291,5 +304,22 @@ def spread_layout(order: list[tuple[str, str]], rng, center=(0.43, 0.0), half=(0
         placed.append((xy, r))
         yaw = rng.uniform(0, 2 * np.pi)
         out.append(Instance(i, kind, color, np.array([xy[0], xy[1], SURFACE_Z - m.bounds[0][2] + 0.002]),
+                            np.array([np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)])))
+    return out
+
+
+def tile_layout(order: list[tuple[str, str]], rng, cols: int, center=(0.44, -0.04), yaw_deg: float | None = None) -> list[Instance]:
+    """Objects (same-size boxes, e.g. cubes) packed edge to edge in rows of `cols`, the whole tile turned by yaw_deg."""
+    m = kind_mesh(KINDS[order[0][0]])
+    pitch = float(m.extents[0]) + 0.0002
+    yaw = np.radians(rng.uniform(0, 90) if yaw_deg is None else yaw_deg)
+    R = np.array([[np.cos(yaw), -np.sin(yaw)], [np.sin(yaw), np.cos(yaw)]])
+    rows = int(np.ceil(len(order) / cols))
+    out = []
+    for i, (kind, color) in enumerate(rng.permutation(np.array(order, dtype=object)).tolist(), start=1):
+        r, c = divmod(i - 1, cols)
+        off = R @ np.array([(r - (rows - 1) / 2) * pitch, (c - (cols - 1) / 2) * pitch])
+        z = SURFACE_Z - kind_mesh(KINDS[kind]).bounds[0][2] + 0.0005
+        out.append(Instance(i, kind, color, np.array([center[0] + off[0], center[1] + off[1], z]),
                             np.array([np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)])))
     return out

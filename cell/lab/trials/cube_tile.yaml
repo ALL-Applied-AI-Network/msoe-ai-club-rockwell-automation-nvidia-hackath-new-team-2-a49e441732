@@ -1,0 +1,9 @@
+# Six 10 mm cubes packed 2 x 3: one flat slab to the depth camera. Shuffle it apart.
+instruction: Sort the cubes by color.
+layout: tile
+cols: 3
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+  - {kind: cube_10, color: blue, count: 2}

@@ -74,8 +74,13 @@ def set_step(i: int) -> None:
     rr.set_time("step", sequence=i)
 
 
+PRINT = False  # also print narration to the terminal (lab.trial --print)
+
+
 def narrate(text: str, level: str = "INFO") -> None:
     rr.log("narration", rr.TextLog(text, level=level))
+    if PRINT:
+        print(("   " if level == "DEBUG" else "") + text, flush=True)
 
 
 def vlm(text: str, level: str = "INFO") -> None:
@@ -192,7 +197,7 @@ def segments(segs, cams: dict | None = None, obs: dict | None = None) -> None:
         col = id_color(s.id)
         rr.log(f"mind/segments/{s.id}", rr.Points3D(thin(s.points, 0.001), colors=col, radii=0.0009))
         tops.append(s.points[np.argmax(s.points[:, 2])] + [0, 0, 0.008])
-        tags.append(f"#{s.id}")
+        tags.append(getattr(s, "tag", f"#{s.id}"))
         cols.append(col)
         if cams is None or obs is None:
             continue
@@ -206,3 +211,121 @@ def segments(segs, cams: dict | None = None, obs: dict | None = None) -> None:
                                                                            radii=0.8, labels=[f"#{s.id}"]))
     # all id tags in one entity: click its eye icon (left panel, "mind/labels") to hide or show them all
     rr.log("mind/labels", rr.Points3D(tops, colors=cols, radii=0.0015, labels=tags) if tops else rr.Clear(recursive=False))
+
+
+# ---------------------------------------------------------------- the robot's things (world model)
+
+STATUS_MARK = {"blob": "?", "one": "✓"}
+
+
+def things(world, cams: dict | None = None, obs: dict | None = None) -> None:
+    """The robot's world model: each thing in its id colour, tagged "#7 ?" (untested blob) or "#7 ✓" (moved as one)."""
+    ts = list(world.things.values())
+    for t in ts:
+        t.tag = f"#{t.id} {STATUS_MARK.get(t.status, t.status)}"
+    segments(ts, cams, obs)
+    rows = ["| id | status | from | size mm² | height mm | what happened |", "|---|---|---|---|---|---|"]
+    for t in sorted(ts, key=lambda t: t.id):
+        st = "one object ✓" if t.status == "one" else "blob: untested ?"
+        rows.append(f"| #{t.id} | {st} | {f'#{t.parent}' if t.parent else ''} | {t.area} | {t.height_mm:.0f} | "
+                    f"{'; '.join(t.history[-2:])} |")
+    n1 = sum(t.status == "one" for t in ts)
+    roster(f"**The robot's world model**: {len(ts)} things, {n1} confirmed as one object, {len(ts) - n1} untested\n\n"
+           + "\n".join(rows))
+
+
+def clear_plan() -> None:
+    rr.log("mind/plan", rr.Clear(recursive=True))
+
+
+def plan_grip(good, bad, chosen, place_xy=None) -> None:
+    """Candidate grips as finger pairs (faint green = possible, red = blocked), the chosen one bright, and the drop spot."""
+    clear_plan()
+
+    def fingers(gs, color):
+        centers, halves, rots = [], [], []
+        for g in gs:
+            a = np.radians(g.yaw)
+            d = np.array([np.cos(a), np.sin(a), 0.0])
+            for side in (-1, 1):
+                c = np.array([g.x, g.y, SURFACE_Z + g.height_mm / 1000 + 0.038]) + d * side * 0.009
+                centers.append(c)
+                halves.append([0.003, 0.006, 0.038])
+                rots.append(rr.RotationAxisAngle(axis=[0, 0, 1], radians=a))
+        return rr.Boxes3D(centers=centers, half_sizes=halves, rotation_axis_angles=rots, colors=[color] * len(centers))
+
+    if bad:
+        rr.log("mind/plan/blocked_grips", fingers(bad, [220, 60, 60, 70]))
+    if good:
+        rr.log("mind/plan/possible_grips", fingers(good, [60, 200, 90, 60]))
+    rr.log("mind/plan/chosen_grip", fingers([chosen], [40, 255, 120, 230]))
+    if place_xy is not None:
+        a = np.linspace(0, 2 * np.pi, 40)
+        ring = np.stack([place_xy[0] + 0.012 * np.cos(a), place_xy[1] + 0.012 * np.sin(a), np.full_like(a, SURFACE_Z + 0.001)], -1)
+        rr.log("mind/plan/drop_spot", rr.LineStrips3D([ring], colors=[[255, 255, 255]], radii=0.0012, labels=["drop here"]))
+
+
+def plan_rake(start_xy, end_xy, height_mm) -> None:
+    clear_plan()
+    z = SURFACE_Z + height_mm / 1000
+    rr.log("mind/plan/rake", rr.Arrows3D(origins=[[start_xy[0], start_xy[1], z]],
+                                         vectors=[[end_xy[0] - start_xy[0], end_xy[1] - start_xy[1], 0]],
+                                         colors=[[255, 150, 40]], radii=0.003, labels=["rake"]))
+
+
+# ---------------------------------------------------------------- animation (sim)
+
+def set_sim_time(t: float) -> None:
+    rr.set_time("sim_time", duration=float(t))
+
+
+def truth_setup(cell) -> None:
+    """Log every object's and the gripper's mesh once, in its own frame; animation then only moves their frames."""
+    from lab.catalog import COLORS
+    import trimesh
+    for i in cell.instances:
+        m = cell.local[i.id]
+        rr.log(f"truth/objects/{i.id}", rr.Mesh3D(vertex_positions=m.vertices, triangle_indices=m.faces,
+                                                  vertex_normals=m.vertex_normals, albedo_factor=list(COLORS[i.color]) + [255]),
+               static=True)
+    t, w, L = 0.006, 0.012, 0.076
+    finger = trimesh.creation.box((t, w, L))
+    finger.apply_translation([0, 0, L / 2])
+    palm = trimesh.creation.box((0.05, 0.04, 0.03))
+    palm.apply_translation([0, 0, L + 0.015])
+    for root in ("truth", "mind"):
+        for name, m, col in (("finger_l", finger, [170, 170, 178]), ("finger_r", finger, [170, 170, 178]), ("palm", palm, [70, 70, 75])):
+            rr.log(f"{root}/gripper/{name}", rr.Mesh3D(vertex_positions=m.vertices, triangle_indices=m.faces,
+                                                       vertex_normals=m.vertex_normals, albedo_factor=col + [255]), static=True)
+
+
+class Animator:
+    """on_frame callback for SimCell.play: moves the true objects, the gripper and the arm every simulated 0.1 s."""
+
+    def __init__(self, cell, every: int = 1):
+        self.cell, self.every, self.n = cell, every, 0
+        self.q = np.array(cell.q, float)
+
+    def __call__(self, cell) -> None:
+        self.n += 1
+        if self.n % self.every:
+            return
+        from lab.synth import wrist_ik
+        set_sim_time(cell.t)
+        tops = []
+        for i in cell.instances:
+            T = cell.body_pose(f"obj{i.id}")
+            rr.log(f"truth/objects/{i.id}", rr.Transform3D(translation=T[:3, 3], mat3x3=T[:3, :3]))
+            tops.append(T[:3, 3] + [0, 0, 0.022])
+        rr.log("truth/labels", rr.Points3D(tops, radii=0.0001, labels=[i.name for i in cell.instances]))
+        for root in ("truth", "mind"):
+            for name, body in (("finger_l", "finger_l"), ("finger_r", "finger_r"), ("palm", "hand")):
+                T = cell.body_pose(body)
+                rr.log(f"{root}/gripper/{name}", rr.Transform3D(translation=T[:3, 3], mat3x3=T[:3, :3]))
+        try:
+            self.q = wrist_ik(cell.tip(), np.degrees(cell.actual_yaw()), q0=self.q)
+        except ValueError:
+            pass
+        joints = np.append(self.q, cell.grip)
+        arm("truth", joints)
+        arm("mind", joints)

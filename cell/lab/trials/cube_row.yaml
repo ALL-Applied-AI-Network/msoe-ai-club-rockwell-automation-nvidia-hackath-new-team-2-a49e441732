@@ -1,0 +1,9 @@
+# Six 10 mm cubes pushed edge to edge in one row: depth sees one long bar, and the fingers can't get between them.
+instruction: Sort the cubes by color.
+layout: tile
+cols: 6
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+  - {kind: cube_10, color: blue, count: 2}
