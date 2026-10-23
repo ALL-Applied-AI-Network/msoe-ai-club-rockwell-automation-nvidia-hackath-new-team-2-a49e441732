@@ -90,7 +90,7 @@ def segment(points: np.ndarray) -> tuple[list[Segment], np.ndarray]:
 
 def score(segs: list[Segment], truth: list[dict]) -> dict:
     """How the robot's segments compare with the true objects.
-    found: true objects that sit in some segment; merged: segments holding more than one true object;
+    found: true objects that sit in some segment (missed: the others, and where they are); merged: segments holding more than one true object;
     phantom: segments matching nothing; error_mm: centroid error for one-to-one matches."""
     if not truth:
         return {}
@@ -107,6 +107,8 @@ def score(segs: list[Segment], truth: list[dict]) -> dict:
         tc = {o["id"]: o["mesh"].centroid for o in truth}
         pairs = [(s, next(t for t, v in owner.items() if v == s.id)) for s in singles]
         errs = [np.linalg.norm(np.asarray(s.centroid)[:2] - tc[t][:2]) * 1000 for s, t in pairs]
-    return {"objects": len(truth), "segments": len(segs), "found": len(owner),
+    missed = [f"{o['color']} {o['kind']} at ({o['mesh'].centroid[0] * 1000:.0f}, {o['mesh'].centroid[1] * 1000:.0f}) mm"
+              for o in truth if o["id"] not in owner]
+    return {"objects": len(truth), "segments": len(segs), "found": len(owner), "missed": missed,
             "separated": sum(1 for s in segs if counts[s.id] == 1), "merged": sum(1 for s in segs if counts[s.id] > 1),
             "phantom": sum(1 for s in segs if counts[s.id] == 0), "error_mm": float(np.mean(errs)) if errs else None}

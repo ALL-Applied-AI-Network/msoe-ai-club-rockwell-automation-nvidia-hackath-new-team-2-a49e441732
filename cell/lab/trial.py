@@ -7,6 +7,7 @@ and watch it live.
     uv run python -m lab.trial run junk_drawer --seed 3   # same order, different dump
     uv run python -m lab.trial run six_cubes --no-view
     uv run python -m lab.trial run cube_tile --policy scan   # just look, don't touch
+    uv run python -m lab.trial run mixed_pile --label   # also name things (VLM: lab/labels.py FALLBACKS, or --vlm <model>)
 
 A trial is a small YAML file in lab/trials/:
     instruction: Sort the cubes by color.
@@ -73,7 +74,7 @@ def build(trial: dict, seed: int) -> SimCell:
 
 
 def run(name: str, seed: int | None = None, policy: str = "explore", view: bool = True, use_vlm: bool = False,
-        max_steps: int = 400, vlm_model: str | None = None) -> Path:
+        max_steps: int = 400, vlm_model: str | None = None, name_things: bool = False) -> Path:
     """Two timelines in the viewer: "step" (one per decision / observation) and "sim_time" (the motion, every 0.1 s)."""
     trial = load_trial(name)
     seed = trial.get("seed", 0) if seed is None else seed
@@ -82,8 +83,15 @@ def run(name: str, seed: int | None = None, policy: str = "explore", view: bool 
     rec = Recorder(f"sim_{name}_s{seed}_{policy}", meta={"source": "sim", "trial": trial, "seed": seed, "policy": policy})
     cell.save_truth(rec.dir / "truth")
     viz.start(f"{name} (seed {seed}, {policy})", save_to=rec.dir / "replay.rrd", spawn=view)
-    pol = POLICIES[policy]()
+    if policy == "explore":
+        pol = ExplorePolicy(label_model=vlm_model, name_things=name_things, instruction=trial.get("instruction", ""))
+    else:
+        pol = POLICIES[policy]()
     pol.reset()
+    if getattr(pol, "labeler", None) is not None:
+        pol.labeler.save_dir = rec.dir / "labels"
+        if not pol.labeler.on:
+            viz.vlm("(naming is on but no VLM is configured: put VLM_API_KEY and a model in cell/.env)", level="WARN")
     own_mind = hasattr(pol, "world")
     session = Session(load(), live_truth=cell.object_meshes, perceive=not own_mind, show_truth_meshes=False)
     viz.truth_setup(cell)
@@ -93,6 +101,18 @@ def run(name: str, seed: int | None = None, policy: str = "explore", view: bool 
     viz.narrate(f"trial {name}, seed {seed}: {len(cell.instances)} objects, layout {trial.get('layout', 'spread')}. "
                 f"Instruction: \"{trial.get('instruction', '')}\" (scene built in {time.time() - t0:.1f} s)")
     rec.new_rollout()
+    last, n_flung = {}, [0]
+
+    def flung(c, note):
+        """Sim sanity: the gripper never moves faster than 150 mm/s (15 mm per frame); a part moving 40 mm in one
+        frame was thrown by the physics (parts squeezed into each other), which a real table wouldn't do."""
+        for i, b in c.body_positions().items():
+            if i in last and np.linalg.norm(b[:2] - last[i][:2]) > 0.04:
+                n_flung[0] += 1
+                o = next(x for x in c.instances if x.id == i)
+                viz.narrate(f"(sim check: the {o.color} {o.kind} was flung at {np.linalg.norm(b[:2] - last[i][:2]) * 10:.1f} m/s "
+                            f"during \"{note}\": the physics glitching, not something a real table would do)", level="WARN")
+            last[i] = b
     obs, fresh, version, score = cell.observe(), True, -1, {}
     for k in range(max_steps):
         viz.set_step(k)
@@ -120,11 +140,17 @@ def run(name: str, seed: int | None = None, policy: str = "explore", view: bool 
             score = session.last_score
         if getattr(pol, "done", False):
             break
-        cell.play(chunk, on_frame=anim)
+        cell.play(chunk, on_frame=lambda c: (anim(c), flung(c, note)))
         fresh = getattr(pol, "wants_obs", True)
         if fresh:
             obs = cell.observe()
+    if getattr(pol, "labeler", None) is not None:
+        score["labels"] = _label_check(pol, cell.object_meshes(), rec.dir / "labels")
+        lc = score["labels"]
+        viz.narrate(f"(truth check of the names: {lc['right']}/{lc['asked']} right, {lc['colour_right']}/{lc['asked']} colours right; "
+                    f"contact sheet in labels/sheet.jpg)", level="DEBUG")
     viz.narrate(f"done: {cell.t:.0f} s of robot time, {time.time() - t0:.0f} s on this computer. Truth check: {score}")
+    score["sim_flung"] = n_flung[0]
     (rec.dir / "summary.json").write_text(json.dumps({"trial": name, "seed": seed, "policy": policy, "robot_s": round(cell.t),
                                                       "wall_s": round(time.time() - t0), "score": score}))
     print(f"recorded {rec.dir}\nrobot time {cell.t:.0f} s, wall {time.time() - t0:.0f} s\nfinal: {score}")
@@ -145,6 +171,55 @@ def _model_quality(world, truth) -> dict:
         return {}
     return {"n": len(rows), "surface_mm": float(np.median([r["surface_mm"] for r in rows])),
             "volume_ratio": float(np.median([r["volume_ratio"] for r in rows]))}
+
+
+# words that count as naming each kind right (sim parts are plain primitives: a d6 has no pips, so "cube" is fair)
+KIND_WORDS = {"cube_10": ["cube", "block"], "cube_16": ["cube", "block"], "screw_m6x30": ["screw", "bolt"],
+              "jack": ["jack"], "ring": ["ring", "torus", "washer"], "d4": ["d4", "die", "dice", "pyramid", "tetra"],
+              "d6": ["die", "dice", "cube", "d6"], "d8": ["d8", "die", "dice", "octahedr"],
+              "d20": ["d20", "die", "dice", "icosahedr"], "lego_1x2": ["lego", "brick"], "lego_2x4": ["lego", "brick"],
+              "soldier": ["soldier", "figure", "figurine"], "dowel": ["dowel", "rod", "peg", "stick", "cylinder", "pin"],
+              "marker": ["marker", "pen"], "tongue_depressor": ["depressor", "stick", "popsicle"], "cup": ["cup"],
+              "bin": ["bin", "box"]}
+
+
+def _label_check(pol, truth: list[dict], out: Path) -> dict:
+    """Each named thing next to what it really is (when it holds exactly one true object), plus a contact sheet."""
+    import cv2
+    rows, tiles = [], []
+    for t in sorted(pol.world.things.values(), key=lambda t: t.id):
+        lab = getattr(t, "label", None)
+        if lab is None:
+            continue
+        inside = [o for o in truth if np.min(np.linalg.norm(t.points[:, :2] - o["mesh"].centroid[:2], axis=1)) < 0.004]
+        real = f"{inside[0]['color']} {inside[0]['kind']}" if len(inside) == 1 else f"{len(inside)} objects"
+        said = f"{lab.get('color', '')} {lab.get('name', '')}".lower()
+        right = len(inside) == 1 and any(w in said for w in KIND_WORDS.get(inside[0]["kind"], [inside[0]["kind"]]))
+        colour_right = len(inside) == 1 and inside[0]["color"] in str(lab.get("color", "")).lower()
+        rows.append({"id": t.id, "said": said.strip(), "truth": real, "right": bool(right), "colour_right": bool(colour_right),
+                     "confidence": lab.get("confidence"), "group": getattr(t, "group", None)})
+        f = out / f"{t.id:02d}.jpg"
+        if f.exists():
+            im = cv2.imread(str(f))
+            im = cv2.resize(im[:, :im.shape[0]], (300, 300))  # the close-up half
+            band = np.zeros((70, 300, 3), np.uint8)
+            cv2.putText(band, f"#{t.id} said: {said.strip()[:30]}", (6, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(band, f"truth: {real}", (6, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (90, 220, 90) if right else (80, 80, 240), 1)
+            tiles.append(np.vstack([im, band]))
+    if tiles:
+        while len(tiles) % 4:
+            tiles.append(np.zeros_like(tiles[0]))
+        sheet = np.vstack([np.hstack(tiles[i:i + 4]) for i in range(0, len(tiles), 4)])
+        cv2.imwrite(str(out / "sheet.jpg"), sheet)
+        rr_img = cv2.cvtColor(sheet, cv2.COLOR_BGR2RGB)
+        viz.rr.log("vlm_crop", viz.rr.Image(rr_img).compress(jpeg_quality=85))
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "check.json").write_text(json.dumps(rows, indent=1, default=float))
+    if pol.sort_plan:
+        (out / "sort_plan.json").write_text(json.dumps(pol.sort_plan, indent=1))
+    return {"asked": len(rows), "right": sum(r["right"] for r in rows), "colour_right": sum(r["colour_right"] for r in rows),
+            "groups": [g.get("name") for g in (pol.sort_plan or {}).get("groups", [])]}
 
 
 def _gist(obs: dict, trial: dict, model: str | None = None) -> None:
@@ -185,7 +260,8 @@ def main() -> None:
     r.add_argument("--no-view", action="store_true")
     r.add_argument("--vlm-glance", action="store_true", help="ask the VLM for a first glance (off by default)")
     r.add_argument("--print", action="store_true", help="also print the narration here")
-    r.add_argument("--vlm", help="which VLM_<NAME> from cell/.env, e.g. nemotron or cosmos")
+    r.add_argument("--vlm", help="which VLM_<NAME> from cell/.env (e.g. nemotron), or a full model id")
+    r.add_argument("--label", action="store_true", help="name each confirmed thing with the VLM, then plan the sort")
     a = p.parse_args()
     if a.cmd == "list":
         for f in sorted(TRIALS.glob("*.yaml")):
@@ -198,7 +274,7 @@ def main() -> None:
         print(f"\ncolors: {', '.join(COLORS)}")
     else:
         viz.PRINT = a.print
-        run(a.name, a.seed, a.policy, view=not a.no_view, use_vlm=a.vlm_glance, vlm_model=a.vlm)
+        run(a.name, a.seed, a.policy, view=not a.no_view, use_vlm=a.vlm_glance, vlm_model=a.vlm, name_things=a.label)
 
 
 if __name__ == "__main__":

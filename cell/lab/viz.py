@@ -33,7 +33,8 @@ NATIVE = {"table": (1920, 1080), "side": (1920, 1080), "wrist": (1280, 720)}
 def blueprint() -> rrb.Blueprint:
     raw = [rrb.Spatial2DView(name=f"{c} camera", origin=f"cams/{c}/rgb") for c in ("table", "side", "wrist")]
     raw += [rrb.Spatial2DView(name=f"{c} depth", origin=f"cams/{c}/depth") for c in ("table", "wrist")]
-    raw += [rrb.Spatial2DView(name="height map", origin="heightmap")]
+    raw += [rrb.Spatial2DView(name="height map", origin="heightmap"),
+            rrb.Spatial2DView(name="VLM close-up", origin="vlm_crop")]
     return rrb.Blueprint(
         rrb.Vertical(
             rrb.Horizontal(
@@ -90,6 +91,16 @@ def narrate(text: str, level: str = "INFO") -> None:
 
 def vlm(text: str, level: str = "INFO") -> None:
     rr.log("vlm", rr.TextLog(text, level=level))
+
+
+def label_crop(r: dict) -> None:
+    """The latest picture sent to the VLM (close-up | where it is), captioned with its answer."""
+    a = r.get("answer") or {}
+    img = r["picture"].copy()
+    cap = f"#{r['id']}: " + (f"{a.get('color', '')} {a.get('name')} ({float(a.get('confidence') or 0):.0%})" if a else "no answer")
+    cv2.rectangle(img, (0, 0), (img.shape[1], 34), (0, 0, 0), -1)
+    cv2.putText(img, cap, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+    rr.log("vlm_crop", rr.Image(img).compress(jpeg_quality=85))
 
 
 def roster(markdown: str) -> None:
@@ -226,7 +237,8 @@ def things(world, cams: dict | None = None, obs: dict | None = None) -> None:
     """The robot's world model: each thing in its id colour, tagged "#7 ?" (untested blob) or "#7 ✓" (moved as one)."""
     ts = list(world.things.values())
     for t in ts:
-        t.tag = f"#{t.id} {STATUS_MARK.get(t.status, t.status)}"
+        name = (getattr(t, "label", None) or {}).get("name")
+        t.tag = f"#{t.id} {STATUS_MARK.get(t.status, t.status)}" + (f" {name}" if name else "")
     segments(ts, cams, obs)
     # confirmed things with a model: show the solid object (in the colour the camera saw) instead of its points
     rr.log("mind/objects", rr.Clear(recursive=True))
@@ -238,11 +250,14 @@ def things(world, cams: dict | None = None, obs: dict | None = None) -> None:
         rr.log(f"mind/objects/{t.id}", rr.Mesh3D(vertex_positions=m.vertices, triangle_indices=m.faces,
                                                  vertex_normals=m.vertex_normals, albedo_factor=col + [255]))
         rr.log(f"mind/segments/{t.id}", rr.Clear(recursive=False))
-    rows = ["| id | status | model | from | size mm² | height mm | what happened |", "|---|---|---|---|---|---|---|"]
+    rows = ["| id | status | VLM says | group | model | from | size mm² | height mm | what happened |",
+            "|---|---|---|---|---|---|---|---|---|"]
     for t in sorted(ts, key=lambda t: t.id):
         st = {"one": "one object ✓", "stuck": "stuck ⊘"}.get(t.status, "blob: untested ?")
         md = f"{t.model.kind}, {t.model.world_mesh().volume * 1e9:.0f} mm³" if getattr(t, "model", None) else ""
-        rows.append(f"| #{t.id} | {st} | {md} | {f'#{t.parent}' if t.parent else ''} | {t.area} | {t.height_mm:.0f} | "
+        lab = getattr(t, "label", None) or {}
+        said = f"{lab.get('color', '')} {lab.get('name', '')} ({float(lab.get('confidence') or 0):.0%})" if lab else ""
+        rows.append(f"| #{t.id} | {st} | {said} | {getattr(t, 'group', '') or ''} | {md} | {f'#{t.parent}' if t.parent else ''} | {t.area} | {t.height_mm:.0f} | "
                     f"{'; '.join(t.history[-2:])} |")
     n1, n2 = sum(t.status == "one" for t in ts), sum(t.status == "stuck" for t in ts)
     roster(f"**The robot's world model**: {len(ts)} things, {n1} confirmed as one object, {n2} stuck, "

@@ -11,6 +11,7 @@ fingers, 12 mm apart when open) moves, straight to each fingertip target. The re
 from __future__ import annotations
 
 import json
+import os
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,7 @@ from lab.synth import HOME, IMAGE_SIZE, TCP_OFFSET, Renderer, wrist_ik
 TCP_BOX = [(150.0, 650.0), (-450.0, 450.0), (-334.0, 300.0)]  # the cell's limits, mm in UF0
 OPEN_GAP = 2 * G.STROKE          # flat faces 12 mm apart when open (the hooked tips: 16 mm)
 SUBSTEPS = 50                     # physics steps per 0.1 s target (2 ms each)
+GRIP_N = float(os.getenv("SIM_GRIP_N", 20))  # finger force limit, N: the real MHZL2-16D grips with ~14 N; at 180 N parts squirted out at 1.7 m/s
 
 
 @dataclass
@@ -122,8 +124,8 @@ def build_mjcf(instances: list[Instance], chute: tuple | None = None) -> str:
   </worldbody>
   <equality><weld body1="hand_target" body2="hand" solref="0.004 1"/></equality>
   <actuator>
-    <position joint="jl" kp="10000" ctrlrange="0 {G.STROKE}" forcerange="-180 180"/>
-    <position joint="jr" kp="10000" ctrlrange="0 {G.STROKE}" forcerange="-180 180"/>
+    <position joint="jl" kp="10000" ctrlrange="0 {G.STROKE}" forcerange="-{GRIP_N} {GRIP_N}"/>
+    <position joint="jr" kp="10000" ctrlrange="0 {G.STROKE}" forcerange="-{GRIP_N} {GRIP_N}"/>
   </actuator>
 </mujoco>"""
 
@@ -153,6 +155,10 @@ class SimCell:
         self.lagged = deque([(self.cmd_pos.copy(), 0.0)] * n_lag, maxlen=n_lag)  # what the arm actually follows
 
     # ------------------------------------------------------------ state
+
+    def body_positions(self) -> dict[int, np.ndarray]:
+        """Every object's position now (base frame, m), by id."""
+        return {i.id: self.data.body(f"obj{i.id}").xpos.copy() for i in self.instances}
 
     def body_pose(self, name: str) -> np.ndarray:
         b = self.data.body(name)

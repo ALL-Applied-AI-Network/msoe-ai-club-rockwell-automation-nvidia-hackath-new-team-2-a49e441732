@@ -78,25 +78,34 @@ def tile(images: dict[str, np.ndarray], width: int = 1280) -> np.ndarray:
 
 
 def ask(images: dict[str, np.ndarray], prompt: str, max_tokens: int = 8000, model: str | None = None) -> dict | None:
-    """Send the images + prompt. Returns {"text", "json" (parsed or None), "thinking" (reasoning models), "finish",
-    "seconds", "model"}, or None if not configured."""
+    """Send the camera images (tiled into one labelled picture) + prompt. Returns {"text", "json" (parsed or None),
+    "thinking" (reasoning models), "finish", "seconds", "model"}, or None if not configured."""
+    return ask_image(tile(images), prompt, max_tokens, model)
+
+
+def ask_image(image: np.ndarray | None, prompt: str, max_tokens: int = 8000, model: str | None = None) -> dict | None:
+    """One RGB picture (or none: text only) + prompt; same answer format as ask()."""
     if not configured(model):
         return None
     mid = model_id(model)
     from openai import OpenAI
     client = OpenAI(base_url=os.getenv("VLM_BASE_URL") or None, api_key=os.getenv("VLM_API_KEY"))
-    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(tile(images), cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
-    url = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()
+    content = [{"type": "text", "text": prompt}]
+    if image is not None:
+        ok, buf = cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
+        content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()}})
     t0 = time.time()
-    resp = client.chat.completions.create(
-        model=mid, max_tokens=max_tokens, temperature=0.2,
-        messages=[{"role": "user", "content": [{"type": "text", "text": prompt},
-                                               {"type": "image_url", "image_url": {"url": url}}]}])
+    resp = client.chat.completions.create(model=mid, max_tokens=max_tokens, temperature=0.2,
+                                          messages=[{"role": "user", "content": content}])
     msg = resp.choices[0].message
     text = msg.content or ""
     thinking = (getattr(msg, "model_extra", None) or {}).get("reasoning_content") or ""
     return {"text": text, "json": _parse(text), "thinking": thinking, "finish": resp.choices[0].finish_reason,
             "seconds": time.time() - t0, "model": mid}
+
+
+def ask_text(prompt: str, max_tokens: int = 4000, model: str | None = None) -> dict | None:
+    return ask_image(None, prompt, max_tokens, model)
 
 
 def gist(images: dict[str, np.ndarray], instruction: str, model: str | None = None) -> dict | None:
