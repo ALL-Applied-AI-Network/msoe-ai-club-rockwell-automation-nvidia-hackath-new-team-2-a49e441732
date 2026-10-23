@@ -4,6 +4,9 @@ Any OpenAI-compatible endpoint works (NVIDIA build.nvidia.com, OpenAI, a local s
     VLM_BASE_URL=https://integrate.api.nvidia.com/v1
     VLM_API_KEY=nvapi-...
     VLM_MODEL=<a vision model id from the provider>
+    VLM_NEMOTRON=nvidia/nemotron-3.5-super-vl-120b-a12b   # any VLM_<NAME>=<model id> is a choosable model
+    VLM_COSMOS=nvidia/cosmos-reason2-8b
+VLM_MODEL (if set) is the default, else the first VLM_<NAME>. Pick another with model="cosmos" (or --vlm cosmos).
 With no key, everything here returns None and the rest of the lab runs without it.
 
 The model only ever *describes and decides*: it never gives coordinates the arm moves to.
@@ -39,8 +42,25 @@ Glance at it the way a person would before touching anything, and answer in JSON
 }}"""
 
 
-def configured() -> bool:
-    return bool(os.getenv("VLM_API_KEY") and os.getenv("VLM_MODEL"))
+RESERVED = {"VLM_BASE_URL", "VLM_API_KEY", "VLM_MODEL"}
+
+
+def models() -> dict[str, str]:
+    """Named models from the environment: {"nemotron": "nvidia/...", ...}, plus "default"."""
+    named = {k[4:].lower(): v for k, v in os.environ.items() if k.startswith("VLM_") and k not in RESERVED and v}
+    default = os.getenv("VLM_MODEL") or next(iter(named.values()), None)
+    return {**named, **({"default": default} if default else {})}
+
+
+def model_id(name: str | None = None) -> str | None:
+    m = models()
+    if name is None:
+        return m.get("default")
+    return m.get(name.lower(), name if "/" in name else None)
+
+
+def configured(name: str | None = None) -> bool:
+    return bool(os.getenv("VLM_API_KEY") and model_id(name))
 
 
 def tile(images: dict[str, np.ndarray], width: int = 1280) -> np.ndarray:
@@ -57,28 +77,34 @@ def tile(images: dict[str, np.ndarray], width: int = 1280) -> np.ndarray:
     return np.vstack(rows)
 
 
-def ask(images: dict[str, np.ndarray], prompt: str, max_tokens: int = 800) -> dict | None:
-    """Send the images + prompt. Returns {"text", "json" (parsed or None), "seconds", "model"} or None if not configured."""
-    if not configured():
+def ask(images: dict[str, np.ndarray], prompt: str, max_tokens: int = 8000, model: str | None = None) -> dict | None:
+    """Send the images + prompt. Returns {"text", "json" (parsed or None), "thinking" (reasoning models), "finish",
+    "seconds", "model"}, or None if not configured."""
+    if not configured(model):
         return None
+    mid = model_id(model)
     from openai import OpenAI
     client = OpenAI(base_url=os.getenv("VLM_BASE_URL") or None, api_key=os.getenv("VLM_API_KEY"))
     ok, buf = cv2.imencode(".jpg", cv2.cvtColor(tile(images), cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
     url = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()
     t0 = time.time()
     resp = client.chat.completions.create(
-        model=os.getenv("VLM_MODEL"), max_tokens=max_tokens, temperature=0.2,
+        model=mid, max_tokens=max_tokens, temperature=0.2,
         messages=[{"role": "user", "content": [{"type": "text", "text": prompt},
                                                {"type": "image_url", "image_url": {"url": url}}]}])
-    text = resp.choices[0].message.content or ""
-    return {"text": text, "json": _parse(text), "seconds": time.time() - t0, "model": os.getenv("VLM_MODEL")}
+    msg = resp.choices[0].message
+    text = msg.content or ""
+    thinking = (getattr(msg, "model_extra", None) or {}).get("reasoning_content") or ""
+    return {"text": text, "json": _parse(text), "thinking": thinking, "finish": resp.choices[0].finish_reason,
+            "seconds": time.time() - t0, "model": mid}
 
 
-def gist(images: dict[str, np.ndarray], instruction: str) -> dict | None:
-    return ask(images, GIST.format(instruction=instruction or "sort these"))
+def gist(images: dict[str, np.ndarray], instruction: str, model: str | None = None) -> dict | None:
+    return ask(images, GIST.format(instruction=instruction or "sort these"), model=model)
 
 
 def _parse(text: str):
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)  # reasoning models may think out loud first
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         return None

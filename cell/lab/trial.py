@@ -66,7 +66,7 @@ def build(trial: dict, seed: int) -> SimCell:
 
 
 def run(name: str, seed: int | None = None, policy: str = "scan", view: bool = True, use_vlm: bool = True,
-        max_steps: int = 40) -> Path:
+        max_steps: int = 40, vlm_model: str | None = None) -> Path:
     trial = load_trial(name)
     seed = trial.get("seed", 0) if seed is None else seed
     t0 = time.time()
@@ -89,7 +89,7 @@ def run(name: str, seed: int | None = None, policy: str = "scan", view: bool = T
         rec.log(obs, chunk, act_s=act_s, note=note)
         score = session.step(obs, note=note, actions=chunk)
         if k == 0 and use_vlm:
-            _gist(obs, trial)
+            _gist(obs, trial, vlm_model)
         if getattr(pol, "done", False):
             break
         cell.play(chunk)
@@ -98,17 +98,19 @@ def run(name: str, seed: int | None = None, policy: str = "scan", view: bool = T
     return rec.dir
 
 
-def _gist(obs: dict, trial: dict) -> None:
-    if not vlm.configured():
-        viz.vlm("(no VLM configured: put VLM_API_KEY and VLM_MODEL in cell/.env)", level="WARN")
+def _gist(obs: dict, trial: dict, model: str | None = None) -> None:
+    if not vlm.configured(model):
+        viz.vlm("(no VLM configured: put VLM_API_KEY and a VLM_<NAME>=<model id> in cell/.env)", level="WARN")
         return
-    viz.vlm(f"glancing at the table and side cameras with {vlm.os.getenv('VLM_MODEL')} ...")
+    viz.vlm(f"glancing at the table and side cameras with {vlm.model_id(model)} ...")
     try:
-        r = vlm.gist({k: obs["images"][k] for k in ("table", "side", "wrist")}, trial.get("instruction", ""))
+        r = vlm.gist({k: obs["images"][k] for k in ("table", "side", "wrist")}, trial.get("instruction", ""), model)
     except Exception as e:  # a bad key or model shouldn't stop the run
         viz.vlm(f"VLM call failed: {e}", level="ERROR")
         return
     j = r["json"]
+    if r.get("thinking"):
+        viz.vlm("thinking: " + r["thinking"][:3000], level="DEBUG")
     if j:
         viz.vlm(f"pile: {j.get('pile')}")
         viz.vlm("objects: " + "; ".join(f"{o.get('count')}× {o.get('color', '')} {o.get('what')}" for o in j.get("objects", [])))
@@ -133,6 +135,7 @@ def main() -> None:
     r.add_argument("--policy", default="scan", choices=list(POLICIES))
     r.add_argument("--no-view", action="store_true")
     r.add_argument("--no-vlm", action="store_true")
+    r.add_argument("--vlm", help="which VLM_<NAME> from cell/.env, e.g. nemotron or cosmos")
     a = p.parse_args()
     if a.cmd == "list":
         for f in sorted(TRIALS.glob("*.yaml")):
@@ -144,7 +147,7 @@ def main() -> None:
             print(f"{k.name:18s} default {k.color:7s} {k.notes}")
         print(f"\ncolors: {', '.join(COLORS)}")
     else:
-        run(a.name, a.seed, a.policy, view=not a.no_view, use_vlm=not a.no_vlm)
+        run(a.name, a.seed, a.policy, view=not a.no_view, use_vlm=not a.no_vlm, vlm_model=a.vlm)
 
 
 if __name__ == "__main__":
