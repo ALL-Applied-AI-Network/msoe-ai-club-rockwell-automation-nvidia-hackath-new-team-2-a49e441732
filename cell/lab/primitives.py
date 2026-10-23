@@ -20,6 +20,20 @@ HOLD = 12          # 1.2 s: longer than the arm's lag
 SAFE_MM = 60.0     # travel height above the table (fingertips); the tallest parts here are ~35 mm
 TABLE_UF0 = SURFACE_Z * 1000 + UF0_Z_MM
 MIN_Z_UF0 = -334.0  # the cell refuses anything lower
+TCP_X, TCP_Y = (155.0, 645.0), (-445.0, 445.0)  # the cell's box (mm, UF0), with 5 mm to spare
+REACH_MM = 540.0
+
+
+def reachable(x_m: float, y_m: float) -> bool:
+    """Can the fingertip get there? Inside the cell's box and the arm's ~550 mm reach."""
+    return TCP_X[0] <= x_m * 1000 <= TCP_X[1] and TCP_Y[0] <= y_m * 1000 <= TCP_Y[1] and np.hypot(x_m, y_m) * 1000 <= REACH_MM
+
+
+def clamp_xy(x_m: float, y_m: float) -> np.ndarray:
+    """The nearest reachable fingertip position."""
+    p = np.array([np.clip(x_m * 1000, *TCP_X), np.clip(y_m * 1000, *TCP_Y)])
+    r = np.hypot(*p)
+    return (p * min(1.0, REACH_MM / r) if r > 0 else p) / 1000
 
 
 def uf0(x_m: float, y_m: float, above_table_mm: float) -> np.ndarray:
@@ -86,9 +100,19 @@ def rake(cur, start_xy_m, end_xy_m, height_mm=3.0) -> tuple[list, str]:
 
 def look(cur, spot_xy_m, cam_offset_mm, height_mm=70.0) -> tuple[list, str]:
     """Hold the wrist camera over a spot (the camera sits cam_offset_mm from the fingertip) and keep still."""
-    tip = np.asarray(spot_xy_m, float) - np.asarray(cam_offset_mm) / 1000
+    tip = clamp_xy(*(np.asarray(spot_xy_m, float) - np.asarray(cam_offset_mm) / 1000))  # the camera may land off-centre
     goal = uf0(tip[0], tip[1], height_mm)
     p0 = np.asarray(cur[:3], float)
     rows = line(p0, np.array([p0[0], p0[1], max(p0[2], goal[2])]), float(cur[5]), 0.0, 0, TRAVEL) if p0[2] < goal[2] else []
     rows += line(rows[-1][:3] if rows else p0, goal, 0.0 if rows else float(cur[5]), 0.0, 0, TRAVEL) + hold(goal, 0.0, 0)
     return rows, f"look at ({spot_xy_m[0] * 1000:.0f}, {spot_xy_m[1] * 1000:.0f}) mm"
+
+
+def view(cur, tip_xy_m, yaw: float, height_mm: float = 70.0) -> tuple[list, str]:
+    """Fingertip to tip_xy, wrist turned to yaw (which swings the camera round the fingertip), then keep still."""
+    goal = uf0(*clamp_xy(*tip_xy_m), height_mm)
+    p0 = np.asarray(cur[:3], float)
+    mid = np.array([p0[0], p0[1], max(p0[2], goal[2])])
+    rows = (line(p0, mid, float(cur[5]), float(cur[5]), 0, TRAVEL) if p0[2] < goal[2] else [])
+    rows += line(mid, goal, float(cur[5]), yaw, 0, TRAVEL) + hold(goal, yaw, 0)
+    return rows, f"look from ({goal[0]:.0f}, {goal[1]:.0f}) mm, wrist {yaw:.0f}°"

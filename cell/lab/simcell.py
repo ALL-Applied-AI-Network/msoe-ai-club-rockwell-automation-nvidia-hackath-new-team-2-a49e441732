@@ -20,12 +20,12 @@ import numpy as np
 import trimesh
 
 from calibration.geometry import SURFACE_Z, UF0_Z_MM, flange_pose, load
+from lab import gripper as G
 from lab.catalog import COLORS, DENSITY, KINDS, kind_mesh, rot_matrix
 from lab.synth import HOME, IMAGE_SIZE, TCP_OFFSET, Renderer, wrist_ik
 
 TCP_BOX = [(150.0, 650.0), (-450.0, 450.0), (-334.0, 300.0)]  # the cell's limits, mm in UF0
-FINGER = (0.006, 0.012, 0.076)  # thickness (along the jaw axis), width, length (m)
-OPEN_GAP = 0.012
+OPEN_GAP = 2 * G.STROKE          # flat faces 12 mm apart when open (the hooked tips: 16 mm)
 SUBSTEPS = 50                     # physics steps per 0.1 s target (2 ms each)
 
 
@@ -76,8 +76,15 @@ def build_mjcf(instances: list[Instance], chute: tuple | None = None) -> str:
                 assets.append(f'<mesh name="{mname}" vertex="{_fmt(np.asarray(p.vertices) / 1000)}"/>')
                 geoms.append(f'<geom type="mesh" mesh="{mname}" {common}/>')
         bodies.append(f'<body name="obj{inst.id}" pos="{_fmt(inst.pos)}" quat="{_fmt(inst.quat)}"><freejoint/>{"".join(geoms)}</body>')
-    t, w, L = FINGER
     home_tip = _home_tip()
+    finger_assets, finger_geoms = [], {}
+    for side, tag in ((-1, "l"), (1, "r")):
+        gs = []
+        for k, (v, fr) in enumerate(G.piece_vertices_hand(side)):
+            finger_assets.append(f'<mesh name="f{tag}{k}" vertex="{_fmt(v)}"/>')
+            gs.append(f'<geom type="mesh" mesh="f{tag}{k}" friction="{fr} 0.02 0.002" rgba=".68 .68 .7 1"/>')
+        finger_geoms[tag] = "".join(gs)
+    bw, bd, bh = G.BODY
     walls = ""
     if chute is not None:
         cx, cy, cr, ch = chute
@@ -90,7 +97,7 @@ def build_mjcf(instances: list[Instance], chute: tuple | None = None) -> str:
 <mujoco model="cell">
   <option timestep="0.002" cone="elliptic" impratio="10"/>
   <default><geom friction="0.8 0.01 0.0003" condim="6" solref="0.004 1"/></default>
-  <asset>{"".join(assets)}</asset>
+  <asset>{"".join(assets)}{"".join(finger_assets)}</asset>
   <worldbody>
     <geom name="table" type="box" size="0.54 0.735 0.01" pos="0.17 0.01 {SURFACE_Z - 0.01}" rgba=".8 .78 .74 1"/>
     {walls}
@@ -99,21 +106,24 @@ def build_mjcf(instances: list[Instance], chute: tuple | None = None) -> str:
     <body name="hand" pos="{_fmt(home_tip)}" gravcomp="1">
       <freejoint name="hand_free"/>
       <inertial pos="0 0 0.09" mass="0.6" diaginertia="2e-3 2e-3 1e-3"/>
-      <geom name="palm" type="box" size="0.025 0.02 0.015" pos="0 0 {L + 0.015}" rgba=".25 .25 .27 1"/>
-      <body name="finger_l" pos="{-(OPEN_GAP / 2 + t / 2)} 0 0" gravcomp="1">
-        <joint name="jl" type="slide" axis="1 0 0" range="0 {OPEN_GAP / 2}" damping="5"/>
-        <geom type="box" size="{t / 2} {w / 2} {L / 2}" pos="0 0 {L / 2}" friction="1.2 0.02 0.002" rgba=".6 .6 .62 1" mass="0.03"/>
+      <geom name="palm" type="box" size="{bw / 2} {bd / 2} {bh / 2}" pos="0 0 {G.LENGTH + bh / 2}" rgba=".27 .27 .29 1"/>
+      <geom name="spacer" type="cylinder" size="{G.SPACER_R} {G.SPACER_LEN / 2}" pos="0 0 {G.LENGTH + bh + G.SPACER_LEN / 2}" rgba=".18 .18 .2 1"/>
+      <body name="finger_l" pos="{-G.STROKE} 0 0" gravcomp="1">
+        <joint name="jl" type="slide" axis="1 0 0" range="0 {G.STROKE}" damping="20"/>
+        <inertial pos="-0.006 0 0.038" mass="0.032" diaginertia="2e-5 2e-5 1e-6"/>
+        {finger_geoms["l"]}
       </body>
-      <body name="finger_r" pos="{OPEN_GAP / 2 + t / 2} 0 0" gravcomp="1">
-        <joint name="jr" type="slide" axis="-1 0 0" range="0 {OPEN_GAP / 2}" damping="5"/>
-        <geom type="box" size="{t / 2} {w / 2} {L / 2}" pos="0 0 {L / 2}" friction="1.2 0.02 0.002" rgba=".6 .6 .62 1" mass="0.03"/>
+      <body name="finger_r" pos="{G.STROKE} 0 0" gravcomp="1">
+        <joint name="jr" type="slide" axis="-1 0 0" range="0 {G.STROKE}" damping="20"/>
+        <inertial pos="0.006 0 0.038" mass="0.032" diaginertia="2e-5 2e-5 1e-6"/>
+        {finger_geoms["r"]}
       </body>
     </body>
   </worldbody>
   <equality><weld body1="hand_target" body2="hand" solref="0.004 1"/></equality>
   <actuator>
-    <position joint="jl" kp="3000" ctrlrange="0 {OPEN_GAP / 2}" forcerange="-30 30"/>
-    <position joint="jr" kp="3000" ctrlrange="0 {OPEN_GAP / 2}" forcerange="-30 30"/>
+    <position joint="jl" kp="10000" ctrlrange="0 {G.STROKE}" forcerange="-180 180"/>
+    <position joint="jr" kp="10000" ctrlrange="0 {G.STROKE}" forcerange="-180 180"/>
   </actuator>
 </mujoco>"""
 
@@ -161,17 +171,16 @@ class SimCell:
         return out
 
     def finger_meshes(self) -> list[dict]:
-        t, w, L = FINGER
+        """The gripper where it is now (base frame): both fingers, the SMC body and the spacer."""
         out = []
-        for f in ("finger_l", "finger_r"):
-            m = trimesh.creation.box((t, w, L))
-            m.apply_translation([0, 0, L / 2])
-            m.apply_transform(self.body_pose(f))
-            out.append({"mesh": m, "rgb": (150, 150, 158)})
-        palm = trimesh.creation.box((0.05, 0.04, 0.03))
-        palm.apply_translation([0, 0, L + 0.015])
-        palm.apply_transform(self.body_pose("hand"))
-        out.append({"mesh": palm, "rgb": (60, 60, 65)})
+        for name, side in (("finger_l", -1), ("finger_r", 1)):
+            m = G.finger_body_mesh(side)
+            m.apply_transform(self.body_pose(name))
+            out.append({"mesh": m, "rgb": (175, 175, 180)})
+        for m, col in G.body_meshes():
+            m = m.copy()
+            m.apply_transform(self.body_pose("hand"))
+            out.append({"mesh": m, "rgb": col})
         return out
 
     def tip(self) -> np.ndarray:

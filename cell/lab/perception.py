@@ -1,5 +1,7 @@
 """The robot's own picture of the table, built only from what its cameras saw (never from the truth).
 
+Points are (N, 3) x, y, z in metres, or (N, 6) with r, g, b (0-255) appended once colour() has been applied.
+
 Level 1 (now): fused depth -> height map -> blobs sticking up from the table -> numbered segments.
 A segment is the robot's guess at one rigid object. Touching objects merge into one segment until nudging or
 closer looks split them; that's expected, and the score below shows it.
@@ -17,6 +19,26 @@ from lab.fusion import CELL, X_RANGE, Y_RANGE, height_map
 MIN_HEIGHT_MM = 2.5   # above this, a cell isn't table (depth noise near the table is about 1-1.5 mm)
 MIN_CELLS = 12        # smaller blobs are noise (12 mm^2)
 MAX_HEIGHT_MM = 100.0 # taller than this is the arm or gripper, not a part on the table
+
+
+def colour(points: np.ndarray, obs: dict, cams: dict, cam: str = "wrist") -> np.ndarray:
+    """Append the colour each point has in that camera's image (it sees the same view as the wrist depth stream)."""
+    from lab.viz import project_to_image
+    img = obs["images"][cam]
+    h, w = img.shape[:2]
+    uv = np.round(project_to_image(cam, cams, points[:, :3], (w, h), joints=obs.get("joints"))).astype(int)
+    ok = (uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)
+    rgb = np.full((len(points), 3), 128.0)
+    rgb[ok] = img[uv[ok, 1], uv[ok, 0]]
+    return np.column_stack([points[:, :3], rgb])
+
+
+def mean_colour(points: np.ndarray) -> np.ndarray | None:
+    """Average colour of a thing's top surfaces (the sides are darker), or None if the points carry no colour."""
+    if points.shape[1] < 6:
+        return None
+    top = points[points[:, 2] >= np.percentile(points[:, 2], 60)]
+    return top[:, 3:6].mean(0)
 
 
 def drop_self(points: np.ndarray, tcp_pose_uf0) -> np.ndarray:
@@ -62,7 +84,7 @@ def segment(points: np.ndarray) -> tuple[list[Segment], np.ndarray]:
         pts = points[(lab_pt == lab) & above]
         if len(pts) < 10:
             continue
-        segs.append(Segment(len(segs) + 1, pts, int(sizes[lab - 1]), float(np.nanmax(hm[labels == lab])), pts.mean(0)))
+        segs.append(Segment(len(segs) + 1, pts, int(sizes[lab - 1]), float(np.nanmax(hm[labels == lab])), pts[:, :3].mean(0)))
     return segs, hm
 
 
@@ -84,7 +106,7 @@ def score(segs: list[Segment], truth: list[dict]) -> dict:
     if singles:
         tc = {o["id"]: o["mesh"].centroid for o in truth}
         pairs = [(s, next(t for t, v in owner.items() if v == s.id)) for s in singles]
-        errs = [np.linalg.norm(s.centroid[:2] - tc[t][:2]) * 1000 for s, t in pairs]
+        errs = [np.linalg.norm(np.asarray(s.centroid)[:2] - tc[t][:2]) * 1000 for s, t in pairs]
     return {"objects": len(truth), "segments": len(segs), "found": len(owner),
             "separated": sum(1 for s in segs if counts[s.id] == 1), "merged": sum(1 for s in segs if counts[s.id] > 1),
             "phantom": sum(1 for s in segs if counts[s.id] == 0), "error_mm": float(np.mean(errs)) if errs else None}

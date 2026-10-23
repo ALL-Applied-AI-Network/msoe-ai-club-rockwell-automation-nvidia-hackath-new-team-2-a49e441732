@@ -12,7 +12,8 @@ expected (common fate: what moved together is one thing):
     nothing arrived and the source looks same -> the grip slipped: same blob, one more try counted
     raked                                     -> whatever is in the raked area now is a new "blob" each
 
-Things nobody touched are matched to the fresh scan by footprint overlap and keep their ids ("unchanged").
+Things nobody touched are matched to the fresh scan by footprint overlap and colour and keep their ids ("unchanged");
+things that got nudged (close by, similar size, same colour) keep their ids too.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import numpy as np
 
 from calibration.geometry import SURFACE_Z
 from lab.fusion import CELL, X_RANGE, Y_RANGE
-from lab.perception import MIN_HEIGHT_MM
+from lab.perception import MIN_HEIGHT_MM, mean_colour
 
 NY = int(np.ceil((Y_RANGE[1] - Y_RANGE[0]) / CELL))
 STAGING = (np.arange(0.35, 0.475, 0.03), np.arange(0.13, 0.26, 0.03))  # x, y grid of spots to set things down (m)
@@ -43,6 +44,12 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
     return inter / (len(a) + len(b) - inter)
 
 
+def colour_gap(a: np.ndarray, b: np.ndarray) -> float:
+    """Distance between two things' average colours (0..441); 0 when either has no colour."""
+    ca, cb = mean_colour(a), mean_colour(b)
+    return 0.0 if ca is None or cb is None else float(np.linalg.norm(ca - cb))
+
+
 def overlap(a: np.ndarray, b: np.ndarray) -> float:
     """Share of a covered by b."""
     return len(np.intersect1d(a, b, assume_unique=True)) / max(len(a), 1)
@@ -52,17 +59,19 @@ def overlap(a: np.ndarray, b: np.ndarray) -> float:
 class Thing:
     id: int
     points: np.ndarray
-    status: str = "blob"            # "blob" = untested hypothesis, "one" = moved as one rigid piece
+    status: str = "blob"            # "blob" untested, "one" moved as one rigid piece, "stuck" can't grip/split/reach
     parent: int | None = None
     history: list[str] = field(default_factory=list)
-    tries: int = 0
+    model: object = None            # lab.objects.Model once it's confirmed as one object
+    tries: int = 0                  # grips that slipped
+    rakes: int = 0                  # rakes that didn't split it
 
     def __post_init__(self):
         self.fp = footprint(self.points)
 
     @property
     def centroid(self) -> np.ndarray:
-        return self.points.mean(0)
+        return self.points[:, :3].mean(0)
 
     @property
     def area(self) -> int:
@@ -99,14 +108,42 @@ class World:
     def blobs(self) -> list[Thing]:
         return [t for t in self.things.values() if t.status == "blob"]
 
+    def mark_out_of_reach(self, t: Thing) -> str:
+        t.status = "stuck"
+        t.history.append("out of reach")
+        return f"#{t.id} is out of the arm's reach ({t.centroid[0] * 1000:.0f}, {t.centroid[1] * 1000:.0f} mm). Leaving it."
+
     # ------------------------------------------------------------ comparing a fresh scan with what we expected
 
-    def update(self, segs, action: dict | None) -> list[str]:
+    def track(self, points: np.ndarray, skip: int | None = None) -> tuple[np.ndarray, list[str], set[int]]:
+        """Work off the models: fit every modelled object (except `skip`, the one just acted on) to the new points where
+        it should be. A good fit updates its pose and claims those points. Returns (leftover points, events, tracked ids)."""
+        from lab import objects
+        events, tracked = [], set()
+        free = np.ones(len(points), bool)
+        for t in self.things.values():
+            if t.model is None or t.id == skip:
+                continue
+            pose, fitness, rms = objects.fit(t.model, points[free])
+            if fitness < 0.5:
+                events.append(f"#{t.id} isn't where my model of it says (only {fitness:.0%} of it fits). Checking from scratch.")
+                continue
+            moved = np.linalg.norm(pose[:3, 3] - t.model.pose[:3, 3]) * 1000
+            t.model.pose = pose
+            mine = objects.claim(t.model, points) & free
+            t.points, t.fp = points[mine], footprint(points[mine])
+            free &= ~mine
+            tracked.add(t.id)
+            if moved > 2:
+                events.append(f"#{t.id} moved {moved:.0f} mm; my model followed it (fit {fitness:.0%}, {rms:.1f} mm off).")
+        return points[free], events, tracked
+
+    def update(self, segs, action: dict | None, tracked: set[int] = frozenset()) -> list[str]:
         new = [(s.points, footprint(s.points)) for s in segs]
         used: set[int] = set()
         events: list[str] = []
         target = self.things.get(action["target"]) if action else None
-        old = {i: t for i, t in self.things.items() if t is not target}
+        old = {i: t for i, t in self.things.items() if t is not target and i not in tracked}
 
         # 1) untouched things: same footprint, same height -> same thing
         for t in list(old.values()):
@@ -117,7 +154,7 @@ class World:
                 v = iou(t.fp, fp)
                 if v > best:
                     best, bi = v, k
-            if bi is not None and best > 0.5:
+            if bi is not None and best > 0.5 and colour_gap(t.points, new[bi][0]) < 60:
                 t.points, t.fp = new[bi][0], new[bi][1]
                 used.add(bi)
                 old.pop(t.id)
@@ -125,6 +162,20 @@ class World:
         # 2) the thing we acted on
         if target is not None:
             events += self._judge(target, action, new, used)
+
+        # 2b) things that got nudged: close by, similar size, same colour -> same thing, moved a little
+        for t in list(old.values()):
+            cands = [k for k, (pts, fp) in enumerate(new) if k not in used
+                     and np.hypot(*(pts[:, :2].mean(0) - t.centroid[:2])) < 0.03 and 0.6 < len(fp) / max(t.area, 1) < 1.6
+                     and colour_gap(t.points, pts) < 45]
+            if cands:
+                k = min(cands, key=lambda k: np.hypot(*(new[k][0][:, :2].mean(0) - t.centroid[:2])))
+                moved = np.hypot(*(new[k][0][:, :2].mean(0) - t.centroid[:2])) * 1000
+                t.points, t.fp = new[k][0], new[k][1]
+                t.model = None
+                used.add(k)
+                old.pop(t.id)
+                events.append(f"#{t.id} got nudged {moved:.0f} mm (same size, same colour): still #{t.id}.")
 
         # 3) leftovers
         for k, (pts, fp) in enumerate(new):
@@ -158,6 +209,7 @@ class World:
                 return [f"Nothing arrived, but #{T.id} changed: now {self._ids(kids)} (blobs)."]
             if len(dest) == 1 and not src:
                 T.points, T.fp = new[dest[0]][0], new[dest[0]][1]
+                T.model = None
                 T.status = "one"
                 T.history.append("lifted and moved as one piece, nothing left behind")
                 return [f"#{T.id} came along whole and nothing stayed behind: it moved as one piece. "
@@ -183,8 +235,16 @@ class World:
             used.add(k)
         self.things.pop(T.id)
         kids = [self._new(new[k][0], parent=T.id, note=f"after raking through #{T.id}") for k in kids_k]
-        return [f"Raked through #{T.id}: it's now {len(kids)} separate thing{'s' if len(kids) != 1 else ''} "
-                f"({self._ids(kids)}). Each is a new hypothesis."]
+        if len(kids) == 1:  # it didn't split: carry the history over, and give up after the second time
+            k = kids[0]
+            k.tries, k.rakes = T.tries, T.rakes + 1
+            if k.rakes >= 2:
+                k.status = "stuck"
+                k.history.append("raked twice without splitting, and no grip holds it")
+                return [f"Raked #{T.id} again and it's still one piece (#{k.id}), and nothing I try can grip it. "
+                        f"Probably one object I can't pick up with these fingers. Leaving it there."]
+            return [f"Raked through #{T.id}: still one piece (#{k.id}). One more try later."]
+        return [f"Raked through #{T.id}: it's now {len(kids)} separate things ({self._ids(kids)}). Each is a new hypothesis."]
 
     @staticmethod
     def _ids(things) -> str:

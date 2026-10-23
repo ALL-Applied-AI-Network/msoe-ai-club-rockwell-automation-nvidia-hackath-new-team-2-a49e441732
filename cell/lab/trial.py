@@ -20,6 +20,7 @@ Every run is recorded to runs/ like a real one (plus truth/), so `python -m lab.
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 
@@ -107,9 +108,14 @@ def run(name: str, seed: int | None = None, policy: str = "explore", view: bool 
                 _gist(obs, trial, vlm_model)
         if own_mind and pol.version != version:
             version = pol.version
-            score = perception.score(list(pol.world.things.values()), cell.object_meshes())
+            truth = cell.object_meshes()
+            score = perception.score(list(pol.world.things.values()), truth)
+            mq = _model_quality(pol.world, truth)
+            if mq:
+                score["models"] = mq
             viz.narrate(f"(truth check: {score['found']}/{score['objects']} objects found, {score['separated']} on their own, "
-                        f"{score['merged']} still clumped)", level="DEBUG")
+                        f"{score['merged']} still clumped" + (f"; {mq['n']} models, surface off by {mq['surface_mm']:.1f} mm, "
+                        f"volume ×{mq['volume_ratio']:.2f} (median)" if mq else "") + ")", level="DEBUG")
         elif not own_mind:
             score = session.last_score
         if getattr(pol, "done", False):
@@ -119,8 +125,26 @@ def run(name: str, seed: int | None = None, policy: str = "explore", view: bool 
         if fresh:
             obs = cell.observe()
     viz.narrate(f"done: {cell.t:.0f} s of robot time, {time.time() - t0:.0f} s on this computer. Truth check: {score}")
+    (rec.dir / "summary.json").write_text(json.dumps({"trial": name, "seed": seed, "policy": policy, "robot_s": round(cell.t),
+                                                      "wall_s": round(time.time() - t0), "score": score}))
     print(f"recorded {rec.dir}\nrobot time {cell.t:.0f} s, wall {time.time() - t0:.0f} s\nfinal: {score}")
     return rec.dir
+
+
+def _model_quality(world, truth) -> dict:
+    """Median of how far the robot's models are from the true objects (only models holding exactly one true object)."""
+    from lab import objects
+    rows = []
+    for t in world.things.values():
+        if getattr(t, "model", None) is None:
+            continue
+        inside = [o for o in truth if np.min(np.linalg.norm(t.points[:, :2] - o["mesh"].centroid[:2], axis=1)) < 0.004]
+        if len(inside) == 1:
+            rows.append(objects.compare(t.model, inside[0]["mesh"]))
+    if not rows:
+        return {}
+    return {"n": len(rows), "surface_mm": float(np.median([r["surface_mm"] for r in rows])),
+            "volume_ratio": float(np.median([r["volume_ratio"] for r in rows]))}
 
 
 def _gist(obs: dict, trial: dict, model: str | None = None) -> None:

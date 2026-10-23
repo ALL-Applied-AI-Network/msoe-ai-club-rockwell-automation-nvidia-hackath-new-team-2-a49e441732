@@ -17,6 +17,7 @@ vlm, roster, narration. Timeline "step" = one act() call.
 from __future__ import annotations
 
 import colorsys
+import re
 from pathlib import Path
 
 import cv2
@@ -46,18 +47,22 @@ def blueprint() -> rrb.Blueprint:
             rrb.Horizontal(*raw),
             row_shares=[3, 1],
         ),
-        collapse_panels=True,
+        collapse_panels=False,  # keep the entity tree, selection and timeline panels visible
     )
 
 
 def start(name: str, save_to: Path | None = None, spawn: bool = False) -> None:
     """Begin a recording: to a .rrd file, a live viewer, or both. Logs the static scenery in both 3D views."""
-    rr.init(name)
+    rr.init(re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_"))  # Rerun renames ids with spaces or brackets: keep them plain
+    sinks = []
     if save_to is not None:
         Path(save_to).parent.mkdir(parents=True, exist_ok=True)
-        rr.save(save_to, default_blueprint=blueprint())
+        sinks.append(rr.FileSink(str(save_to)))
     if spawn:
-        rr.spawn(default_blueprint=blueprint())
+        rr.spawn(connect=False)  # starts a viewer if none is running
+        sinks.append(rr.GrpcSink())
+    if sinks:
+        rr.set_sinks(*sinks, default_blueprint=blueprint())  # file AND viewer: the file is always complete
     a = np.linspace(0, 2 * np.pi, 200)
     ring = np.stack([0.55 * np.cos(a), 0.55 * np.sin(a), np.full_like(a, SURFACE_Z)], -1)
     corners = np.array([[0.15, -0.45], [0.65, -0.45], [0.65, 0.45], [0.15, 0.45], [0.15, -0.45]])
@@ -108,7 +113,7 @@ def thin(pts: np.ndarray, voxel: float = 0.0015) -> np.ndarray:
     """One point per voxel: keeps the viewer fast without changing what you see."""
     if len(pts) == 0:
         return pts
-    _, keep = np.unique(np.floor(pts / voxel).astype(np.int64), axis=0, return_index=True)
+    _, keep = np.unique(np.floor(pts[:, :3] / voxel).astype(np.int64), axis=0, return_index=True)
     return pts[keep]
 
 
@@ -195,14 +200,16 @@ def segments(segs, cams: dict | None = None, obs: dict | None = None) -> None:
     tops, tags, cols = [], [], []
     for s in segs:
         col = id_color(s.id)
-        rr.log(f"mind/segments/{s.id}", rr.Points3D(thin(s.points, 0.001), colors=col, radii=0.0009))
-        tops.append(s.points[np.argmax(s.points[:, 2])] + [0, 0, 0.008])
+        p = thin(s.points, 0.001)
+        seen = p[:, 3:6].astype(np.uint8) if p.shape[1] >= 6 else col  # the colours the camera saw, if we have them
+        rr.log(f"mind/segments/{s.id}", rr.Points3D(p[:, :3], colors=seen, radii=0.0009))
+        tops.append(s.points[np.argmax(s.points[:, 2]), :3] + [0, 0, 0.008])
         tags.append(getattr(s, "tag", f"#{s.id}"))
         cols.append(col)
         if cams is None or obs is None:
             continue
         for cam_name, img in (obs.get("images") or {}).items():
-            uv = project_to_image(cam_name, cams, thin(s.points, 0.002), (img.shape[1], img.shape[0]), joints=obs.get("joints"))
+            uv = project_to_image(cam_name, cams, thin(s.points, 0.002)[:, :3], (img.shape[1], img.shape[0]), joints=obs.get("joints"))
             ok = np.all(np.isfinite(uv), 1) & (uv[:, 0] > 0) & (uv[:, 0] < img.shape[1]) & (uv[:, 1] > 0) & (uv[:, 1] < img.shape[0])
             if ok.sum() < 3:
                 continue
@@ -215,7 +222,7 @@ def segments(segs, cams: dict | None = None, obs: dict | None = None) -> None:
 
 # ---------------------------------------------------------------- the robot's things (world model)
 
-STATUS_MARK = {"blob": "?", "one": "✓"}
+STATUS_MARK = {"blob": "?", "one": "✓", "stuck": "⊘"}
 
 
 def things(world, cams: dict | None = None, obs: dict | None = None) -> None:
@@ -224,13 +231,25 @@ def things(world, cams: dict | None = None, obs: dict | None = None) -> None:
     for t in ts:
         t.tag = f"#{t.id} {STATUS_MARK.get(t.status, t.status)}"
     segments(ts, cams, obs)
-    rows = ["| id | status | from | size mm² | height mm | what happened |", "|---|---|---|---|---|---|"]
+    # confirmed things with a model: show the solid object (in the colour the camera saw) instead of its points
+    rr.log("mind/objects", rr.Clear(recursive=True))
+    for t in ts:
+        if getattr(t, "model", None) is None:
+            continue
+        m = t.model.world_mesh()
+        col = [int(c) for c in t.model.colour] if t.model.colour is not None else id_color(t.id)
+        rr.log(f"mind/objects/{t.id}", rr.Mesh3D(vertex_positions=m.vertices, triangle_indices=m.faces,
+                                                 vertex_normals=m.vertex_normals, albedo_factor=col + [255]))
+        rr.log(f"mind/segments/{t.id}", rr.Clear(recursive=False))
+    rows = ["| id | status | model | from | size mm² | height mm | what happened |", "|---|---|---|---|---|---|---|"]
     for t in sorted(ts, key=lambda t: t.id):
-        st = "one object ✓" if t.status == "one" else "blob: untested ?"
-        rows.append(f"| #{t.id} | {st} | {f'#{t.parent}' if t.parent else ''} | {t.area} | {t.height_mm:.0f} | "
+        st = {"one": "one object ✓", "stuck": "stuck ⊘"}.get(t.status, "blob: untested ?")
+        md = f"{t.model.kind}, {t.model.world_mesh().volume * 1e9:.0f} mm³" if getattr(t, "model", None) else ""
+        rows.append(f"| #{t.id} | {st} | {md} | {f'#{t.parent}' if t.parent else ''} | {t.area} | {t.height_mm:.0f} | "
                     f"{'; '.join(t.history[-2:])} |")
-    n1 = sum(t.status == "one" for t in ts)
-    roster(f"**The robot's world model**: {len(ts)} things, {n1} confirmed as one object, {len(ts) - n1} untested\n\n"
+    n1, n2 = sum(t.status == "one" for t in ts), sum(t.status == "stuck" for t in ts)
+    roster(f"**The robot's world model**: {len(ts)} things, {n1} confirmed as one object, {n2} stuck, "
+           f"{len(ts) - n1 - n2} untested\n\n"
            + "\n".join(rows))
 
 
@@ -248,9 +267,9 @@ def plan_grip(good, bad, chosen, place_xy=None) -> None:
             a = np.radians(g.yaw)
             d = np.array([np.cos(a), np.sin(a), 0.0])
             for side in (-1, 1):
-                c = np.array([g.x, g.y, SURFACE_Z + g.height_mm / 1000 + 0.038]) + d * side * 0.009
+                c = np.array([g.x, g.y, SURFACE_Z + g.height_mm / 1000 + 0.038]) + d * side * 0.012
                 centers.append(c)
-                halves.append([0.003, 0.006, 0.038])
+                halves.append([0.006, 0.003, 0.038])
                 rots.append(rr.RotationAxisAngle(axis=[0, 0, 1], radians=a))
         return rr.Boxes3D(centers=centers, half_sizes=halves, rotation_axis_angles=rots, colors=[color] * len(centers))
 
@@ -288,13 +307,11 @@ def truth_setup(cell) -> None:
         rr.log(f"truth/objects/{i.id}", rr.Mesh3D(vertex_positions=m.vertices, triangle_indices=m.faces,
                                                   vertex_normals=m.vertex_normals, albedo_factor=list(COLORS[i.color]) + [255]),
                static=True)
-    t, w, L = 0.006, 0.012, 0.076
-    finger = trimesh.creation.box((t, w, L))
-    finger.apply_translation([0, 0, L / 2])
-    palm = trimesh.creation.box((0.05, 0.04, 0.03))
-    palm.apply_translation([0, 0, L + 0.015])
+    from lab import gripper as G
+    parts = [("finger_l", G.finger_body_mesh(-1), [175, 175, 180]), ("finger_r", G.finger_body_mesh(1), [175, 175, 180])]
+    parts += [(f"body{k}", m, list(c)) for k, (m, c) in enumerate(G.body_meshes())]
     for root in ("truth", "mind"):
-        for name, m, col in (("finger_l", finger, [170, 170, 178]), ("finger_r", finger, [170, 170, 178]), ("palm", palm, [70, 70, 75])):
+        for name, m, col in parts:
             rr.log(f"{root}/gripper/{name}", rr.Mesh3D(vertex_positions=m.vertices, triangle_indices=m.faces,
                                                        vertex_normals=m.vertex_normals, albedo_factor=col + [255]), static=True)
 
@@ -319,7 +336,7 @@ class Animator:
             tops.append(T[:3, 3] + [0, 0, 0.022])
         rr.log("truth/labels", rr.Points3D(tops, radii=0.0001, labels=[i.name for i in cell.instances]))
         for root in ("truth", "mind"):
-            for name, body in (("finger_l", "finger_l"), ("finger_r", "finger_r"), ("palm", "hand")):
+            for name, body in (("finger_l", "finger_l"), ("finger_r", "finger_r"), ("body0", "hand"), ("body1", "hand")):
                 T = cell.body_pose(body)
                 rr.log(f"{root}/gripper/{name}", rr.Transform3D(translation=T[:3, 3], mat3x3=T[:3, :3]))
         try:
@@ -329,3 +346,23 @@ class Animator:
         joints = np.append(self.q, cell.grip)
         arm("truth", joints)
         arm("mind", joints)
+
+
+def unseen(cells: np.ndarray, hm_shape) -> None:
+    """Cells the robot hasn't seen but cares about, as purple dots on the table (mind view)."""
+    from lab.fusion import CELL, X_RANGE, Y_RANGE
+    if len(cells) == 0:
+        rr.log("mind/unseen", rr.Clear(recursive=False))
+        return
+    ix, iy = np.divmod(cells, hm_shape[1])
+    pts = np.column_stack([X_RANGE[0] + (ix + 0.5) * CELL, Y_RANGE[0] + (iy + 0.5) * CELL, np.full(len(ix), SURFACE_Z + 0.0005)])
+    rr.log("mind/unseen", rr.Points3D(pts, colors=[[170, 60, 230]], radii=0.0006))
+
+
+def next_view(v) -> None:
+    """The chosen next camera pose, as a small camera cone in the mind view, labelled with what it should reveal."""
+    from calibration.geometry import load
+    cam = load()["wrist_depth"]
+    camera_frustum("mind/plan/next_view", cam, v.cam)
+    rr.log("mind/plan/next_view_label", rr.Points3D([v.cam[:3, 3]], colors=[[170, 60, 230]], radii=0.003,
+                                                    labels=[f"next look: +{v.gain} mm²"]))

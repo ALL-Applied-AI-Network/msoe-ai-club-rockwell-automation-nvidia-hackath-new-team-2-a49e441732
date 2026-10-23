@@ -3,7 +3,8 @@
 For a target blob, try every jaw angle (yaws) and grip height (levels). At each angle the depth points are rotated so the
 jaws close along the rows of a 1 mm grid; then, for every grid cell as the grip centre:
   - jaw gap (12 x 12 mm between the open fingers) must hold some of the target above the grip height,
-  - both finger slots (6 mm finger + 1 mm margin, 12 mm wide, just outside the gap) must be clear all the way down to the
+  - both finger slots (each finger is 12 mm deep along the closing direction + 1 mm margin, 6 mm thick across it,
+    just outside the gap; lab/gripper.py) must be clear all the way down to the
     grip height, so the fingers can come straight down beside the material without landing on anything,
   - unseen cells next to seen ones take the lowest nearby height (most are shadows: table hidden behind an object
     from the camera's point of view); cells with nothing seen within 4 mm count as blocked.
@@ -19,13 +20,13 @@ from scipy import ndimage
 
 from calibration.geometry import SURFACE_Z
 
-GAP = 12          # mm between the open fingers
-FINGER = 6        # mm finger thickness (along the jaw axis)
-WIDTH = 12        # mm finger width
+GAP = 12          # mm between the open fingers' flat faces (the hooked tips open to 16)
+FINGER = 12       # mm finger depth along the closing direction
+WIDTH = 6         # mm finger thickness across it
 MARGIN = 1        # mm clearance beside the material
 CROP = 0.07       # m around the target
 YAWS = np.arange(0.0, 180.0, 7.5)
-LEVELS = (2.0, 3.0, 4.0, 6.0, 8.0, 11.0, 15.0, 20.0)
+LEVELS = (2.5, 3.5, 4.5, 6.0, 8.0, 11.0, 15.0, 20.0)  # tips at least 2.5 mm off the table, like the twin
 
 
 @dataclass
@@ -80,7 +81,7 @@ def find(scene_pts: np.ndarray, target_pts: np.ndarray, top_k: int = 8) -> tuple
             occ = Hf > L
             mat = occ & T
             jaw = _box(mat, -half_gap, half_gap - 1, -half_w, half_w - 1)
-            if jaw.max() < 8:
+            if jaw.max() < 6:
                 continue
             slots = (_box(occ, -slot_out - 1, -slot_in - 1, -half_w, half_w - 1)
                      + _box(occ, slot_in, slot_out, -half_w, half_w - 1))
@@ -90,9 +91,9 @@ def find(scene_pts: np.ndarray, target_pts: np.ndarray, top_k: int = 8) -> tuple
             off = np.abs(moment / np.maximum(jaw, 1) - rows)
             top = ndimage.maximum_filter(np.where(T, Hf, 0), size=GAP)
             depth_pref = 1 - np.clip(np.abs(L - 0.4 * top) / np.maximum(top, 1), 0, 1)
-            ok = (jaw >= 8) & (slots == 0) & (off < 2.5)
+            ok = (jaw >= 6) & (slots == 0) & (off < 2.5)
             score = jaw / (GAP * WIDTH) - 0.15 * off + 0.5 * depth_pref - 0.01 * other
-            for valid, sel in ((True, ok), (False, (jaw >= 8) & ~ok)):
+            for valid, sel in ((True, ok), (False, (jaw >= 6) & ~ok)):
                 idx = np.flatnonzero(sel)
                 if len(idx) == 0:
                     continue
