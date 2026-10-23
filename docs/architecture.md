@@ -242,5 +242,6 @@ Mention Isaac Sim in the story only for what we actually used it for.
 ## What's real today
 
 - `cell/policy.py`: blind baseline (one screw, known coordinates). Passes the mock.
-- `cell/lab/scene_viewer.py`: synthetic scene → real camera calibrations → fused point cloud and height map → Rerun.
+- `cell/lab/`: recording of every observation, replay into a fixed Rerun layout, synthetic runs with ground truth
+  (RGB + depth through the real calibrations), height-map fusion.
 - Everything else above is design.

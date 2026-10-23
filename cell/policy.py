@@ -9,12 +9,14 @@ called again with a new observation. act has no time limit: the arm holds still 
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import numpy as np
 import yaml
 
 from calibration.geometry import UF0_Z_MM, flange_pose
+from lab.recorder import Recorder
 
 HERE = Path(__file__).resolve().parent
 
@@ -46,8 +48,9 @@ class Policy:
     IMAGE_FORMAT = "jpeg"
     ACTION = "tcp"
     PREFETCH = False
-    DEPTH = []
+    DEPTH = ["table", "wrist"]            # live depth; the cell's own recordings leave it out, so we record it
     DT = 0.1
+    RECORD = True                         # save every observation to runs/ (replay: uv run python -m lab.replay)
 
     def __init__(self, checkpoint: str | None = None):
         head, yaw, self.bin_xy = _load_scene()
@@ -57,10 +60,14 @@ class Policy:
         for name, xy in (("grasp", self.grasp_xy), ("bin", self.bin_xy)):
             if np.hypot(*xy) > REACH:
                 raise ValueError(f"{name} point {xy} is {np.hypot(*xy):.0f} mm from the base, beyond {REACH} mm")
+        self.rec = Recorder("baseline_v0", meta={"policy": "baseline_v0", "grasp_xy": self.grasp_xy,
+                                                  "bin_xy": self.bin_xy}) if self.RECORD else None
 
     def reset(self) -> None:
         """Called at the start of every rollout."""
         self.plan: list[list[float]] | None = None
+        if self.rec:
+            self.rec.new_rollout()
 
     def _build_plan(self, start: np.ndarray) -> list[list[float]]:
         gx, gy = self.grasp_xy
@@ -99,9 +106,19 @@ class Policy:
         return np.array([tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, -180.0, 0.0, 0.0])
 
     def act(self, obs: dict):
+        t0 = time.perf_counter()
+        chunk, note = self._act(obs)
+        if self.rec:
+            self.rec.log(obs, chunk, act_s=time.perf_counter() - t0, note=note)
+        return chunk
+
+    def _act(self, obs: dict) -> tuple[list, str]:
         if self.plan is None:
             self.plan = self._build_plan(self._tcp(obs))
-        if not self.plan:  # done: hold where we are (the policy cannot end the rollout itself)
-            return [*self._tcp(obs), 0]
+            note = f"planned {len(self.plan)} targets: screw grasp at {np.round(self.grasp_xy).tolist()}, bin at {self.bin_xy.tolist()}"
+        else:
+            note = "continuing plan"
+        if not self.plan:  # done: hold where we are for 1 s (the policy cannot end the rollout itself)
+            return [[*self._tcp(obs), 0]] * 10, "done, holding"
         chunk, self.plan = self.plan[:100], self.plan[100:]
-        return chunk
+        return chunk, note
