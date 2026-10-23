@@ -146,7 +146,7 @@ the gripper can't hold (16 mm cubes, 2×4 Lego bricks, dice). Cups and buckets s
 | Tool | Does | Notes |
 |---|---|---|
 | **Scene model** | The shared data structure: surfaces plus objects (id, geometry, pose, confidence, labels). Everything reads and writes it. | Plain Python dataclasses, saved as JSON + meshes so runs can be replayed. |
-| **Static fusion** | Many depth images + camera poses → one 3D scene | TSDF fusion (Open3D). Already prototyped as a height map in `cell/lab/scene_viewer.py`. |
+| **Static fusion** | Many depth images + camera poses → one 3D scene | TSDF fusion (Open3D). Height-map version in `cell/lab/fusion.py`. |
 | **Dynamic fusion** | The same, while objects move between images | One TSDF per object; each nudge updates that object's pose by registration (ICP). |
 | **Motion segmentation** | Before/after a nudge → which points moved together | Multi-model rigid registration: repeatedly find the dominant rigid motion and peel it off (RANSAC + ICP). |
 | **Surface finder** | Table, steps, tray floors | RANSAC planes (Open3D `segment_plane`), or a height field. |
