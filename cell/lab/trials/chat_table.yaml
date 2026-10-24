@@ -1,0 +1,9 @@
+# The chat app's starting table: three empty boxes and nothing else. Parts arrive by "Joel's hands" (pour a cup).
+instruction: ""
+layout: spread
+objects: []
+fixtures:
+  - {kind: box_60, color: white, at: [0.27, -0.24]}
+  - {kind: box_60, color: gray, at: [0.36, -0.24]}
+  - {kind: box_60, color: black, at: [0.45, -0.24]}
+expect: kind

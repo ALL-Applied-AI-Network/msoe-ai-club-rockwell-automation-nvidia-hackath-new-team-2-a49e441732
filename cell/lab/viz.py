@@ -67,6 +67,10 @@ def start(name: str, save_to: Path | None = None, spawn: bool = False) -> None:
         sinks.append(rr.GrpcSink())
     if sinks:
         rr.set_sinks(*sinks, default_blueprint=blueprint())  # file AND viewer: the file is always complete
+    _scenery()
+
+
+def _scenery() -> None:
     a = np.linspace(0, 2 * np.pi, 200)
     ring = np.stack([0.55 * np.cos(a), 0.55 * np.sin(a), np.full_like(a, SURFACE_Z)], -1)
     corners = np.array([[0.15, -0.45], [0.65, -0.45], [0.65, 0.45], [0.15, 0.45], [0.15, -0.45]])
@@ -79,6 +83,24 @@ def start(name: str, save_to: Path | None = None, spawn: bool = False) -> None:
         rr.log(f"{root}/work_area", rr.LineStrips3D([table], colors=[[120, 120, 120]]), static=True)
 
 
+def start_served(name: str, save_to: Path | None = None, grpc_port: int = 9876, web_port: int = 9090) -> str:
+    """Like start(), but the recording is served: a web viewer (http://localhost:web_port, for the chat page) and any
+    number of native viewers (`rerun <uri>`) can watch it live. Returns the gRPC URI."""
+    global LOG
+    rr.init(re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_"))
+    sinks = [rr.GrpcServerSink(bind_ip="127.0.0.1", port=grpc_port)]
+    LOG = None
+    if save_to is not None:
+        Path(save_to).parent.mkdir(parents=True, exist_ok=True)
+        sinks.append(rr.FileSink(str(save_to)))
+        LOG = open(Path(save_to).parent / "narration.txt", "w", buffering=1)
+    rr.set_sinks(*sinks, default_blueprint=blueprint())
+    _scenery()
+    uri = f"rerun+http://127.0.0.1:{grpc_port}/proxy"
+    rr.serve_web_viewer(web_port=web_port, open_browser=False, connect_to=uri)
+    return uri
+
+
 def set_step(i: int) -> None:
     rr.set_time("step", sequence=i)
 
@@ -87,11 +109,17 @@ PRINT = False  # also print narration to the terminal (lab.trial --print)
 
 
 LOG = None  # narration.txt next to the recording
+LISTENERS: list = []  # f(panel, text, level), called for every narration / VLM line (the chat follows the robot)
 
 
 def _log(panel: str, text: str, level: str) -> None:
     if LOG is not None:
         LOG.write(f"{panel:9s} {level:5s} {text}\n")
+    for f in LISTENERS:
+        try:
+            f(panel, text, level)
+        except Exception:
+            pass
 
 
 def narrate(text: str, level: str = "INFO") -> None:

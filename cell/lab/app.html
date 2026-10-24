@@ -1,0 +1,163 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robot</title>
+<style>
+  :root { --bg: #111317; --panel: #191c22; --line: #2a2f38; --text: #e6e8eb; --dim: #8b93a1; --you: #2f6feb;
+          --robot: #232832; --log: #7d8796; --hands: #d29922; --action: #3fb950; }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; background: var(--bg); color: var(--text);
+         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: grid;
+         grid-template-columns: minmax(340px, 420px) 1fr; }
+  #left { display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0; }
+  header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  header b { flex: 1; }
+  header .state { color: var(--dim); font-size: 12px; }
+  button { background: #262b34; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px;
+           font: inherit; font-size: 12px; cursor: pointer; }
+  button:hover { border-color: #4a5260; }
+  #msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+  .m { max-width: 88%; padding: 7px 10px; border-radius: 10px; white-space: pre-wrap; word-wrap: break-word; }
+  .you { align-self: flex-end; background: var(--you); }
+  .robot { align-self: flex-start; background: var(--robot); }
+  .log, .action, .hands, .system { align-self: stretch; max-width: 100%; padding: 1px 2px; font-size: 12px; }
+  .log { color: var(--log); font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  .action { color: var(--action); font-style: italic; }
+  .hands { color: var(--hands); }
+  .system { color: var(--dim); text-align: center; }
+  #say { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+  #say textarea { flex: 1; resize: none; height: 44px; background: var(--panel); color: var(--text); border: 1px solid var(--line);
+                  border-radius: 8px; padding: 8px; font: inherit; }
+  details { border-top: 1px solid var(--line); background: var(--panel); max-height: 45vh; overflow-y: auto; }
+  summary { padding: 8px 12px; cursor: pointer; color: var(--hands); font-weight: 600; }
+  .hp { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .hp h4 { margin: 4px 0; font-size: 12px; color: var(--dim); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  select, input[type=number] { background: #20242c; color: var(--text); border: 1px solid var(--line); border-radius: 5px;
+                               padding: 3px 4px; font: inherit; font-size: 12px; }
+  input[type=number] { width: 46px; }
+  .obj { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+  .obj span { flex: 1; }
+  .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; border: 1px solid #0006; }
+  #right { position: relative; min-width: 0; }
+  #right iframe { width: 100%; height: 100%; border: 0; display: block; background: #0d0f12; }
+  label { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
+</style>
+</head>
+<body>
+<div id="left">
+  <header>
+    <b>Robot</b><span class="state" id="state">…</span>
+    <label title="each message holds the arm for ~2 s"><input type="checkbox" id="distract"> distracting</label>
+    <button id="native" title="open the native Rerun viewer on this machine">native viewer</button>
+  </header>
+  <div id="msgs"></div>
+  <details id="hands">
+    <summary>Joel's hands</summary>
+    <div class="hp">
+      <div>
+        <h4>Pour a cup</h4>
+        <div id="cup"></div>
+        <div class="row"><button id="addrow">+ part</button><button id="pour" style="border-color:var(--hands)">Pour it</button></div>
+      </div>
+      <div>
+        <h4>On the table</h4>
+        <div id="objs"></div>
+      </div>
+      <div>
+        <h4>Put a box down</h4>
+        <div class="row"><select id="boxcolor"></select><button id="addbox">Put it down</button></div>
+      </div>
+    </div>
+  </details>
+  <div id="say"><textarea id="text" placeholder="Talk to it… (Enter sends)"></textarea><button id="send">Send</button></div>
+</div>
+<div id="right"><iframe id="viewer" title="the robot's mind"></iframe></div>
+<script>
+const KINDS = ["cube_10", "cube_16", "lego_1x2", "lego_2x4", "screw_m6x30", "dowel", "d6", "d4", "d8", "d20", "ring", "jack", "soldier"];
+const COLORS = ["red", "yellow", "blue", "green", "orange", "purple", "white", "black", "gray", "steel", "gold", "wood", "olive", "tan"];
+const SW = {red:"#c82323",yellow:"#ebc81e",blue:"#2350cd",green:"#2a9d3a",orange:"#e8781e",purple:"#7b3fb5",white:"#eeeeee",
+            black:"#222",gray:"#8c8c8c",steel:"#a9adb3",gold:"#d4a72c",wood:"#c8a070",olive:"#6b7b3a",tan:"#d2b48c"};
+const DEFAULT_CUP = [["cube_10","red",2],["cube_10","blue",1],["lego_1x2","yellow",2],["screw_m6x30","steel",2],["dowel","wood",1]];
+const $ = id => document.getElementById(id);
+const post = (url, body) => fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})}).then(r => r.json());
+function opts(sel, list, val) { sel.innerHTML = list.map(x => `<option${x === val ? " selected" : ""}>${x}</option>`).join(""); }
+
+// chat
+const msgs = $("msgs");
+function show(m) {
+  const d = document.createElement("div");
+  d.className = "m " + m.who;
+  d.textContent = (m.who === "hands" ? "✋ " : m.who === "action" ? "⚙ " : "") + m.text;
+  const atBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 40;
+  msgs.appendChild(d);
+  if (atBottom) msgs.scrollTop = msgs.scrollHeight;
+}
+new EventSource("/events").onmessage = e => show(JSON.parse(e.data));
+function send() {
+  const t = $("text").value.trim();
+  if (!t) return;
+  $("text").value = "";
+  post("/say", {text: t});
+}
+$("send").onclick = send;
+$("text").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+
+// viewer + settings
+fetch("/config").then(r => r.json()).then(c => { $("viewer").src = c.viewer; $("distract").checked = c.distract; });
+$("distract").onchange = e => post("/distract", {on: e.target.checked});
+$("native").onclick = () => post("/native");
+try { $("hands").open = localStorage.getItem("hands") !== "closed"; } catch (e) {}
+$("hands").addEventListener("toggle", () => { try { localStorage.setItem("hands", $("hands").open ? "open" : "closed"); } catch (e) {} });
+
+// hands: the cup
+function cupRow(k, c, n) {
+  const r = document.createElement("div");
+  r.className = "row";
+  r.innerHTML = `<select class="k"></select><select class="c"></select><input type="number" class="n" min="0" max="12" value="${n}"><button class="x">×</button>`;
+  opts(r.querySelector(".k"), KINDS, k);
+  opts(r.querySelector(".c"), COLORS, c);
+  r.querySelector(".x").onclick = () => r.remove();
+  $("cup").appendChild(r);
+}
+DEFAULT_CUP.forEach(r => cupRow(...r));
+$("addrow").onclick = () => cupRow("cube_10", "red", 1);
+$("pour").onclick = () => {
+  const items = [...$("cup").children].map(r => ({kind: r.querySelector(".k").value, color: r.querySelector(".c").value,
+                                                   count: +r.querySelector(".n").value})).filter(i => i.count > 0);
+  $("pour").disabled = true;
+  post("/hands", {action: "pour", items}).finally(() => { $("pour").disabled = false; refresh(); });
+};
+opts($("boxcolor"), COLORS, "white");
+$("addbox").onclick = () => post("/hands", {action: "add_box", color: $("boxcolor").value}).then(refresh);
+
+// hands: what's on the table (this is you looking at it: the true positions)
+function refresh() {
+  fetch("/objects").then(r => r.json()).then(d => {
+    $("state").textContent = `${d.state} · robot time ${Math.round(d.t)} s`;
+    $("objs").innerHTML = "";
+    d.objects.sort((a, b) => (b.box - a.box) || a.name.localeCompare(b.name)).forEach(o => {
+      const r = document.createElement("div");
+      r.className = "obj";
+      r.innerHTML = `<i class="sw" style="background:${SW[o.color] || "#888"}"></i><span>${o.name.replace("_", " ")} <small style="color:var(--dim)">(${o.x}, ${o.y})</small></span>`;
+      const take = document.createElement("button");
+      take.textContent = "take";
+      take.onclick = () => post("/hands", {action: "take", id: o.id}).then(refresh);
+      if (o.box) {
+        const tip = document.createElement("button");
+        tip.textContent = "tip out";
+        tip.onclick = () => post("/hands", {action: "tip", id: o.id}).then(refresh);
+        r.appendChild(tip);
+      }
+      r.appendChild(take);
+      $("objs").appendChild(r);
+    });
+  }).catch(() => {});
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
