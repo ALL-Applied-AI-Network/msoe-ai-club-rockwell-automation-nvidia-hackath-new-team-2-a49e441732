@@ -36,6 +36,8 @@ Decide what each message is and act on it:
 - news about the table from the person ("I just dumped more on", "I took the ring"): call table_changed. Never for
   your own plan or moves: something you can't identify yet is not a change to the table.
 - "hold on", "wait", "stop for a sec": call pause. (The real emergency stop is a red button, not you.)
+- "keep going", "try again", "carry on", "continue": call resume. Never turn these into rules: a rule is a lasting
+  preference about the task (what goes where, what to leave alone), not a reaction to a hiccup.
 - a question, a joke, a jab, small talk: just answer. Nothing changes.
 Keep the banner above the chat current with set_status (it's what the person glances at; the chat scrolls away):
 - when you've found what's on the table: phase "planning", e.g. "Found 9 things. Working out a plan."
@@ -66,6 +68,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "table_changed", "description": "The person changed the table (added or took things): take a fresh look and carry on with the job.",
      "parameters": {"type": "object", "properties": {"note": {"type": "string"}}, "required": ["note"]}}},
     {"type": "function", "function": {"name": "pause", "description": "Stop after the current move and wait.",
+     "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "resume", "description": "Carry on with the current job after a pause or a stop, keeping what you've learned.",
      "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "set_status", "description": "Rewrite the banner pinned above the chat: what you're doing now, and the plan in one line. It stays until you change it.",
      "parameters": {"type": "object", "properties": {
@@ -99,7 +103,7 @@ class Chat:
         with self.lock:  # one turn at a time: answers come back in order
             self.kind = kind
             self.history.append({"role": "user", "content": text})
-            self.history = self.history[-30:]
+            self._trim()
             for _ in range(4):  # model -> tools -> model, until it answers in words
                 msgs = [{"role": "system", "content": self.system},
                         {"role": "system", "content": "Your status right now:\n" + self.robot.status()
@@ -110,6 +114,8 @@ class Chat:
                                                             extra_body={"reasoning": {"effort": "low"}})
                 except Exception as e:
                     self.say("system", f"(the chat model didn't answer: {str(e)[:120]})")
+                    self.history = [m for m in self.history if m["role"] == "user" or
+                                    (m["role"] == "assistant" and not m.get("tool_calls"))][-10:]  # a clean history
                     return
                 m = r.choices[0].message
                 calls = m.tool_calls or []
@@ -125,6 +131,14 @@ class Chat:
                     self.say("action", f"{c.function.name}: {result}")
                     self.history.append({"role": "tool", "tool_call_id": c.id, "content": result})
 
+    def _trim(self, keep: int = 30) -> None:
+        """The last messages, starting at a person's (or event's) message: cutting in the middle of a tool call leaves
+        a tool result without its call, and the model refuses the whole conversation (error 400)."""
+        h = self.history[-keep:]
+        while h and h[0]["role"] != "user":
+            h = h[1:]
+        self.history = h
+
     def _do(self, name: str, args: dict) -> str:
         if name == "start_sorting":
             return self.robot.start(args.get("instruction", ""))
@@ -136,6 +150,8 @@ class Chat:
             return self.robot.start() if self.robot.instruction or self.robot.state == "working" else "noted; nothing to redo yet"
         if name == "pause":
             return self.robot.pause()
+        if name == "resume":
+            return self.robot.resume()
         if name == "set_status":
             self.banner = {"phase": args.get("phase", "working"), "headline": args.get("headline", ""),
                            "plan": args.get("plan") or self.banner.get("plan", "")}

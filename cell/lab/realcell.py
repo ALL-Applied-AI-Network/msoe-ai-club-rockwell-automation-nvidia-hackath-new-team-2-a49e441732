@@ -64,6 +64,10 @@ class RealCell:
 
     def start_trial(self, trial_id: str | None = None) -> dict:
         trials = self.trials()
+        running = next((x for x in trials if x["status"] == "running"), None)
+        if running is not None:  # already running (started before a restart of the page): carry on with it
+            self.trial, self.t0 = running, None
+            return running
         t = next((x for x in trials if x["trial_id"] == trial_id), None) if trial_id else \
             next((x for x in trials if x["status"] == "ready"), None)
         if t is None:
@@ -111,11 +115,14 @@ class RealCell:
             part = rows[k:k + 100]
             (self.client.act if kind == "joints" else self.client.act_tcp)(part, dt)
             time.sleep(len(part) * dt * 0.8)  # most of it plays out before we start asking
-            while True:  # then until the queue is empty and the arm has stopped
-                obs = self.client.observe(["table"], (64, 36), "jpeg")
+            last = None
+            for _ in range(200):  # then until the queue is empty and the joints have stopped (obs["status"] is the
+                obs = self.client.observe(["table"], (64, 36), "jpeg")  # trial's, "running" all along: not the arm's)
                 self._take(obs)
-                if obs["queued"] == 0 and obs["status"] != "running":
+                q = np.asarray(obs["joints"][:6], float)
+                if obs["queued"] == 0 and last is not None and np.abs(q - last).max() < 0.05:
                     break
+                last = q
                 time.sleep(0.15)
             if on_frame is not None:
                 on_frame(self)

@@ -55,6 +55,7 @@ class Robot:
         viz.LISTENERS.append(self._heard)
         self.instruction, self.rules = "", []
         self.policy: SortPolicy | None = None
+        self.parked: SortPolicy | None = None  # a job paused or stopped by an error: resume() picks it up again
         self.pending: str | None = None   # "start" | "pause": picked up by the robot thread between moves
         self.state = "idle"
         self.distract_s = 0.0             # hold still this long before the next move (talking to it slows it down)
@@ -88,6 +89,17 @@ class Robot:
         with self.lock:
             self.pending = "pause"
         return "pausing after this move"
+
+    def resume(self) -> str:
+        """Carry on with the job that was paused or stopped (what it has learned kept), or start it again."""
+        with self.lock:
+            if self.policy is not None:
+                return "already working"
+            if self.parked is not None:
+                self.policy, self.parked, self.state = self.parked, None, "working"
+                self._emit("state", "working")
+                return "carrying on where I left off"
+        return self.start()
 
     # ------------------------------------------------------------ the world: reset the simulator, or switch to the real cell
 
@@ -226,7 +238,7 @@ class Robot:
                             self._new_policy()
                             obs, fresh = self.cell.observe(), True
                     elif cmd == "pause" and self.policy is not None:
-                        self.policy, self.state = None, "paused"
+                        self.parked, self.policy, self.state = self.policy, None, "paused"
                         self._emit("state", "paused")
                     if self.policy is not None:
                         obs, fresh = self._act(obs, fresh)
@@ -245,11 +257,12 @@ class Robot:
                     self._emit("note", "The trial is over (time's up, or the operator ended it).")
                 except Exception as e:  # a crash in the policy must not kill the body
                     self._emit("note", f"I hit an error and stopped: {type(e).__name__}: {e}")
-                    self.policy, self.state = None, "idle"
+                    self.parked, self.policy, self.state = self.policy, None, "stopped"
             if self.policy is None:
                 time.sleep(0.2)
 
     def _new_policy(self) -> None:
+        self.parked = None
         pol = SortPolicy(instruction=self.full_instruction())
         pol.reset()
         if pol.labeler is not None:
@@ -276,26 +289,32 @@ class Robot:
             o = self.cell.observe()
             self.cell.play(P.hold(np.asarray(o["tcp_pose"][:3], float), float(o["tcp_pose"][5]), int(o["joints"][6] >= 0.5), n),
                            on_frame=self.anim)
-        problem = self._precheck(chunk, obs)
-        if problem and self.mode == "real":  # on real hardware a move the model says is unsafe isn't sent
-            self.policy, self.state = None, "stopped"
-            self._emit("note", f"I stopped before a move my arm check didn't like: {problem}. Tell me how to go on.")
-            return obs, True
+        blocked = self._precheck(chunk, obs)
+        if blocked:  # only a fingertip into the table is held back (real cell); skip it, carry on with the job
+            self._emit("note", f"I skipped a move: {blocked}.")
+            return self.cell.observe(), True
         self.cell.play(chunk, on_frame=self.anim)
         fresh = getattr(pol, "wants_obs", True)
         return (self.cell.observe() if fresh else obs), fresh
 
     def _precheck(self, chunk, obs) -> str | None:
-        """The arm model's check of a tcp chunk (IK continuity, the table): the problem, or None. In the simulator a
-        problem is only logged (we learn how often the check cries wolf before it's allowed to stop real moves)."""
+        """What should hold a tcp chunk back: on the real cell, a fingertip below the table. The arm model's fuller
+        check (IK continuity, the arm against the table) is only logged: on the real cell it blocked moves the arm
+        could make (its IK is stricter than the controller's, and its fingers fatter than the real ones), and the
+        controller enforces its own limits."""
         rows = np.atleast_2d(np.asarray(chunk, float))
         if rows.shape[1] != 7 or obs is None:
             return None
-        rep = armcheck.check(rows, np.asarray(obs["joints"][:6], float), [])
-        if rep.ok:
-            return None
-        viz.narrate(f"(arm check: {rep.problem})", level="WARN")
-        return rep.problem
+        lowest = float((rows[:, 2] - P.TABLE_UF0).min())  # the fingertip's height over the table, mm
+        if self.mode == "real" and lowest < 0.5:
+            return f"it would put the fingertips {lowest:.1f} mm into the table"
+        try:
+            rep = armcheck.check(rows, np.asarray(obs["joints"][:6], float), [])
+            if not rep.ok:
+                viz.narrate(f"(arm check, not blocking: {rep.problem})", level="WARN")
+        except Exception:
+            pass
+        return None
 
     # ------------------------------------------------------------ watching the table when idle
 

@@ -164,7 +164,7 @@ $("check").onclick = () => {
   post("/real/check", {url: $("url").value, token: $("token").value}).then(r => {
     $("trials").textContent = r.ok === false && r.error ? "couldn't connect" :
       (r.ready_trial ? `trial ${r.ready_trial} ready` : "connected · waiting for the operator");
-    $("run").disabled = !r.ready_trial;
+    $("run").disabled = !(r.ready_trial || (r.trials || []).some(t => t.status === "running"));
   }).finally(() => { $("check").disabled = false; });
 };
 $("run").onclick = () => { $("run").disabled = true; post("/real/start"); };
@@ -201,7 +201,8 @@ function refresh() {
     if (d.mode === "real" && d.trials) {
       const ready = d.trials.find(t => t.status === "ready"), run = d.trials.find(t => t.status === "running");
       $("trials").textContent = run ? `trial ${run.id} running` : ready ? `trial ${ready.id} ready` : "waiting for the operator";
-      $("run").disabled = !ready;
+      $("run").disabled = !(ready || run);
+      $("run").textContent = run && !ready ? "Rejoin the test" : "Run the test";  // a running trial: pick it up again
     }
     $("objs").innerHTML = "";
     d.objects.sort((a, b) => (b.box - a.box) || a.name.localeCompare(b.name)).forEach(o => {
