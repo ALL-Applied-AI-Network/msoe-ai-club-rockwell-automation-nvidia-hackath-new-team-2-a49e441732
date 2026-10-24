@@ -1,11 +1,11 @@
 # Your submission. Run: uv run run.py --submit
 
-team: <team name>
-contact: <name, email>
-policy: <policy name>             # Give your policy a name (e.g., GraspV1)
+team: Her Majesty's Magical Severed Homunculus Arm
+contact: Joel Roberts, rober687@uwm.edu
+policy: TalkSort v1               # Give your policy a name (e.g., GraspV1)
 
 # Choose the closest model type. This does not affect scoring.
-model_type: Hybrid
+model_type: TAMP + FMs   # VLMs decide what things are, the rule and the boxes; scripted grasp and rake moves execute
 # VA          Images -> actions (ACT, Diffusion Policy)
 # VLA         Images + instructions -> actions (NVIDIA GR00T)
 # WAM         Predicts future states to guide robot actions
@@ -14,24 +14,24 @@ model_type: Hybrid
 # Hybrid      Combines multiple approaches, or choose this if unsure
 
 # --- Task ---
-task_id: pick-cube-C              # Short task name ending with your team letter
-task: Put the cube into the yellow bin.
+task_id: sort-objects              # Short task name ending with your team letter (we don't know ours)
+task: Sort the objects on the table into the three colored boxes, following the operator's spoken instructions.
                                   # Describe your task in one short sentence
 
 # --- Test Setup ---
 # Tell us how to prepare the workspace for each rollout.
 # Objects and layout can stay the same or change between rollouts.
 
-objects: same
+objects: same                     # six 10 mm cubes (2 red, 2 blue, 2 yellow), 2 screws, 1 hex key
 # same: Use the same set of objects for every rollout.
 # different: May use different objects across rollouts.
 
-layout: same
+layout: same                      # dumped in a loose pile mid-table; the three boxes where they stand
 # same: Place objects in the same positions for every rollout.
 # different: May change object positions across rollouts.
 
 # --- Evaluation ---
-rollouts: 10                      # Number of attempts in this test
+rollouts: 3                       # Number of attempts in this test
                                   # Each attempt is scored success or failure
 
 # --- Hardware ---

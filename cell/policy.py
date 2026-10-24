@@ -1,6 +1,6 @@
 """Baseline v0: blind scripted pick of one screw at a known position, dropped into the yellow bin.
 
-No vision. It reads the screw and bin positions from submission/placement.yaml (the operator places them there) and
+No vision. It reads the screw and bin positions from submission/placement.baseline.yaml (the operator places them there) and
 plays a fixed approach -> descend -> close -> lift -> carry -> open sequence in tcp mode. This is the baseline that a
 vision policy has to beat once the screw is moved.
 
@@ -30,7 +30,7 @@ SPEED = 100.0         # mm/s of fingertip travel
 REACH = 540.0         # stay inside the ~550 mm reach limit (controller faults beyond it)
 
 
-def _load_scene(path: Path = HERE / "submission" / "placement.yaml") -> tuple[np.ndarray, float, np.ndarray]:
+def _load_scene(path: Path = HERE / "submission" / "placement.baseline.yaml") -> tuple[np.ndarray, float, np.ndarray]:
     """(screw head xy, screw yaw deg, bin xy) from the first rollout in placement.yaml."""
     rollouts = yaml.safe_load(path.read_text())["rollouts"]
     objs = rollouts[0]["objects"]

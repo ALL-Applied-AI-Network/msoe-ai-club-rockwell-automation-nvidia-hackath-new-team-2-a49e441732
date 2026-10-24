@@ -118,7 +118,10 @@ class Robot:
         return self.reset()
 
     def use_real(self, url: str, token: str, ca: str | None = None) -> dict:
-        """Connect to the real cell and check it (it doesn't start anything: start_trial does)."""
+        """Connect to the real cell and check it (it doesn't start anything: start_trial does). No token: use the one
+        from our approved request (`run.py --submit` wrote .request.json)."""
+        if not token:
+            url, token = _approved_token(url, ca)
         cell = RealCell(url, token, ca)
         report = cell.check()
         self._stop_now()
@@ -341,3 +344,18 @@ class Robot:
         b = self.cell.add_box(color, at=(0.30, 0.22))
         viz.truth_setup(self.cell)
         return f"put a {color} box down at (300, 220) mm"
+
+
+def _approved_token(url: str, ca: str | None) -> tuple[str, str]:
+    """(url, token) of our submitted request, once the organizers have approved it."""
+    import json
+    from cell_client import CellClient
+    req_file = Path(__file__).resolve().parents[1] / ".request.json"
+    if not req_file.exists():
+        raise RuntimeError("no token given, and no submitted request (.request.json) to take one from")
+    req = json.loads(req_file.read_text())
+    st = CellClient(req.get("url") or url, "", ca).request_status(req["request_id"], req["secret"])
+    if st.get("status") != "approved":
+        raise RuntimeError(f"request {req['request_id']} is {st.get('status')}"
+                           + (f": {st['reason']}" if st.get("reason") else "") + "; paste a run token, or wait for approval")
+    return req.get("url") or url, st["token"]
