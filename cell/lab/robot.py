@@ -276,6 +276,8 @@ class Robot:
         pol = self.policy
         viz.set_step(self.step)
         viz.set_sim_time(self.cell.t)
+        if fresh:
+            self._record(obs)
         self.step += 1
         chunk = pol.act(obs)
         if getattr(pol, "done", False):
@@ -296,6 +298,22 @@ class Robot:
         self.cell.play(chunk, on_frame=self.anim)
         fresh = getattr(pol, "wants_obs", True)
         return (self.cell.observe() if fresh else obs), fresh
+
+    def _record(self, obs) -> None:
+        """What the robot was given: the raw images and depth to Rerun (the sensor strip), and on the real cell also to
+        disk (runs/<session>/obs/NNNN.npz: depth, joints, pose; .jpg images): the real sensors' data, to tune on."""
+        viz.images(obs)
+        viz.arm("mind", obs["joints"])
+        if self.mode != "real":
+            return
+        import cv2
+        d = self.dir / "obs"
+        d.mkdir(exist_ok=True)
+        np.savez_compressed(d / f"{self.step:04d}.npz", joints=np.asarray(obs["joints"], float),
+                            tcp_pose=np.asarray(obs["tcp_pose"], float), t=float(obs["t"]),
+                            **{f"depth_{c}": v for c, v in (obs.get("depth") or {}).items()})
+        for c, img in (obs.get("images") or {}).items():
+            cv2.imwrite(str(d / f"{self.step:04d}_{c}.jpg"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 92])
 
     def _precheck(self, chunk, obs) -> str | None:
         """What should hold a tcp chunk back: on the real cell, a fingertip below the table. The arm model's fuller
