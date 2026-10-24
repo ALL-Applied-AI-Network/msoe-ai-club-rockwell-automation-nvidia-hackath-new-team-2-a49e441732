@@ -26,6 +26,8 @@ from lab.policies.scan import camera_offset_mm
 from lab.world import STAGING, World
 
 STAGING_CENTER = (float(STAGING[0].mean()), float(STAGING[1].mean()))
+PUSH_M = 0.03          # a rake carries what it pushes about this far past the fingers' end
+REACH_MARGIN_MM = 50   # ... and that must stay this far inside the arm's reach, so it can be picked up again
 
 
 class ExplorePolicy:
@@ -293,6 +295,8 @@ class ExplorePolicy:
         if np.dot(d, np.array(STAGING_CENTER) - c) > 0:
             d = -d
         reach = T.radius + 0.025
+        if not P.reachable(*(c + d * (reach + PUSH_M)), margin_mm=REACH_MARGIN_MM):
+            d = -d  # what it pushes would end up out of the arm's reach: push the other way
         return c - d * reach, c + d * reach
 
     def _say(self, events) -> None:

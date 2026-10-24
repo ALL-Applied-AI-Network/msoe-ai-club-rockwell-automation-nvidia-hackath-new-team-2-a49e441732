@@ -56,9 +56,12 @@ def start(name: str, save_to: Path | None = None, spawn: bool = False) -> None:
     """Begin a recording: to a .rrd file, a live viewer, or both. Logs the static scenery in both 3D views."""
     rr.init(re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_"))  # Rerun renames ids with spaces or brackets: keep them plain
     sinks = []
+    global LOG
+    LOG = None
     if save_to is not None:
         Path(save_to).parent.mkdir(parents=True, exist_ok=True)
         sinks.append(rr.FileSink(str(save_to)))
+        LOG = open(Path(save_to).parent / "narration.txt", "w", buffering=1)  # the text panels, greppable
     if spawn:
         rr.spawn(connect=False)  # starts a viewer if none is running
         sinks.append(rr.GrpcSink())
@@ -83,14 +86,24 @@ def set_step(i: int) -> None:
 PRINT = False  # also print narration to the terminal (lab.trial --print)
 
 
+LOG = None  # narration.txt next to the recording
+
+
+def _log(panel: str, text: str, level: str) -> None:
+    if LOG is not None:
+        LOG.write(f"{panel:9s} {level:5s} {text}\n")
+
+
 def narrate(text: str, level: str = "INFO") -> None:
     rr.log("narration", rr.TextLog(text, level=level))
+    _log("narration", text, level)
     if PRINT:
         print(("   " if level == "DEBUG" else "") + text, flush=True)
 
 
 def vlm(text: str, level: str = "INFO") -> None:
     rr.log("vlm", rr.TextLog(text, level=level))
+    _log("vlm", text, level)
 
 
 def label_crop(r: dict) -> None:
@@ -267,6 +280,8 @@ def things(world, cams: dict | None = None, obs: dict | None = None) -> None:
         lab = getattr(t, "label", None) or {}
         said = (f"{lab.get('color', '')} {lab.get('name', '')} ({float(lab.get('confidence') or 0):.0%}"
                 + (f", {lab.get('count')} things" if int(lab.get('count') or 1) > 1 else "") + ")") if lab else ""
+        if getattr(t, "colour", None):  # boxes: the colour measured from the camera, which the director is told
+            said += f" · camera: {t.colour}"
         rows.append(f"| #{t.id} | {st} | {said} | {getattr(t, 'group', '') or ''} | {getattr(t, 'plan', '') or ''} | {md} | {f'#{t.parent}' if t.parent else ''} | {t.area} | {t.height_mm:.0f} | "
                     f"{'; '.join(t.history[-2:])} |")
     n1, n2 = sum(t.status == "one" for t in ts), sum(t.status == "stuck" for t in ts)

@@ -105,9 +105,12 @@ def compose(img: np.ndarray, uv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.hstack([close, full]), close
 
 
-# best on our crops (lab/label_eval.py, Oct 23): nano omni 4/5 names in ~16 s; super 3/5 ~15 s; llama 90b 4/5 but 1-5 min
-FALLBACKS = ["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "nvidia/nemotron-3.5-super-vl-120b-a12b",
-             "meta/llama-3.2-90b-vision-instruct"]
+# best on our crops (lab/label_eval.py, Oct 23): nano omni 4/5 names in ~16 s; super 3/5 ~15 s; llama 90b 4/5 but 1-5 min.
+# GPT-6 Luna (OpenRouter, if its key is set) is the first fallback: the free NVIDIA endpoint answers 429 (too many
+# requests) at busy times, and the next NVIDIA model is then just as busy.
+FALLBACKS = ["nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "openrouter/openai/gpt-6-luna",
+             "nvidia/nemotron-3.5-super-vl-120b-a12b", "meta/llama-3.2-90b-vision-instruct"]
+TIMEOUT_S = 25.0  # a close-up normally takes 2-15 s: past this, try the next model
 
 
 def usable(answer) -> bool:
@@ -118,7 +121,7 @@ def usable(answer) -> bool:
 class Labeler:
     def __init__(self, cams: dict, model: str | None = None, save_dir: Path | None = None):
         self.cams, self.model, self.save_dir = cams, model, save_dir
-        self.models = list(dict.fromkeys(([vlm.model_id(model)] if model else []) + FALLBACKS))
+        self.models = [m for m in dict.fromkeys(([vlm.model_id(model)] if model else []) + FALLBACKS) if vlm.configured(m)]
         self.pool = ThreadPoolExecutor(max_workers=6)
         self.pending: dict[int, Future] = {}
         self.asked: dict[int, tuple[str, int]] = {}  # id -> (status, footprint mm²) when last asked
@@ -184,12 +187,12 @@ class Labeler:
         for model in self.models:
             for k in range(2):
                 try:
-                    r = vlm.ask_image(picture, prompt, model=model, max_tokens=2000, think=False)
+                    r = vlm.ask_image(picture, prompt, model=model, max_tokens=2000, think=False, timeout=TIMEOUT_S)
                     err = None if usable(r and r["json"]) else "no usable answer: " + (r or {}).get("text", "")[:120]
                 except Exception as e:  # a failed call is an answer too: shown, not fatal
                     r, err = None, str(e)[:200]
                 tries.append(f"{model.split('/')[-1]}: {err or 'ok'}")
-                if err is None:
+                if err is None or "429" in err:  # too many requests: this model is busy, go straight to the next
                     break
                 time.sleep(2 + 3 * k)
             if err is None:

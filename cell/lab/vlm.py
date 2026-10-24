@@ -69,12 +69,13 @@ def configured(name: str | None = None) -> bool:
     return bool(mid and os.getenv("OPENROUTER_API_KEY" if mid.startswith(OPENROUTER) else "VLM_API_KEY"))
 
 
-def _client(mid: str):
-    """(client, the provider's own model id)."""
+def _client(mid: str, timeout: float | None = None):
+    """(client, the provider's own model id). No retries inside the client: the callers retry on other models."""
     from openai import OpenAI
+    kw = {"timeout": timeout or 600.0, "max_retries": 0}
     if mid.startswith(OPENROUTER):
-        return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.getenv("OPENROUTER_API_KEY")), mid[len(OPENROUTER):]
-    return OpenAI(base_url=os.getenv("VLM_BASE_URL") or None, api_key=os.getenv("VLM_API_KEY")), mid
+        return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.getenv("OPENROUTER_API_KEY"), **kw), mid[len(OPENROUTER):]
+    return OpenAI(base_url=os.getenv("VLM_BASE_URL") or None, api_key=os.getenv("VLM_API_KEY"), **kw), mid
 
 
 def tile(images: dict[str, np.ndarray], width: int = 1280) -> np.ndarray:
@@ -98,12 +99,13 @@ def ask(images: dict[str, np.ndarray], prompt: str, max_tokens: int = 8000, mode
 
 
 def ask_image(image: np.ndarray | None, prompt: str, max_tokens: int = 8000, model: str | None = None,
-              think: bool | None = None) -> dict | None:
+              think: bool | None = None, timeout: float | None = None) -> dict | None:
     """One RGB picture (or none: text only) + prompt; same answer format as ask().
-    think=False turns off a reasoning model's thinking (Nemotron: same labels in ~3 s instead of ~90 s)."""
+    think=False turns off a reasoning model's thinking (Nemotron: same labels in ~3 s instead of ~90 s).
+    timeout: give up after this many seconds (the free endpoint sometimes holds a request for minutes)."""
     if not configured(model):
         return None
-    client, mid = _client(model_id(model))
+    client, mid = _client(model_id(model), timeout)
     content = [{"type": "text", "text": prompt}]
     if image is not None:
         ok, buf = cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])

@@ -14,9 +14,11 @@
            into its box. Gone from the table, nothing left behind, nothing dropped: it was one object AND it's sorted.
            Part left behind: it was several (the rest are new things to look at)
          - a big clump: rake through it to spread it out (like tipping out a jigsaw)
-         - a thing the VLM isn't sure of: test it physically (grip and carry to a clear spot, or rake); once it has
-           moved as one piece, it's sortable
-         - nothing to do until the VLM answers: hold still (the clock keeps running, as on the real cell)
+         - a thing the VLM isn't sure of: test it physically (grip and carry it next to the box it will probably go
+           in, so the last carry is short; or rake); once it has moved as one piece, it's sortable
+         - nothing to do until the VLM answers: hold still for a few seconds (the clock keeps running, as on the
+           real cell); if the answer is slow, test something meanwhile rather than stand there
+       every touch counts: rakes push things toward the boxes and never out of the arm's reach
     4. anything that vanishes without a trace: look around the table for it
 """
 from __future__ import annotations
@@ -28,12 +30,15 @@ from calibration.geometry import depth_to_base
 from lab import grasp, perception, primitives as P, viz
 from lab.director import Director, _name
 from lab.fusion import X_RANGE, Y_RANGE, carve_merge, height_map
-from lab.policies.explore import ExplorePolicy
+from lab.policies.explore import PUSH_M, REACH_MARGIN_MM, ExplorePolicy
 from lab.policies.scan import camera_offset_mm
 from lab.world import footprint
 
 TRUST = 0.85        # VLM confidence at which an untested thing is carried straight to its box
 WAIT_S = 2.0        # hold still this long at a time while waiting for the VLM
+BOX_GAP_M = 0.035   # rakes leave things at least this far from a box: room for the fingers to get at them
+PATIENCE_S = 15.0   # stand still at most this long in a row while there's something to test meanwhile (a close-up
+                    # usually lands in 3-15 s, and a test costs ~12 s of arm time plus a touch: waiting is cheaper)
 MAX_WAIT_S = 240.0  # after this much waiting in all, stop waiting: test things physically, without names
 
 
@@ -46,7 +51,8 @@ class SortPolicy(ExplorePolicy):
     def reset(self) -> None:
         super().reset()
         self.director = Director(self.labeler, self.cams, self.instruction)
-        self.waited = 0.0
+        self.waited = 0.0  # seconds stood still for the VLM, in all
+        self.streak = 0.0  # ... since the last move
         self.forced = 0
 
     # ------------------------------------------------------------ the loop
@@ -106,8 +112,13 @@ class SortPolicy(ExplorePolicy):
                     obs = yield rows
                     continue
                 if (self.director.busy() or self.labeler.pending) and self.waited < MAX_WAIT_S:
-                    obs = yield from self._wait(obs)
-                    continue
+                    idle = [t for t in todo if t.plan.startswith("waiting") and t.status == "blob" and t.tries < 2]
+                    if self.streak < PATIENCE_S or not idle:
+                        obs = yield from self._wait(obs)
+                        continue
+                    T = max(idle, key=lambda t: t.area)  # the answer is slow: do something useful meanwhile
+                    T.plan = "test: no answer yet, so test it meanwhile"
+                    act = self._test_action(obs, pts, T)
                 if self.waited >= MAX_WAIT_S:  # the VLM is too slow today: fall back on physics
                     slow = [t for t in todo if t.plan.startswith("waiting") and t.status == "blob" and t.tries < 2]
                     if slow:
@@ -124,6 +135,7 @@ class SortPolicy(ExplorePolicy):
                 break
             rows, action, spots, msg = act
             n += 1
+            self.streak = 0.0
             viz.narrate(f"Move {n}. {msg}")
             self._moving()
             obs = yield rows
@@ -151,7 +163,7 @@ class SortPolicy(ExplorePolicy):
             box = box if box in self.world.things and self.world.things[box].status == "bin" else None
             t.group, t.dest = (g.get("name") if g else None), box
             why_check = self.director.check(t.id)
-            clash = self.director.conflict(t.id)
+            clash = self.director.conflict(t.id, self.world)
             if self.labeler.stale(t):
                 t.plan = "waiting for its close-up" + (" (it changed)" if lab else "")
                 continue
@@ -216,13 +228,14 @@ class SortPolicy(ExplorePolicy):
         good, bad = grasp.find(self._scene(pts), self._target(T)) if T.tries < 2 else ([], [])
         if good and T.area <= 350:
             g, why = self._test_grip(T, good)
-            spot = self.world.staging_spot(T.radius if T.area < 400 else 0.02)
+            near, where = self._stage_near(T)
+            spot = self.world.staging_spot(T.radius if T.area < 400 else 0.02, near=near)
             if spot is None:
                 return None
             viz.plan_grip(good[1:], bad, g, spot)
-            rows, self.note = P.pick_and_place(obs["tcp_pose"], (g.x, g.y), g.height_mm, g.yaw, spot)
+            rows, self.note = P.pick_and_place(obs["tcp_pose"], (g.x, g.y), g.height_mm, g.yaw, spot, safe_mm=self._safe_mm())
             action = {"kind": "carry", "target": T.id, "grip": (g.x, g.y, g.yaw), "place": (spot[0], spot[1], g.yaw)}
-            return rows, action, [np.array(spot), T.centroid[:2]], f"Test #{T.id} ({T.plan}): {why}; carry it to a clear spot."
+            return rows, action, [np.array(spot), T.centroid[:2]], f"Test #{T.id} ({T.plan}): {why}; carry it {where}."
         line = self._safe_rake(T)
         if line is None:
             self._say([f"#{T.id}: can't grip it and can't rake it without hitting a box. Leaving it."])
@@ -234,13 +247,45 @@ class SortPolicy(ExplorePolicy):
         action = {"kind": "rake", "target": T.id, "line": (s, e)}
         return rows, action, [(s + e) / 2], f"#{T.id} ({T.plan}): rake through it to spread it out."
 
+    def _stage_near(self, T):
+        """Where to set T down after testing it: by its box if the director has given it one, else by the boxes."""
+        bins = self.world.bins()
+        if T.dest in self.world.things:
+            return self.world.things[T.dest].centroid[:2], f"next to box #{T.dest}, where it will probably go"
+        if bins:
+            return np.mean([b.centroid[:2] for b in bins], axis=0), "over by the boxes"
+        return None, "to a clear spot"
+
+    def _safe_mm(self) -> float:
+        return max([P.SAFE_MM] + [b.height_mm + 30 for b in self.world.bins()])
+
     def _safe_rake(self, T):
-        """A rake line through T that stays clear of every box (across first, then along)."""
+        """A rake line through T (across it or along it, either way) that stays clear of every box, and leaves what it
+        pushes well inside the arm's reach. Of those, the one that pushes things toward the boxes (less to carry
+        later); across beats along (it spreads a clump better)."""
+        bins = self.world.bins()
+        best, best_score = None, np.inf
         for along in (False, True):
             s, e = self._rake_line(T, along=along)
-            if all(_dist_to_segment(b.centroid[:2], s, e) > b.radius + 0.015 for b in self.world.bins()):
-                return s, e
-        return None
+            for a, b in ((s, e), (e, s)):
+                u = (b - a) / max(np.linalg.norm(b - a), 1e-9)
+                push = b + u * PUSH_M  # where the pushed parts end up
+                if not P.reachable(*push, margin_mm=REACH_MARGIN_MM):
+                    continue
+                if any(_dist_to_segment(x.centroid[:2], a, push) < x.radius + BOX_GAP_M for x in bins):
+                    continue
+                score = (min(np.hypot(*(x.centroid[:2] - push)) for x in bins) if bins else np.hypot(*push)) + 0.03 * along
+                if score < best_score:
+                    best, best_score = (a, b), score
+        if best is None and bins:  # hard against a box: start between it and the box, push straight away from the box
+            c = T.points[:, :2].mean(0)
+            B = min(bins, key=lambda x: np.hypot(*(x.centroid[:2] - c)))
+            u = (c - B.centroid[:2]) / max(np.hypot(*(c - B.centroid[:2])), 1e-9)
+            a, b = c - u * (T.radius + 0.006), c + u * (T.radius + 0.04)
+            if (np.hypot(*(a - B.centroid[:2])) > 0.72 * B.radius + 0.006  # fingers land outside the box's wall
+                    and P.reachable(*(b + u * PUSH_M), margin_mm=REACH_MARGIN_MM)):
+                best = (a, b)
+        return best
 
     def _spread(self, obs, off, pts, max_rakes: int = 4, big_mm2: int = 350):
         """As in explore, but never rake into a box."""
@@ -273,9 +318,14 @@ class SortPolicy(ExplorePolicy):
     def _search(self, obs, off, pts):
         """Something vanished: look over the whole work area for it (two wide wrist looks cover the table)."""
         gone = ", ".join(f"#{t.id}" for t in self.world.missing)
-        viz.narrate(f"Lost {gone}. Looking around the table for it.")
+        viz.narrate(f"Lost {gone}. Looking where it was last seen, then around the table.")
+        last = [t.centroid[:2].copy() for t in self.world.missing if P.reachable(*t.centroid[:2])]
         self.world.missing = []
-        obs, fresh = yield from self._sweep(obs, off, [np.array([0.42, -0.14]), np.array([0.42, 0.14])])
+        spots = []
+        for q in last:  # one look covers ~480 x 270 mm: no need to look twice at nearly the same place
+            if all(np.hypot(*(q - r)) > 0.06 for r in spots):
+                spots.append(q)
+        obs, fresh = yield from self._sweep(obs, off, spots[:3] + [np.array([0.42, -0.14]), np.array([0.42, 0.14])])
         pts = carve_merge(pts, fresh)
         rest, events, tracked = self.world.track(pts)
         segs, _ = perception.segment(rest)
@@ -286,6 +336,7 @@ class SortPolicy(ExplorePolicy):
     def _wait(self, obs):
         """Hold still while the VLM thinks (the clock runs, as it would on the real cell)."""
         self.waited += WAIT_S
+        self.streak += WAIT_S
         self.note = "waiting for the VLM"
         if self.waited % 10 < WAIT_S:
             viz.narrate(f"Waiting for the VLM ({'director' if self.director.busy() else 'close-ups'}): {self.waited:.0f} s so far.", level="DEBUG")
@@ -331,7 +382,7 @@ class SortPolicy(ExplorePolicy):
             # ask once most close-ups are back (or nothing is pending), so the plan isn't made blind
             things = [t for t in self.world.things.values() if t.status in ("blob", "one")]
             named = sum(bool(getattr(t, "label", None)) for t in things)
-            if things and (named >= 0.7 * len(things) or not self.labeler.pending):
+            if things and (named >= 0.7 * len(things) or not self.labeler.pending or self.director.forced):
                 msg = self.director.request(self.world, obs)
                 if msg:
                     viz.vlm(msg, level="DEBUG")

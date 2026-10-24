@@ -61,19 +61,69 @@ table only what doesn't fit. A box's colour means nothing unless the user's inst
 Rules: put every thing id (not the boxes) in exactly one group, or in "check" if you can't tell what it is yet.
 "box" is a box id from the list, or null to leave that group on the table; use each box for one group only.
 "sure" lists the ids you'd bet are ONE familiar object each, so the robot sorts them without testing.
+Carrying a thing into its box IS a test: if it arrives whole and nothing is left behind, it was one object. So a thing
+that is alone, the size you'd expect, and looks like one familiar object belongs in "sure" even if untouched; "check"
+is for real doubt about what it is or whether it's several things stuck together, not for "nobody has moved it yet".
+A thing that "moved as one piece" has been tested: it is one object. Never put it in "check"; put it in the group
+its close-up name fits best.
 Keep the same rule and groups as your previous plan unless new information changes them."""
 
 
-# GPT-5.6 Luna on OpenRouter: same plans as Nemotron in ~8 s instead of 25-600 s, about $0.001 a call (Oct 23).
+# GPT-6 Luna on OpenRouter: same plans as Nemotron in 7-16 s instead of 25-600 s, under $0.001 a call (Oct 23;
+# matched GPT-5.6 Luna on our director pictures at half its price).
 # Override with DIRECTOR_MODEL in cell/.env; without an OpenRouter key the director uses the close-up models.
-DIRECTOR = os.getenv("DIRECTOR_MODEL") or "openrouter/openai/gpt-5.6-luna"
+DIRECTOR = os.getenv("DIRECTOR_MODEL") or "openrouter/openai/gpt-6-luna"
+
+
+COLOUR_WORDS = ("red", "orange", "yellow", "green", "blue", "purple", "pink", "white", "gray", "grey", "black", "brown")
+
+
+def colour_name(rgb) -> str:
+    """A plain colour word for an RGB colour (what a person would call it)."""
+    h, sat, v = cv2.cvtColor(np.uint8([[rgb]]), cv2.COLOR_RGB2HSV)[0, 0].astype(int)  # h 0-180
+    if v < 60:
+        return "black"
+    if sat < 45:
+        return "white" if v > 185 else "gray"
+    for top, name in ((8, "red"), (20, "orange"), (34, "yellow"), (85, "green"), (130, "blue"), (160, "purple"), (172, "pink")):
+        if h < top:
+            return name
+    return "red"
+
+
+def box_colours(world, obs: dict, cams: dict) -> dict[int, tuple[str, tuple]]:
+    """{box id: (colour word, RGB)} measured from the table camera: the median pixel of each box's rim (its top). A box's
+    colour is a measurement, not a guess: the close-up model once called a gray box "black", and the plan put Lego in
+    the wrong one. Two boxes with the same word get told apart: "the darker gray one"."""
+    img = obs["images"]["table"]
+    h, w = img.shape[:2]
+    out = {}
+    for b in world.bins():
+        p = b.points[:, :3]
+        z = p[:, 2]
+        rim = p[z > z.min() + 0.8 * (z.max() - z.min())]
+        uv = project_to_image("table", cams, rim, (w, h))
+        uv = uv[np.all(np.isfinite(uv), 1)].astype(int)
+        uv = uv[(uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)]
+        if len(uv) < 10:
+            continue
+        rgb = tuple(int(c) for c in np.median(img[uv[:, 1], uv[:, 0]], axis=0))
+        out[b.id] = (colour_name(rgb), rgb)
+    for word in {c for c, _ in out.values()}:
+        same = sorted((i for i, (c, _) in out.items() if c == word), key=lambda i: sum(out[i][1]))
+        if len(same) > 1:
+            for k, i in enumerate(same):
+                out[i] = (f"{word} (the {'darkest' if k == 0 else 'lightest' if k == len(same) - 1 else 'middle'} "
+                          f"of the {len(same)} {word} boxes)", out[i][1])
+    return out
 
 
 class Director:
     def __init__(self, labeler, cams: dict, instruction: str = ""):
         self.labeler, self.cams, self.instruction = labeler, cams, instruction
         self.think = True  # without it plans flip between calls and put a thing in two groups
-        self.models = ([DIRECTOR] if vlm.configured(DIRECTOR) else []) + labeler.models
+        self.models = list(dict.fromkeys(([DIRECTOR] if vlm.configured(DIRECTOR) else []) + labeler.models))
+        self.forced = False  # ask on the next turn even if close-ups are still out
         self.plan: dict | None = None
         self.pending: Future | None = None
         self.n = 0
@@ -86,6 +136,7 @@ class Director:
     def again(self) -> None:
         """Make the next stale() true: the robot is stuck waiting on this plan."""
         self.known = set()
+        self.forced = True
 
     def stale(self, world) -> bool:
         """A thing exists that the plan doesn't mention (new pieces after a split), or new names came in."""
@@ -110,10 +161,14 @@ class Director:
             lines.append(f"  #{t.id}: {'moved as one piece' if t.status == 'one' else 'untouched'}, "
                          f"{m['L']:.0f} x {m['W']:.0f} x {m['H']:.0f} mm, {'alone' if world.isolated(t) else 'touching others'}; {seen}")
         blines = []
+        colours = box_colours(world, obs, self.cams)
         for b in bins:
             lab = getattr(b, "label", None) or {}
             m = measure(b.points)
-            blines.append(f"  box #{b.id}: {lab.get('color') or 'colour unknown'}, {m['L']:.0f} x {m['W']:.0f} mm, {m['H']:.0f} mm tall")
+            c = colours.get(b.id)
+            b.colour = c[0] if c else None
+            col = f"{c[0]} (measured from the camera: RGB {c[1]})" if c else lab.get('color') or 'colour unknown'
+            blines.append(f"  box #{b.id}: {col}, {m['L']:.0f} x {m['W']:.0f} mm, {m['H']:.0f} mm tall")
         done = ", ".join(f"#{s['id']} ({s.get('color') or ''} {s.get('name') or '?'}) -> box #{s['bin']}" for s in world.sorted) or "nothing yet"
         prev = ""
         if self.plan:
@@ -125,6 +180,7 @@ class Director:
         self.known = {t.id for t in things}
         self.named_then = {t.id: _name(t) for t in things if getattr(t, "label", None)}
         self.n += 1
+        self.forced = False
         self.pending = self.labeler.pool.submit(self._call, self.n, image, prompt)
         return f"Asking the director for a plan ({len(things)} things, {len(bins)} boxes)."
 
@@ -165,7 +221,7 @@ class Director:
         t0, r, model, tries = time.time(), None, None, []
         for model in self.models:
             try:
-                r = vlm.ask_image(image, prompt, model=model, max_tokens=6000, think=self.think)
+                r = vlm.ask_image(image, prompt, model=model, max_tokens=6000, think=self.think, timeout=60.0)
                 if r and isinstance(r["json"], dict) and r["json"].get("groups") is not None:
                     tries.append(f"{model.split('/')[-1]}: ok")
                     break
@@ -203,11 +259,17 @@ class Director:
         gs = [g for g in (self.plan or {}).get("groups", []) if tid in (g.get("ids") or [])]
         return gs[0] if len(gs) == 1 else None
 
-    def conflict(self, tid: int) -> str | None:
+    def conflict(self, tid: int, world=None) -> str | None:
         """The plan contradicts itself about this thing (two groups, or a group and the check list)."""
         gs = [g.get("name") for g in (self.plan or {}).get("groups", []) if tid in (g.get("ids") or [])]
         if len(gs) > 1:
             return f"the plan puts it in {' and '.join(map(str, gs))}"
+        if len(gs) == 1 and world is not None and tid in world.things:  # "yellow cubes" for a thing the close-up calls blue
+            lab = getattr(world.things[tid], "label", None) or {}
+            said = str(lab.get("color") or "").lower()
+            named = [c for c in COLOUR_WORDS if c in str(gs[0]).lower().split()]
+            if said and named and not any(c in said for c in named):
+                return f"the plan puts a {said} thing in {gs[0]}"
         return None  # in a group and on the check list: checking wins (the robot tests it, then sorts it)
 
     def sure(self, tid: int) -> bool:

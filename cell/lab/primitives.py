@@ -24,9 +24,11 @@ TCP_X, TCP_Y = (155.0, 645.0), (-445.0, 445.0)  # the cell's box (mm, UF0), with
 REACH_MM = 540.0
 
 
-def reachable(x_m: float, y_m: float) -> bool:
-    """Can the fingertip get there? Inside the cell's box and the arm's ~550 mm reach."""
-    return TCP_X[0] <= x_m * 1000 <= TCP_X[1] and TCP_Y[0] <= y_m * 1000 <= TCP_Y[1] and np.hypot(x_m, y_m) * 1000 <= REACH_MM
+def reachable(x_m: float, y_m: float, margin_mm: float = 0.0) -> bool:
+    """Can the fingertip get there (with margin_mm to spare)? Inside the cell's box and the arm's ~550 mm reach."""
+    x, y, m = x_m * 1000, y_m * 1000, margin_mm
+    return (TCP_X[0] + m <= x <= TCP_X[1] - m and TCP_Y[0] + m <= y <= TCP_Y[1] - m
+            and np.hypot(x, y) <= REACH_MM - m)
 
 
 def clamp_xy(x_m: float, y_m: float) -> np.ndarray:

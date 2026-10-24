@@ -374,17 +374,29 @@ class World:
 
     # ------------------------------------------------------------ where to put things
 
-    def staging_spot(self, radius: float) -> np.ndarray | None:
-        """A free spot in the staging area: nothing within radius + 15 mm, not promised to anything else."""
-        for x in STAGING[0]:
-            for y in STAGING[1]:
-                p = np.array([x, y])
-                clear = all(np.hypot(*(t.centroid[:2] - p)) > radius + t.radius + 0.015 for t in self.things.values())
-                clear &= all(np.hypot(*(q - p)) > 0.03 for q in self.reserved)
-                if clear:
-                    self.reserved.append(p)
-                    return p
-        return None
+    def staging_spot(self, radius: float, near=None) -> np.ndarray | None:
+        """A free spot to set a thing down: nothing within radius + 15 mm, not promised to anything else.
+        near: stage as close to this point as there's room (the box it will probably go in: if the test passes, the
+        carry into the box is a few cm, the way a packer sets things down by the box, not across the room).
+        Without it, the staging area."""
+        from lab.primitives import reachable
+        if near is None:
+            cands = [np.array([x, y]) for x in STAGING[0] for y in STAGING[1]]
+        else:
+            near = np.asarray(near, float)[:2]
+            g = np.arange(-0.16, 0.1601, 0.01)
+            mid = np.array([np.mean(STAGING[0]), 0.0])  # the middle of the table: prefer its side of the box, not behind it
+            behind = lambda q: max(0.0, float(np.hypot(*(q - mid)) - np.hypot(*(near - mid))))
+            cands = sorted((near + [dx, dy] for dx in g for dy in g), key=lambda q: float(np.hypot(*(q - near))) + behind(q))
+            cands = [q for q in cands if reachable(*q, margin_mm=40)]
+        for p in cands:  # by a box, leave room for the fingers and for a rake to pass between
+            clear = all(np.hypot(*(t.centroid[:2] - p)) > radius + t.radius + (0.035 if t.status == "bin" else 0.015)
+                        for t in self.things.values())
+            clear &= all(np.hypot(*(q - p)) > 0.03 for q in self.reserved)
+            if clear:
+                self.reserved.append(p)
+                return p
+        return self.staging_spot(radius) if near is not None else None
 
 
 def _dist_to_segment(p, a, b) -> float:

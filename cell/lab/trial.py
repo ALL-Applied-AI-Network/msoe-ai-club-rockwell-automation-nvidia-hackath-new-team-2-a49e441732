@@ -99,25 +99,29 @@ def sort_check(truth: list[dict], expect: str | None) -> dict:
     """Where every object ended up: in which box (by box colour), or still on the table; and whether each box holds
     one kind of thing (by the trial's `expect`: color, kind or name)."""
     boxes = [o for o in truth if "container" in KINDS[o["kind"]].tags]
-    where, contents = {}, {b["color"] + " box": [] for b in boxes}
-    for o in objects_only(truth):
+    where, contents = {}, {b["color"] + " box": [] for b in boxes}  # where: by object index (names repeat)
+    objs = objects_only(truth)
+    for k, o in enumerate(objs):
         c = o["mesh"].centroid
         inside = [b for b in boxes if np.all(np.abs(c[:2] - b["mesh"].centroid[:2]) < b["mesh"].extents[:2] / 2 - 0.004)]
         dest = inside[0]["color"] + " box" if inside else "table"
-        where[o["name"]] = dest
+        where[k] = dest
         if inside:
             contents[dest].append(o)
     key = {"color": lambda o: o["color"], "kind": lambda o: o["kind"], "name": lambda o: o["name"]}.get(expect or "")
     mixed = [b for b, os_ in contents.items() if key and len({key(o) for o in os_}) > 1]
     split = []
     if key:
-        for v in {key(o) for o in objects_only(truth)}:
-            dests = {where[o["name"]] for o in objects_only(truth) if key(o) == v} - {"table"}
+        for v in {key(o) for o in objs}:
+            dests = {where[k] for k, o in enumerate(objs) if key(o) == v} - {"table"}
             if len(dests) > 1:
                 split.append(v)
     n_in = sum(len(v) for v in contents.values())
     return {"in_boxes": n_in, "objects": len(objects_only(truth)), "mixed_boxes": mixed, "split_groups": split,
-            "contents": {b: [o["name"] for o in os_] for b, os_ in contents.items()}}
+            "contents": {b: [o["name"] for o in os_] for b, os_ in contents.items()},
+            "boxes": {b["color"] + " box": [round(float(v) * 1000) for v in b["mesh"].centroid] for b in boxes},
+            "on_table": [f'{o["name"]} at ({o["mesh"].centroid[0] * 1000:.0f}, {o["mesh"].centroid[1] * 1000:.0f}) mm'
+                         for k, o in enumerate(objs) if where[k] == "table"]}
 
 
 def run(name: str, seed: int | None = None, policy: str = "explore", view: bool = True, use_vlm: bool = False,
