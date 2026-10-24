@@ -48,7 +48,7 @@ Answer in JSON only:
   "scene": "one sentence: what is on the table",
   "state": "pile | partly spread | spread out",
   "rule": "<the rule for THIS table, naming its groups, e.g. 'screws in one box, cubes in another'>",
-  "groups": [{{"name": "group name", "box": 0, "ids": [1, 2]}}],
+  "groups": [{{"name": "group name", "box": 0, "ids": [1, 2], "why": "<only when box is null: why it stays on the table>"}}],
   "sure": [1, 2],
   "check": [{{"id": 3, "why": "<your reason>"}}],
   "instruction_check": "<your answer, or null>"
@@ -61,6 +61,8 @@ If the user gave no rule, choose the one a person tidying this table would: sepa
 table only what doesn't fit. A box's colour means nothing unless the user's instruction mentions it.
 Rules: put every thing id (not the boxes) in exactly one group, or in "check" if you can't tell what it is yet.
 "box" is a box id from the list, or null to leave that group on the table; use each box for one group only.
+Sort everything: every thing gets a group. A group left on the table (box null) is a real decision, so say why in
+"why" (e.g. "a fourth kind and only three boxes", "the person said to leave the dowels").
 "sure" lists the ids you'd bet are ONE familiar object each, so the robot sorts them without testing.
 Carrying a thing into its box IS a test: if it arrives whole and nothing is left behind, it was one object. So a thing
 that is alone, the size you'd expect, and looks like one familiar object belongs in "sure" even if untouched; "check"

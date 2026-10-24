@@ -15,8 +15,9 @@ from calibration.kinematics import tool_r
 from calibration.geometry import SURFACE_Z, UF0_Z_MM
 
 DT = 0.1
-TRAVEL = 150.0     # mm/s in free space
-APPROACH = 50.0    # mm/s near the table and objects
+TRAVEL = 300.0     # mm/s in free space (was 150: the slowest thing to watch; the hold before a look stays, so
+                   # pictures are still taken standing still)
+APPROACH = 70.0    # mm/s near the table and objects (was 50)
 HOLD = 12          # 1.2 s: longer than the arm's lag
 SAFE_MM = 60.0     # travel height above the table (fingertips); the tallest parts here are ~35 mm
 TABLE_UF0 = SURFACE_Z * 1000 + UF0_Z_MM

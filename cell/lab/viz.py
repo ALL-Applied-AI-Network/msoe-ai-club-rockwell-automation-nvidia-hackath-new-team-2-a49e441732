@@ -52,6 +52,30 @@ def blueprint() -> rrb.Blueprint:
     )
 
 
+def app_blueprint() -> rrb.Blueprint:
+    """The chat page's view: only what a person can take in. The robot's mind (big, aimed at the table), every sensor
+    in a strip under it, one log of everything it thinks and does. The truth, the object roster and Rerun's own
+    panels are a click away, not on screen."""
+    eye = rrb.EyeControls3D(position=(0.88, 0.02, 0.50), look_target=(0.36, -0.08, 0.0), eye_up=(0, 0, 1))
+    sensors = [rrb.Spatial2DView(name=f"{c} camera", origin=f"cams/{c}/rgb") for c in ("table", "side", "wrist")]
+    sensors += [rrb.Spatial2DView(name=f"{c} depth", origin=f"cams/{c}/depth") for c in ("table", "wrist")]
+    sensors += [rrb.Spatial2DView(name="height map", origin="heightmap"), rrb.Spatial2DView(name="VLM close-up", origin="vlm_crop")]
+    return rrb.Blueprint(
+        rrb.Horizontal(
+            rrb.Vertical(
+                rrb.Tabs(rrb.Spatial3DView(name="Robot's mind", origin="mind", eye_controls=eye),
+                         rrb.Spatial3DView(name="World (truth)", origin="truth", eye_controls=eye), active_tab=0),
+                rrb.Horizontal(*sensors),
+                row_shares=[3, 1],
+            ),
+            rrb.Tabs(rrb.TextLogView(name="log", origin="/", contents=["/vlm", "/narration"]),
+                     rrb.TextDocumentView(name="objects", origin="roster"), active_tab=0),
+            column_shares=[3, 1],
+        ),
+        collapse_panels=True,
+    )
+
+
 def start(name: str, save_to: Path | None = None, spawn: bool = False) -> None:
     """Begin a recording: to a .rrd file, a live viewer, or both. Logs the static scenery in both 3D views."""
     rr.init(re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_"))  # Rerun renames ids with spaces or brackets: keep them plain
@@ -94,7 +118,7 @@ def start_served(name: str, save_to: Path | None = None, grpc_port: int = 9876, 
         Path(save_to).parent.mkdir(parents=True, exist_ok=True)
         sinks.append(rr.FileSink(str(save_to)))
         LOG = open(Path(save_to).parent / "narration.txt", "w", buffering=1)
-    rr.set_sinks(*sinks, default_blueprint=blueprint())
+    rr.set_sinks(*sinks, default_blueprint=app_blueprint())
     _scenery()
     uri = f"rerun+http://127.0.0.1:{grpc_port}/proxy"
     rr.serve_web_viewer(web_port=web_port, open_browser=False, connect_to=uri)

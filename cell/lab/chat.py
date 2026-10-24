@@ -37,6 +37,13 @@ Decide what each message is and act on it:
   your own plan or moves: something you can't identify yet is not a change to the table.
 - "hold on", "wait", "stop for a sec": call pause. (The real emergency stop is a red button, not you.)
 - a question, a joke, a jab, small talk: just answer. Nothing changes.
+Keep the banner above the chat current with set_status (it's what the person glances at; the chat scrolls away):
+- when you've found what's on the table: phase "planning", e.g. "Found 9 things. Working out a plan."
+- when you have a plan: phase "working", the plan in one line in "plan" (every group, and what stays on the table and why)
+- when the person corrects you: phase "rethinking", e.g. "Rethinking the plan: Lego goes in the white box."
+- when you need them (can't reach something, two boxes look alike, you don't know what something is): "needs you".
+  Losing track of a part for a moment is normal (you look again and find it): not something to bother them with.
+- when you've finished: phase "done", headline "Done: come and look." and the final plan as it was carried out.
 Never claim to have done or seen something the status doesn't show. If you don't know, say so. Jokes are welcome when
 they joke, but they must be true to what's on the table.
 
@@ -60,6 +67,12 @@ TOOLS = [
      "parameters": {"type": "object", "properties": {"note": {"type": "string"}}, "required": ["note"]}}},
     {"type": "function", "function": {"name": "pause", "description": "Stop after the current move and wait.",
      "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {"name": "set_status", "description": "Rewrite the banner pinned above the chat: what you're doing now, and the plan in one line. It stays until you change it.",
+     "parameters": {"type": "object", "properties": {
+         "phase": {"type": "string", "enum": ["looking", "planning", "working", "rethinking", "needs you", "done"]},
+         "headline": {"type": "string", "description": "one short line, e.g. 'Found 9 things. Working out a plan.'"},
+         "plan": {"type": "string", "description": "the plan in one line (e.g. 'screws -> black, Lego -> white, cubes -> gray, dowel stays: no box left'); omit to keep the current one"}},
+         "required": ["phase", "headline"]}}},
 ]
 
 
@@ -69,6 +82,7 @@ class Chat:
         self.robot, self.say = robot, say
         self.history: list[dict] = []
         self.kind = "person"  # what started the current turn: the person, or a robot event's kind
+        self.banner = {"phase": "waiting", "headline": "Waiting for a job.", "plan": ""}
         self.lock = threading.Lock()
         script = (HERE / "script.md").read_text() if (HERE / "script.md").exists() else ""
         self.system = SYSTEM.format(how=(HERE / "how_i_work.md").read_text(),
@@ -122,4 +136,9 @@ class Chat:
             return self.robot.start() if self.robot.instruction or self.robot.state == "working" else "noted; nothing to redo yet"
         if name == "pause":
             return self.robot.pause()
+        if name == "set_status":
+            self.banner = {"phase": args.get("phase", "working"), "headline": args.get("headline", ""),
+                           "plan": args.get("plan") or self.banner.get("plan", "")}
+            self.say("status", json.dumps(self.banner))
+            return "banner updated"
         return f"no such tool {name}"

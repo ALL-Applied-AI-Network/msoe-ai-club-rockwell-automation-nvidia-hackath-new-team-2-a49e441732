@@ -159,7 +159,7 @@ class IsaacCell:
     # ------------------------------------------------------------ what the policy uses
 
     def observe(self, rng_noise: bool = True) -> dict:
-        obs = self.client.observe(["table", "side", "wrist"], self.image_size, "png", depth=["table", "wrist"])
+        obs = self.client.observe(["table", "side", "wrist"], self.image_size, "jpeg", depth=["table", "wrist"])  # jpeg: ~10x smaller, as the real cell allows
         self.q, self.grip, self.t = np.asarray(obs["joints"][:6], float), float(obs["joints"][6]), float(obs["t"])
         tp = obs["tcp_pose"]
         self.tip_xyz = np.array([tp[0], tp[1], tp[2] - UF0_Z_MM]) / 1000
@@ -170,8 +170,12 @@ class IsaacCell:
     def play(self, chunk, dt: float = 0.1, on_frame=None, kind: str = "tcp") -> None:
         """Send the rows (tcp, or joints: [J1..J6 deg, grip]), wait until Isaac has played them, then replay its
         per-row truth for the viewer and checks."""
+        rows = np.atleast_2d(np.asarray(chunk, float))
+        if len(rows) > 100:  # the cell takes at most 100 rows a chunk
+            for k in range(0, len(rows), 100):
+                self.play(rows[k:k + 100], dt, on_frame, kind)
+            return
         try:
-            rows = np.atleast_2d(np.asarray(chunk, float))
             (self.client.act if kind == "joints" else self.client.act_tcp)(rows, dt)
         except RuntimeError as e:
             raise ValueError(str(e)) from e  # like SimCell: a target outside the cell's limits

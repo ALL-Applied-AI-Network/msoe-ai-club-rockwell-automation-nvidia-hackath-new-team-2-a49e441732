@@ -55,6 +55,12 @@ def main() -> None:
 
     def on_event(kind: str, text: str) -> None:
         """The robot's own news: shown as a log line; the ones a person cares about also go to the chat agent."""
+        if kind == "state":  # the banner moves at once; the chat agent refines it when it has something to say
+            phase, headline = {"working": ("looking", "Looking at the table…"), "paused": ("waiting", "Paused.")}.get(text, (None, None))
+            if phase:
+                chat.banner.update(phase=phase, headline=headline)
+                board.add("status", json.dumps(chat.banner))
+            return
         if kind == "plan":
             rule = text.split("Rule: ")[-1] if "Rule: " in text else text
             board.add("log", f"plan: {text}")
@@ -63,7 +69,8 @@ def main() -> None:
             state["last_rule"] = rule
         elif kind != "done":
             board.add("log", text if kind != "move" else f"→ {text}")
-        if kind in ("plan", "done", "seen", "check") or (kind == "note" and not text.startswith("Sorted:")):
+        routine = text.startswith(("Sorted:", "Lost ", "(sim check"))  # its own bookkeeping: the log, not the chat
+        if kind in ("plan", "done", "seen", "check") or (kind == "note" and not routine):
             threading.Thread(target=chat.event, args=(kind, text), daemon=True).start()
 
     robot.listeners.append(on_event)

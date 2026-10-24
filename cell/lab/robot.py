@@ -48,6 +48,7 @@ class Robot:
         self.distract_s = 0.0             # hold still this long before the next move (talking to it slows it down)
         self.baseline = None              # the table depth when it last finished: changes are measured from it
         self.step = 0
+        self.done_log: list[str] = []      # what it has done, in order: "carried #7 into box #2", "raked #4"
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -95,17 +96,23 @@ class Robot:
             plan = getattr(pol.director, "plan", None) or {}
             if plan:
                 lines.append(f"Current plan: rule \"{plan.get('rule')}\"; groups: "
-                             + "; ".join(f"{g.get('name')} -> box {g.get('box')}" for g in plan.get("groups", [])))
+                             + "; ".join(f"{g.get('name')} -> " + (f"box {g.get('box')}" if g.get("box") is not None
+                                         else f"stays on the table ({g.get('why') or 'no reason given'})")
+                                         for g in plan.get("groups", [])))
             for t in sorted(pol.world.things.values(), key=lambda t: t.id):
                 lab = getattr(t, "label", None) or {}
                 name = f"{lab.get('color', '')} {lab.get('name', '')}".strip() or "not named yet"
                 where = f"({t.centroid[0] * 1000:.0f}, {t.centroid[1] * 1000:.0f}) mm"
+                past = "; ".join(t.history[-3:])  # what happened to it: how the person can refer to it
                 if t.status == "bin":
-                    lines.append(f"  box #{t.id} at {where}: {getattr(t, 'colour', None) or name}")
+                    lines.append(f"  box #{t.id} at {where}: {getattr(t, 'colour', None) or name}" + (f" [{past}]" if past else ""))
                 else:
-                    lines.append(f"  #{t.id} at {where}: {name}; {t.status}; plan: {getattr(t, 'plan', '') or '-'}")
+                    lines.append(f"  #{t.id} at {where}: {name}; {t.status}; plan: {getattr(t, 'plan', '') or '-'}"
+                                 + (f" [history: {past}]" if past else ""))
             for s in pol.world.sorted:
                 lines.append(f"  sorted: #{s['id']} {s.get('color') or ''} {s.get('name') or '?'} -> box #{s['bin']}")
+        if self.done_log:
+            lines.append("What I've done lately (oldest first):\n  " + "\n  ".join(self.done_log[-12:]))
         lines.append(f"Robot time so far: {self.cell.t:.0f} s.")
         return "\n".join(lines)
 
@@ -131,7 +138,11 @@ class Robot:
         elif panel == "vlm" and text.startswith("Instruction vs what I see"):
             self._emit("check", text)
         elif panel == "narration" and re.match(r"Move \d+\.", text):
-            self._emit("move", re.sub(r"^Move \d+\. ", "", text).split(": ")[0])
+            what = re.sub(r"^Move \d+\. ", "", text).split(": ")[0]
+            self.done_log.append(f"{time.strftime('%H:%M:%S')} {what}")
+            self._emit("move", what)
+        elif panel == "narration" and text.startswith(("Spread ", "Test ")):
+            self.done_log.append(f"{time.strftime('%H:%M:%S')} {text.split(': ')[0][:120]}")
         elif panel == "narration" and (text.startswith(("Done", "Nothing more", "Sorted:", "Lost")) or level == "WARN"):
             self._emit("note", text)
 

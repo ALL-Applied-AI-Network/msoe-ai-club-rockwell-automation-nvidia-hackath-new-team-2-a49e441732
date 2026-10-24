@@ -59,7 +59,7 @@ p = argparse.ArgumentParser()
 p.add_argument("--port", type=int, default=8765)
 p.add_argument("--host", default="127.0.0.1", help="127.0.0.1: reach it through an SSH tunnel")
 p.add_argument("--headless", action="store_true")
-p.add_argument("--physics-hz", type=int, default=240)
+p.add_argument("--physics-hz", type=int, default=120)  # the twin ran at 60; 240 cost ~2x the wall time
 args = p.parse_args()
 
 from isaacsim import SimulationApp  # noqa: E402
@@ -186,6 +186,7 @@ class Cell:
         self.playing = False
         self.objects: list[dict] = []
         self.fault = None
+        self.prof = collections.Counter()  # where the time goes, per row
         self.taken: set[int] = set()
         self.looks: dict = {}
         self.view = None
@@ -394,12 +395,15 @@ class Cell:
             goal = np.asarray(row[:6], float)
         grip = float(row[6]) if len(row) > 6 else self.grip
         n = max(1, int(round(dt * args.physics_hz)))
-        every = max(1, n // 3)  # ~30 frames a second of simulated time in the window
+        every = n  # the window redraws once a row (10 a second of robot time): 3 a row made Isaac run at 0.44x real time
         q0 = self.q.copy()
+        t0 = time.perf_counter()
         for s in range(1, n + 1):
             self._command(q0 + (goal - q0) * s / n, grip)
             self.world.step(render=(s % every == 0) and not args.headless)
         self.t += dt
+        self.prof["steps"] += time.perf_counter() - t0
+        self.prof["rows"] += 1
         lag = np.linalg.norm(tcp_of(self.joints_now()[:6])[0] - tcp_of(goal)[0]) * 1000
         self.max_lag = max(getattr(self, "max_lag", 0.0), lag)
         if lag > BLOCKED_MM:  # blocked: the real cell would fault here instead of pushing harder. Stop where it is.
@@ -415,8 +419,14 @@ class Cell:
         else:
             self.q, self.grip = goal, grip
         tip, wpr = tcp_of(self.q)
+        t1 = time.perf_counter()
+        truth = self.truth()
+        self.prof["truth"] += time.perf_counter() - t1
+        if self.prof["rows"] % 50 == 0:
+            print("[isaac-cell] per row (ms): " + ", ".join(f"{k} {v / self.prof['rows'] * 1000:.1f}" for k, v in self.prof.items()
+                                                           if k != "rows"), flush=True)
         with self.lock:
-            self.frames.append({"t": self.t, "poses": self.truth(), "tip": tip.tolist(), "wpr": wpr.tolist(), "grip": grip,
+            self.frames.append({"t": self.t, "poses": truth, "tip": tip.tolist(), "wpr": wpr.tolist(), "grip": grip,
                                 "joints": goal.tolist(), "fault": self.fault})
             self.fault = None
 

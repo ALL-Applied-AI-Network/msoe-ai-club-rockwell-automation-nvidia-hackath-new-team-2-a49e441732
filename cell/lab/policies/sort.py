@@ -366,7 +366,9 @@ class SortPolicy(ExplorePolicy):
             plan = r["plan"]
             if plan:
                 viz.vlm(f"Director ({(r['model'] or '').split('/')[-1]}, {r['seconds']:.0f} s): {plan.get('scene')} State: {plan.get('state')}. Rule: {plan.get('rule')}")
-                viz.vlm("Groups: " + "; ".join(f"{g.get('name')} → box {g.get('box')}: " + ", ".join(f"#{i}" for i in g.get("ids") or [])
+                viz.vlm("Groups: " + "; ".join(f"{g.get('name')} → " + (f"box {g.get('box')}" if g.get("box") is not None
+                                               else f"stays on the table ({g.get('why') or '?'})") + ": "
+                                               + ", ".join(f"#{i}" for i in g.get("ids") or [])
                                                for g in plan.get("groups", [])))
                 if plan.get("sure"):
                     viz.vlm("Sure about: " + ", ".join(f"#{i}" for i in plan["sure"]))
