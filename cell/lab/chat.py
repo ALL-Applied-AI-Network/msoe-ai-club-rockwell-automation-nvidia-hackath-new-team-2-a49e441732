@@ -2,7 +2,7 @@
 
 Every message (from the person, or an event from the robot) goes to the model with the robot's live status. The model
 decides what kind of message it is and what to do about it, through tools; nothing here sorts messages into kinds:
-    start_sorting(instruction)   a job: sort what's on the table (the person's words, or "" to choose a rule)
+    start_mapping(instruction)   a job: map what's on the table (v2's only skill so far; sorting is being rebuilt)
     add_rule(rule)               a correction or a standing preference: the director replans before the next move
     table_changed(note)          the person changed the table: take a fresh look and carry on
     pause()                      stop after this move and wait
@@ -24,12 +24,14 @@ from lab import vlm
 HERE = Path(__file__).resolve().parent / "chat"
 MODEL = os.getenv("CHAT_MODEL") or "openrouter/openai/gpt-6-luna"
 
-SYSTEM = """You are the robot: a FANUC ER-4iA arm with a two-finger gripper, sorting small parts on a table into
-boxes. A person is standing next to you and talking to you in this chat while you work. Speak as the robot, in the first
+SYSTEM = """You are the robot: a FANUC ER-4iA arm with a two-finger gripper and a depth camera on the wrist, at a
+table of small parts and boxes. You're being rebuilt: right now your one skill is MAPPING (looking around the table from
+many angles to build a 3D map of evidence: what's empty, what's solid, what you haven't seen yet). You can't pick,
+place, sort or move things yet; say so plainly if asked, and offer to map instead. A person is standing next to you and talking to you in this chat while you work. Speak as the robot, in the first
 person, briefly (one to three short sentences, like talking out loud). You keep working while you talk.
 
 Decide what each message is and act on it:
-- a job ("sort these", "I dumped some stuff, go"): call start_sorting with their words (or "" if they gave no rule).
+- a job ("map the table", "take a look", "go", or anything you can only answer by looking): call start_mapping.
 - a correction or preference ("no, Lego goes in the white box", "leave the ring out"): call add_rule with it, in plain
   words, then say briefly what you'll do differently. Things already in a box stay there unless they ask; if they ask,
   say honestly whether you can get them back out (see what you can't do).
@@ -51,8 +53,9 @@ they joke, but they must be true to what's on the table.
 
 When a message starts with "[robot event]", it's your own body telling you something happened. Usually say nothing
 (answer with exactly "-"), but speak up when it matters to the person: your plan once you've made it (one line), a
-problem, something odd you noticed (like new things on the table: ask if they want you to sort them, or just start if
-they already asked you to keep sorting), and when you've finished (a short summary: what went where, and why).
+problem, something odd you noticed (like new things on the table: ask if they want you to map again), and when
+you've finished mapping (a short summary: how many looks, how much of the table you now know, where solid things are,
+what's still unknown and why).
 
 What you know about yourself:
 {how}
@@ -60,7 +63,7 @@ What you know about yourself:
 {script}"""
 
 TOOLS = [
-    {"type": "function", "function": {"name": "start_sorting", "description": "Start (or restart) sorting what's on the table.",
+    {"type": "function", "function": {"name": "start_mapping", "description": "Start (or restart) mapping what's on the table: look around from many angles until the gaps are filled.",
      "parameters": {"type": "object", "properties": {"instruction": {"type": "string", "description": "the person's words for what to do; empty to choose a sensible rule"}},
                     "required": ["instruction"]}}},
     {"type": "function", "function": {"name": "add_rule", "description": "A correction or standing preference from the person; the plan is redone before the next move.",
@@ -140,7 +143,7 @@ class Chat:
         self.history = h
 
     def _do(self, name: str, args: dict) -> str:
-        if name == "start_sorting":
+        if name == "start_mapping":
             return self.robot.start(args.get("instruction", ""))
         if name == "add_rule":
             return self.robot.add_rule(args.get("rule", ""))

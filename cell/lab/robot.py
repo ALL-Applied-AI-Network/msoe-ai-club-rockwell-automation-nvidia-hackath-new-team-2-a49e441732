@@ -42,6 +42,7 @@ class Robot:
         self.trial_name, self.seed = trial, seed
         self.mode = "sim"
         self.cell = IsaacCell(build(load_trial(trial), seed))
+        self.cell.noise = True  # the simulator's depth made as bad as the real sensors'
         P.TRAVEL, P.APPROACH = SPEEDS["sim"]
         self.cell_lock = threading.Lock()  # held by the robot thread while it uses the cell: a switch waits for it
         self.dir = RUNS / f"{datetime.now():%Y%m%d-%H%M%S}_chat"
@@ -70,6 +71,8 @@ class Robot:
 
     def start(self, instruction: str | None = None) -> str:
         with self.lock:
+            if self.policy is not None and self.pending is None:  # already on it: a second "go" must not wipe the work
+                return "already working on it"
             if instruction is not None:
                 self.instruction = instruction
             self.pending = "start"
@@ -124,6 +127,7 @@ class Robot:
         self._stop_now()
         with self.cell_lock:
             self.cell = IsaacCell(build(load_trial(self.trial_name), self.seed))
+            self.cell.noise = True
             self.anim = viz.Animator(self.cell)
             viz.truth_setup(self.cell)
         self.instruction, self.rules, self.done_log, self.baseline, self.state = "", [], [], None, "idle"
