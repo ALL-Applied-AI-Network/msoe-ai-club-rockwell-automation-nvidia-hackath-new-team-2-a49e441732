@@ -52,9 +52,13 @@ pose). But perception falls apart on real depth, so it never closed the jaws. Re
    information wins. Phantom test: seen from two angles?
    - Before sending tilted looks to the real arm: confirm the tilt convention with one read-only check of a tilted
      pose (FK of its joints vs the cell's tcp_pose; straight-down already matches).
-4. **Real depth noise in Isaac.** Measure it from the saved real frames (`runs/<session>/obs/*.npz`, from the next
-   session on): speckle, flying pixels at edges, holes, ripple, error vs distance; add the same to Isaac's depth so
-   perception is tuned at home.
+4. **Real depth noise in Isaac.** We have real depth already: the 3D points the robot built from it, logged per
+   segment in `replay.rrd` (session 15:59: 8.2 M points in 6,872 clouds; 15:47: 2.8 M; read them with
+   `rerun.chunk.RrdReader`, entities `/mind/segments/*`). Measure speckle, flying points around edges and box rims,
+   holes; add the same to Isaac's depth so perception is tuned at home. Raw depth images (the bare table, per-pixel
+   structure) only from `runs/<session>/obs/*.npz` after the recording fix. The lab's own dataset (7 trials, 19,835
+   frames, ~/.cache/huggingface/lerobot/manipbench/r20261024-1f2d05) has colour video, joints, poses and actions,
+   but no depth: good for developing the glance + SAM on real images.
 5. **VLM sanity:** allow "nothing there" (count 0); reject a name that contradicts the measured size (a 22 x 4 mm
    "10 mm cube").
 6. **Strict box detection:** ~60 mm with a rim and a well, or just the scene card's boxes.
