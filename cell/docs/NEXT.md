@@ -31,6 +31,14 @@ pose). But perception falls apart on real depth, so it never closed the jaws. Re
    find by colour in the image; depth only has to agree something stands up there. With the scene card ("one blue
    cube") it's expect one, find one. There's an unused full-table `vlm.gist` from the first lab days to start from.
    Cap the close-up questions per look.
+   - Measured (real run 20261024-155941, "one blue cube, pick it up"): **2,090 VLM questions asked, 1,313 answered,
+     0 moves**, one 13 s director plan. Not waiting on the VLM: every look re-cuts the noisy cloud into new blobs with
+     new ids, each id gets its own question, and the loop spends its time segmenting ~100 specks. Ids must survive
+     looks, and only proposed things get asked about.
+   - The principle (Joel): **top-down + bottom-up.** The VLM's glance says what's there and roughly where (fast,
+     usually right about *what*); geometry verifies only what the glance proposed, and only as much as the next action
+     needs (exact position, height, grip). No full 3D scan. They check each other: a named thing depth can't find ->
+     look again; a tall thing nobody named -> ask about that one.
 
 1. **TSDF fusion instead of `carve_merge`** (KinectFusion; Open3D's ScalableTSDFVolume is already installed). Every
    look adds weighted evidence to one 3D grid; noise averages out; free space seen through a phantom outvotes it;
