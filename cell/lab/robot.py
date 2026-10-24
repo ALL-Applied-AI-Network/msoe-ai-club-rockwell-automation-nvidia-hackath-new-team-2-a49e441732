@@ -1,6 +1,10 @@
 """The robot as a long-running session: a body (the Isaac cell, standing in for the real one), a mind (the sort policy:
 world model, VLM close-ups, director), and a voice (lab/chat.py talks for it). lab/app.py puts it on a page.
 
+Two worlds, one switch: the Isaac cell on the GPU box ("sim": with a Reset, and Joel's hands to change the table), or the
+real cell ("real": a run token, a setup check, then the operator's trial; no truth and no hands, the person's real
+hands do that). The same mind drives both.
+
 It runs in its own thread and never waits for the chat: a job (an instruction) starts the sort policy; rules from the
 person change its plan between moves; when there's nothing to do it watches the table, and a change there (someone
 pouring more parts on, taking something away) is reported, not acted on: the chat decides what to do about it.
@@ -19,19 +23,27 @@ from pathlib import Path
 
 import numpy as np
 
-from lab import primitives as P, viz
+from lab import armcheck, primitives as P, viz
 from lab.isaaccell import IsaacCell
+from lab.realcell import RealCell, TrialOver
 from lab.policies.sort import SortPolicy
 from lab.trial import build, load_trial
 
 RUNS = Path(__file__).resolve().parents[1] / "runs"
+SPEEDS = {"sim": (300.0, 70.0), "real": (150.0, 50.0)}  # travel, approach mm/s: on the real arm, the speeds it was
+                                                       # tuned with (it lags its targets; the pause before a look is
+                                                       # sized for 0.8 s of lag)
 WATCH_S = 8.0          # idle: look at the table this often (wall clock)
 CHANGE_PX = 120        # this many table-depth pixels changing by > 5 mm: something on the table changed
 
 
 class Robot:
     def __init__(self, trial: str = "chat_table", seed: int = 0):
+        self.trial_name, self.seed = trial, seed
+        self.mode = "sim"
         self.cell = IsaacCell(build(load_trial(trial), seed))
+        P.TRAVEL, P.APPROACH = SPEEDS["sim"]
+        self.cell_lock = threading.Lock()  # held by the robot thread while it uses the cell: a switch waits for it
         self.dir = RUNS / f"{datetime.now():%Y%m%d-%H%M%S}_chat"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.viewer_uri = viz.start_served("robot", save_to=self.dir / "replay.rrd")
@@ -76,6 +88,56 @@ class Robot:
         with self.lock:
             self.pending = "pause"
         return "pausing after this move"
+
+    # ------------------------------------------------------------ the world: reset the simulator, or switch to the real cell
+
+    def _stop_now(self) -> None:
+        """Drop the job; wait until the robot thread has let go of the cell."""
+        with self.lock:
+            self.policy, self.pending = None, None
+        with self.cell_lock:
+            pass
+
+    def reset(self) -> str:
+        """The simulator from scratch: the starting table (three empty boxes), the arm at home, no job, no rules."""
+        if self.mode != "sim":
+            return "reset is for the simulator; on the real cell, the table is reset by hand"
+        self._stop_now()
+        with self.cell_lock:
+            self.cell = IsaacCell(build(load_trial(self.trial_name), self.seed))
+            self.anim = viz.Animator(self.cell)
+            viz.truth_setup(self.cell)
+        self.instruction, self.rules, self.done_log, self.baseline, self.state = "", [], [], None, "idle"
+        self._emit("state", "reset")
+        return "the simulator is back to the starting table"
+
+    def use_sim(self) -> str:
+        self._stop_now()
+        P.TRAVEL, P.APPROACH = SPEEDS["sim"]
+        self.mode = "sim"
+        return self.reset()
+
+    def use_real(self, url: str, token: str, ca: str | None = None) -> dict:
+        """Connect to the real cell and check it (it doesn't start anything: start_trial does)."""
+        cell = RealCell(url, token, ca)
+        report = cell.check()
+        self._stop_now()
+        with self.cell_lock:
+            self.cell = cell
+            self.anim = viz.Animator(self.cell)
+        P.TRAVEL, P.APPROACH = SPEEDS["real"]
+        self.mode, self.state, self.baseline = "real", "connected", None
+        self._emit("state", "connected")
+        return report
+
+    def start_trial(self) -> dict:
+        if self.mode != "real":
+            raise RuntimeError("not connected to the real cell")
+        with self.cell_lock:
+            t = self.cell.start_trial()
+        self.state = "trial"
+        self._emit("state", "trial")
+        return t
 
     def full_instruction(self) -> str:
         rules = "".join(f"\nRule from the person, overriding anything above: {r}" for r in self.rules)
@@ -152,23 +214,30 @@ class Robot:
         while True:
             with self.lock:
                 cmd, self.pending = self.pending, None
-            if cmd == "start":
-                self._new_policy()
-                obs, fresh = self.cell.observe(), True
-            elif cmd == "pause" and self.policy is not None:
-                self.policy, self.state = None, "paused"
-                self._emit("state", "paused")
+            with self.cell_lock:
+                try:
+                    if cmd == "start":
+                        if self.mode == "real" and not self.cell.running():
+                            self._emit("note", "No trial is running on the real cell: press Run the test first.")
+                        else:
+                            self._new_policy()
+                            obs, fresh = self.cell.observe(), True
+                    elif cmd == "pause" and self.policy is not None:
+                        self.policy, self.state = None, "paused"
+                        self._emit("state", "paused")
+                    if self.policy is not None:
+                        obs, fresh = self._act(obs, fresh)
+                    elif self.mode == "sim" and time.time() - last_watch > WATCH_S:
+                        last_watch = time.time()
+                        self._watch()
+                except TrialOver:
+                    self.policy, self.state = None, "trial over"
+                    self._emit("note", "The trial is over (time's up, or the operator ended it).")
+                except Exception as e:  # a crash in the policy must not kill the body
+                    self._emit("note", f"I hit an error and stopped: {type(e).__name__}: {e}")
+                    self.policy, self.state = None, "idle"
             if self.policy is None:
-                if time.time() - last_watch > WATCH_S:
-                    last_watch = time.time()
-                    self._watch()
                 time.sleep(0.2)
-                continue
-            try:
-                obs, fresh = self._act(obs, fresh)
-            except Exception as e:  # a crash in the policy must not kill the body
-                self._emit("note", f"I hit an error and stopped: {type(e).__name__}: {e}")
-                self.policy, self.state = None, "idle"
 
     def _new_policy(self) -> None:
         pol = SortPolicy(instruction=self.full_instruction())
@@ -197,9 +266,26 @@ class Robot:
             o = self.cell.observe()
             self.cell.play(P.hold(np.asarray(o["tcp_pose"][:3], float), float(o["tcp_pose"][5]), int(o["joints"][6] >= 0.5), n),
                            on_frame=self.anim)
+        problem = self._precheck(chunk, obs)
+        if problem and self.mode == "real":  # on real hardware a move the model says is unsafe isn't sent
+            self.policy, self.state = None, "stopped"
+            self._emit("note", f"I stopped before a move my arm check didn't like: {problem}. Tell me how to go on.")
+            return obs, True
         self.cell.play(chunk, on_frame=self.anim)
         fresh = getattr(pol, "wants_obs", True)
         return (self.cell.observe() if fresh else obs), fresh
+
+    def _precheck(self, chunk, obs) -> str | None:
+        """The arm model's check of a tcp chunk (IK continuity, the table): the problem, or None. In the simulator a
+        problem is only logged (we learn how often the check cries wolf before it's allowed to stop real moves)."""
+        rows = np.atleast_2d(np.asarray(chunk, float))
+        if rows.shape[1] != 7 or obs is None:
+            return None
+        rep = armcheck.check(rows, np.asarray(obs["joints"][:6], float), [])
+        if rep.ok:
+            return None
+        viz.narrate(f"(arm check: {rep.problem})", level="WARN")
+        return rep.problem
 
     # ------------------------------------------------------------ watching the table when idle
 

@@ -98,9 +98,15 @@ def main() -> None:
                 self.end_headers()
                 self.wfile.write(data)
             elif self.path == "/config":
-                self._json({"viewer": viewer, "distract": state["distract"]})
+                self._json({"viewer": viewer, "distract": state["distract"], "mode": robot.mode})
             elif self.path == "/objects":
-                self._json({"objects": robot.objects(), "state": robot.state, "t": robot.cell.t})
+                out = {"objects": robot.objects(), "state": robot.state, "t": robot.cell.t, "mode": robot.mode}
+                if robot.mode == "real":
+                    try:
+                        out["trials"] = [{"id": t["trial_id"], "status": t["status"]} for t in robot.cell.trials()]
+                    except Exception as e:
+                        out["trials_error"] = str(e)[:200]
+                self._json(out)
             elif self.path.startswith("/events"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -136,6 +142,40 @@ def main() -> None:
                     msg = f"couldn't: {e}"
                 board.add("hands", msg)
                 self._json({"ok": True, "msg": msg})
+            elif self.path == "/reset":
+                msg = robot.reset()
+                chat.history.clear()
+                chat.banner.update(phase="waiting", headline="Waiting for a job.", plan="")
+                board.add("status", json.dumps(chat.banner))
+                board.add("system", msg)
+                self._json({"msg": msg})
+            elif self.path == "/mode":
+                if body.get("mode") == "sim":
+                    msg = robot.use_sim()
+                    board.add("system", "Switched to the simulator (Isaac on the 4090). " + msg)
+                    self._json({"mode": "sim", "msg": msg})
+                else:
+                    self._json({"error": "use Check setup to connect to the real cell"}, 400)
+            elif self.path == "/real/check":
+                try:
+                    rep = robot.use_real(body.get("url") or "", (body.get("token") or "").strip(), body.get("ca") or None)
+                    ready = rep.get("ready_trial")
+                    board.add("system", f"Real cell: reached it ({rep['round_trip_ms']} ms round trip, a picture in "
+                                        f"{rep['observe_s']} s, cameras {'ok' if rep['sees'] else 'NOT seeing'}). "
+                              + (f"Trial {ready} is ready: press Run the test." if ready else
+                                 "No trial is ready yet: the operator marks one ready when the table is set."))
+                    self._json(rep)
+                except Exception as e:
+                    board.add("system", f"Real cell: couldn't connect: {e}")
+                    self._json({"ok": False, "error": str(e)}, 400)
+            elif self.path == "/real/start":
+                try:
+                    t = robot.start_trial()
+                    board.add("system", f"Trial {t['trial_id']} is running. Tell it what to do.")
+                    self._json({"ok": True, "trial": t["trial_id"]})
+                except Exception as e:
+                    board.add("system", f"Couldn't start the trial: {e}")
+                    self._json({"ok": False, "error": str(e)}, 400)
             elif self.path == "/distract":
                 state["distract"] = bool(body.get("on"))
                 self._json({"distract": state["distract"]})
@@ -147,6 +187,8 @@ def main() -> None:
                 self._json({"error": "not found"}, 404)
 
     def hands(b: dict) -> str:
+        if robot.mode != "sim":
+            return "on the real cell your real hands do that"
         a = b.get("action")
         if a == "pour":
             order = [(it["kind"], it["color"]) for it in b.get("items", []) for _ in range(int(it.get("count", 1)))]

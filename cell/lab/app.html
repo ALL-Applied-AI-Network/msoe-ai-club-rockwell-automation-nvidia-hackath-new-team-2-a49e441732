@@ -57,6 +57,14 @@
   .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; border: 1px solid #0006; }
   #right { position: relative; min-width: 0; }
   #right iframe { width: 100%; height: 100%; border: 0; display: block; background: #0d0f12; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: transparent; color: var(--dim); }
+  .seg button.on { background: #2f6feb; color: #fff; }
+  #realpanel { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  #realpanel input[type=text], #realpanel input[type=password] { background: #20242c; color: var(--text); border: 1px solid var(--line);
+                  border-radius: 5px; padding: 4px 6px; font: inherit; font-size: 12px; flex: 1; min-width: 0; }
+  #realpanel .go { border-color: #3fb950; color: #7ee2a0; }
+  #realpanel .note { color: var(--dim); font-size: 12px; }
   label { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
 </style>
 </head>
@@ -64,11 +72,18 @@
 <div id="left">
   <header>
     <b>Robot</b><span class="state" id="state">…</span>
+    <span class="seg"><button id="m-sim" class="on">Simulator</button><button id="m-real">Real cell</button></span>
+    <button id="reset" title="the simulator from scratch: three empty boxes, no job, no rules">Reset</button>
     <label title="each message holds the arm for ~2 s"><input type="checkbox" id="distract"> distracting</label>
     <button id="native" title="open the native Rerun viewer on this machine">native viewer</button>
   </header>
   <div id="banner" class="waiting"><div class="top"><span class="phase">waiting</span><span class="head">Waiting for a job.</span></div><div class="plan"></div></div>
   <div id="msgs"></div>
+  <div id="realpanel" hidden>
+    <div class="row"><input type="text" id="url" value="https://hackathon.sidclab.org" title="the cell's address"></div>
+    <div class="row"><input type="password" id="token" placeholder="run token (kept in memory only)"><button id="check">Check setup</button></div>
+    <div class="row"><button id="run" class="go" disabled>Run the test</button><span class="note" id="trials">not connected</span></div>
+  </div>
   <details id="hands">
     <summary>Joel's hands</summary>
     <div class="hp">
@@ -129,7 +144,29 @@ $("send").onclick = send;
 $("text").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
 
 // viewer + settings
-fetch("/config").then(r => r.json()).then(c => { $("viewer").src = c.viewer; $("distract").checked = c.distract; });
+let mode = "sim";
+function setMode(m) {
+  mode = m;
+  $("m-sim").classList.toggle("on", m === "sim");
+  $("m-real").classList.toggle("on", m === "real");
+  $("realpanel").hidden = m !== "real";
+  $("hands").hidden = m !== "sim";
+  $("reset").hidden = m !== "sim";
+}
+fetch("/config").then(r => r.json()).then(c => { $("viewer").src = c.viewer; $("distract").checked = c.distract; setMode(c.mode); });
+$("m-sim").onclick = () => { if (mode !== "sim") post("/mode", {mode: "sim"}).then(() => setMode("sim")); };
+$("m-real").onclick = () => setMode("real");  // connects when you press Check setup
+$("reset").onclick = () => post("/reset").then(refresh);
+$("check").onclick = () => {
+  $("check").disabled = true;
+  $("trials").textContent = "checking…";
+  post("/real/check", {url: $("url").value, token: $("token").value}).then(r => {
+    $("trials").textContent = r.ok === false && r.error ? "couldn't connect" :
+      (r.ready_trial ? `trial ${r.ready_trial} ready` : "connected · waiting for the operator");
+    $("run").disabled = !r.ready_trial;
+  }).finally(() => { $("check").disabled = false; });
+};
+$("run").onclick = () => { $("run").disabled = true; post("/real/start"); };
 $("distract").onchange = e => post("/distract", {on: e.target.checked});
 $("native").onclick = () => post("/native");
 try { $("hands").open = localStorage.getItem("hands") !== "closed"; } catch (e) {}
@@ -160,6 +197,11 @@ $("addbox").onclick = () => post("/hands", {action: "add_box", color: $("boxcolo
 function refresh() {
   fetch("/objects").then(r => r.json()).then(d => {
     $("state").textContent = `${d.state} · robot time ${Math.round(d.t)} s`;
+    if (d.mode === "real" && d.trials) {
+      const ready = d.trials.find(t => t.status === "ready"), run = d.trials.find(t => t.status === "running");
+      $("trials").textContent = run ? `trial ${run.id} running` : ready ? `trial ${ready.id} ready` : "waiting for the operator";
+      $("run").disabled = !ready;
+    }
     $("objs").innerHTML = "";
     d.objects.sort((a, b) => (b.box - a.box) || a.name.localeCompare(b.name)).forEach(o => {
       const r = document.createElement("div");

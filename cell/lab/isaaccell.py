@@ -92,7 +92,7 @@ class IsaacCell:
         above it and land in a pile."""
         rng = np.random.default_rng(seed)
         new, specs = [], []
-        nid = max([i.id for i in self.instances] + [0]) + 1
+        nid = self._next_id(len(order))
         for k, (kind, color) in enumerate(order):
             if kind not in KINDS:
                 raise ValueError(f"no such kind {kind!r}")
@@ -116,7 +116,7 @@ class IsaacCell:
         self._set(r["truth"])
 
     def add_box(self, color: str = "white", at=(0.36, -0.24), kind: str = "box_60") -> Instance:
-        i = Instance(max([x.id for x in self.instances] + [0]) + 1, kind, color, np.zeros(3), np.array([1.0, 0, 0, 0]))
+        i = Instance(self._next_id(1), kind, color, np.zeros(3), np.array([1.0, 0, 0, 0]))
         self.local[i.id] = kind_mesh(KINDS[kind])
         T = np.eye(4)
         T[:3, 3] = [at[0], at[1], SURFACE_Z - self.local[i.id].bounds[0][2] + 0.0005]
@@ -140,6 +140,12 @@ class IsaacCell:
             poses[str(i)] = [at[0] + rng.normal(0, 0.012), at[1] + rng.normal(0, 0.012), SURFACE_Z + 0.04 + 0.025 * k, *q.tolist()]
         self._set(self._post("sim/move", {"poses": poses}, timeout=120)["truth"])
         return inside
+
+    def _next_id(self, n: int) -> int:
+        """Fresh ids, never reused: a thing taken off the table still exists in Isaac (in Joel's pocket)."""
+        first = max([i.id for i in self.instances] + [getattr(self, "last_id", 0)]) + 1
+        self.last_id = first + n - 1
+        return first
 
     def _set(self, truth: dict) -> None:
         self.poses = {int(k): np.array(v) for k, v in truth.items()}
