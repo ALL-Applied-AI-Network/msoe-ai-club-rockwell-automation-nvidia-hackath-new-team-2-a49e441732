@@ -229,7 +229,14 @@ class Robot:
                         obs, fresh = self._act(obs, fresh)
                     elif self.mode == "sim" and time.time() - last_watch > WATCH_S:
                         last_watch = time.time()
-                        self._watch()
+                        try:
+                            self._watch()
+                        except Exception:  # the tunnel to the GPU box dropped (a network change): reopen it, quietly
+                            from lab.isaaccell import tunnel
+                            try:
+                                tunnel()
+                            except BaseException:
+                                pass
                 except TrialOver:
                     self.policy, self.state = None, "trial over"
                     self._emit("note", "The trial is over (time's up, or the operator ended it).")
