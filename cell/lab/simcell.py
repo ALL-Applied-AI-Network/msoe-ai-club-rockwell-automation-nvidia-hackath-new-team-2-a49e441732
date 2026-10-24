@@ -24,6 +24,7 @@ from calibration.geometry import SURFACE_Z, UF0_Z_MM, flange_pose, load
 from lab import gripper as G
 from lab.catalog import COLORS, DENSITY, KINDS, kind_mesh, rot_matrix
 from calibration.kinematics import hand_matrix, tool_from_hand, tool_ik, wpr_of
+from lab.sensor import realistic_depth
 from lab.synth import HOME, IMAGE_SIZE, TCP_OFFSET, Renderer
 
 TCP_BOX = [(150.0, 650.0), (-450.0, 450.0), (-334.0, 300.0)]  # the cell's limits, mm in UF0
@@ -279,7 +280,8 @@ class SimCell:
             "joints": np.append(self.q, self.grip),
             "tcp_pose": [tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, *self.actual_wpr().tolist()],
             "images": {c: r.rgb(c, joints=self.q, size=self.image_size) for c in ("table", "side", "wrist")},
-            "depth": {c: r.depth(c, joints=self.q, rng=rng) for c in ("table", "wrist")},
+            "depth": {c: (realistic_depth(r.depth(c, joints=self.q), self.rng) if getattr(self, "noise", False)
+                          else r.depth(c, joints=self.q, rng=rng)) for c in ("table", "wrist")},
         }
 
     # ------------------------------------------------------------ truth

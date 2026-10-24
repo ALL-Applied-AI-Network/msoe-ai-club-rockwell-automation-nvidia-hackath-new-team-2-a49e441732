@@ -1,5 +1,5 @@
 """The robot as a long-running session: a body (the Isaac cell, standing in for the real one), a mind (the sort policy:
-world model, VLM close-ups, director), and a voice (lab/chat.py talks for it). lab/app.py puts it on a page.
+the evidence map; v1's sort policy is archived), and a voice (lab/chat.py talks for it). lab/app.py puts it on a page.
 
 Two worlds, one switch: the Isaac cell on the GPU box ("sim": with a Reset, and Joel's hands to change the table), or the
 real cell ("real": a run token, a setup check, then the operator's trial; no truth and no hands, the person's real
@@ -26,7 +26,7 @@ import numpy as np
 from lab import armcheck, primitives as P, viz
 from lab.isaaccell import IsaacCell
 from lab.realcell import RealCell, TrialOver
-from lab.policies.sort import SortPolicy
+from lab.minds import MINDS
 from lab.trial import build, load_trial
 
 RUNS = Path(__file__).resolve().parents[1] / "runs"
@@ -54,8 +54,9 @@ class Robot:
         self.listeners: list = []
         viz.LISTENERS.append(self._heard)
         self.instruction, self.rules = "", []
-        self.policy: SortPolicy | None = None
-        self.parked: SortPolicy | None = None  # a job paused or stopped by an error: resume() picks it up again
+        self.policy = None  # the mind running the current job (lab/minds)
+        self.parked = None  # a job paused or stopped by an error: resume() picks it up again
+        self.mind_name = "map"
         self.pending: str | None = None   # "start" | "pause": picked up by the robot thread between moves
         self.state = "idle"
         self.distract_s = 0.0             # hold still this long before the next move (talking to it slows it down)
@@ -78,7 +79,7 @@ class Robot:
         with self.lock:
             self.rules.append(rule)
             pol = self.policy
-        if pol is not None:  # the director replans with it before the next move
+        if pol is not None and hasattr(pol, "director"):  # a mind with a planner replans with it before the next move
             pol.instruction = self.full_instruction()
             pol.director.instruction = pol.instruction
             pol.director.again()
@@ -174,26 +175,9 @@ class Robot:
         lines = [f"State: {self.state}. Instruction: \"{self.instruction or '(none yet)'}\"."]
         if self.rules:
             lines.append("Standing rules from the person: " + "; ".join(self.rules))
-        pol = self.policy
-        if pol is not None:
-            plan = getattr(pol.director, "plan", None) or {}
-            if plan:
-                lines.append(f"Current plan: rule \"{plan.get('rule')}\"; groups: "
-                             + "; ".join(f"{g.get('name')} -> " + (f"box {g.get('box')}" if g.get("box") is not None
-                                         else f"stays on the table ({g.get('why') or 'no reason given'})")
-                                         for g in plan.get("groups", [])))
-            for t in sorted(pol.world.things.values(), key=lambda t: t.id):
-                lab = getattr(t, "label", None) or {}
-                name = f"{lab.get('color', '')} {lab.get('name', '')}".strip() or "not named yet"
-                where = f"({t.centroid[0] * 1000:.0f}, {t.centroid[1] * 1000:.0f}) mm"
-                past = "; ".join(t.history[-3:])  # what happened to it: how the person can refer to it
-                if t.status == "bin":
-                    lines.append(f"  box #{t.id} at {where}: {getattr(t, 'colour', None) or name}" + (f" [{past}]" if past else ""))
-                else:
-                    lines.append(f"  #{t.id} at {where}: {name}; {t.status}; plan: {getattr(t, 'plan', '') or '-'}"
-                                 + (f" [history: {past}]" if past else ""))
-            for s in pol.world.sorted:
-                lines.append(f"  sorted: #{s['id']} {s.get('color') or ''} {s.get('name') or '?'} -> box #{s['bin']}")
+        pol = self.policy or self.parked
+        if pol is not None and hasattr(pol, "status"):
+            lines.append(pol.status())
         if self.done_log:
             lines.append("What I've done lately (oldest first):\n  " + "\n  ".join(self.done_log[-12:]))
         lines.append(f"Robot time so far: {self.cell.t:.0f} s.")
@@ -269,10 +253,8 @@ class Robot:
 
     def _new_policy(self) -> None:
         self.parked = None
-        pol = SortPolicy(instruction=self.full_instruction())
+        pol = MINDS[self.mind_name](instruction=self.full_instruction())
         pol.reset()
-        if pol.labeler is not None:
-            pol.labeler.save_dir = self.dir / "labels"
         self.cell.image_size = tuple(getattr(pol, "IMAGE_SIZE", self.cell.image_size))
         self.cell.instruction = self.full_instruction()
         self.policy, self.state = pol, "working"

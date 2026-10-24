@@ -194,3 +194,29 @@ def pour(cur, box_xy_m, toward_xy_m, outer_mm: float = 60.0, height_mm: float = 
     what = (f"pour the box at ({box[0] * 1000:.0f}, {box[1] * 1000:.0f}) mm out over ({toward_xy_m[0] * 1000:.0f}, "
             f"{toward_xy_m[1] * 1000:.0f}): grip its far wall, lift, swing it {tilt_deg:.0f} deg about its lip, put it back")
     return rows, what
+
+
+def move_to_pose(cur, tip_m, wpr, height_mm: float = SAFE_MM, settle: int = HOLD) -> tuple[list, str]:
+    """The fingertip to tip_m (base frame, m) with the tool turned to w, p, r (any orientation: a tilted look), fingers
+    open: up to a safe height, across while turning (the rotation interpolated smoothly, never a jump), down, then
+    still for `settle` rows so the picture is taken standing still."""
+    from calibration.kinematics import wpr_matrix, wpr_of
+    import trimesh.transformations as tf
+    p0 = np.asarray(cur[:3], float)
+    goal = np.array([tip_m[0] * 1000, tip_m[1] * 1000, tip_m[2] * 1000 + UF0_Z_MM])
+    safe = max(TABLE_UF0 + height_mm, goal[2], p0[2])
+    R0, R1 = np.eye(4), np.eye(4)
+    R0[:3, :3], R1[:3, :3] = wpr_matrix(*cur[3:6]), wpr_matrix(*wpr)
+    q0, q1 = tf.quaternion_from_matrix(R0), tf.quaternion_from_matrix(R1)
+    turn = np.degrees(2 * np.arccos(min(1.0, abs(float(np.dot(q0, q1))))))
+    legs = [(p0, np.array([p0[0], p0[1], safe]), 0.0, 0.0), (np.array([p0[0], p0[1], safe]), np.array([goal[0], goal[1], safe]), 0.0, 1.0),
+            (np.array([goal[0], goal[1], safe]), goal, 1.0, 1.0)]
+    rows = []
+    for a, b, f0, f1 in legs:
+        n = max(1, int(np.ceil(np.linalg.norm(b - a) / (TRAVEL * DT))), int(np.ceil(abs(f1 - f0) * turn / 6)))  # <= 6 deg a row
+        for f in np.linspace(0, 1, n + 1)[1:]:
+            q = tf.quaternion_slerp(q0, q1, f0 + (f1 - f0) * f)
+            p = a + (b - a) * f
+            rows.append([float(p[0]), float(p[1]), float(p[2]), *wpr_of(tf.quaternion_matrix(q)[:3, :3]).tolist(), 0.0])
+    rows += [rows[-1]] * settle
+    return rows, f"move to ({goal[0]:.0f}, {goal[1]:.0f}, {goal[2] - TABLE_UF0:.0f} mm up), w p r {np.round(wpr, 0).tolist()}"

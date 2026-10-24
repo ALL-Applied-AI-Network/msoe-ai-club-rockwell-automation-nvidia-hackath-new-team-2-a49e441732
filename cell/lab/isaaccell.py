@@ -166,6 +166,10 @@ class IsaacCell:
 
     def observe(self, rng_noise: bool = True) -> dict:
         obs = self.client.observe(["table", "side", "wrist"], self.image_size, "jpeg", depth=["table", "wrist"])  # jpeg: ~10x smaller, as the real cell allows
+        if getattr(self, "noise", False):  # as bad as the real sensors
+            from lab.sensor import realistic_depth
+            self.rng = getattr(self, "rng", None) or np.random.default_rng(0)
+            obs["depth"] = {c: realistic_depth(d, self.rng) for c, d in obs["depth"].items()}
         self.q, self.grip, self.t = np.asarray(obs["joints"][:6], float), float(obs["joints"][6]), float(obs["t"])
         tp = obs["tcp_pose"]
         self.tip_xyz = np.array([tp[0], tp[1], tp[2] - UF0_Z_MM]) / 1000
