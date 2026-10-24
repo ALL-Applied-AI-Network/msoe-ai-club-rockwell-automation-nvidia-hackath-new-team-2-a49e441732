@@ -15,6 +15,7 @@ import trimesh
 from scipy.optimize import least_squares
 
 from calibration.geometry import SURFACE_Z, UF0_Z_MM, flange_pose, load
+from calibration.kinematics import tcp_uf0, tool_ik
 from lab.recorder import Recorder
 
 JOINT_LIMITS = [(-170, 170), (-110, 120), (-69, 205), (-190, 190), (-120, 120), (-360, 360)]
@@ -82,28 +83,13 @@ def table_mesh() -> trimesh.Trimesh:
 # ---------------------------------------------------------------- arm
 
 def wrist_ik(tip_xyz, yaw_deg: float = 0.0, q0=HOME) -> np.ndarray:
-    """Joints (6, deg) that put the fingertip at tip_xyz (base frame, m) with the fingers pointing straight down."""
-    yaw = np.radians(yaw_deg)
-
-    def err(q):
-        T = flange_pose(q)
-        tip = T[:3, 3] + T[:3, 0] * TCP_OFFSET
-        return np.concatenate([(tip - tip_xyz) * 10, T[:3, 0] - [0, 0, -1],
-                               0.3 * (T[:3, 1] - [np.cos(yaw + np.pi / 2), np.sin(yaw + np.pi / 2), 0])])
-
-    lo, hi = np.array(JOINT_LIMITS, float).T
-    sol = least_squares(err, np.clip(q0, lo, hi), bounds=(lo, hi))
-    T = flange_pose(sol.x)
-    miss = np.linalg.norm(T[:3, 3] + T[:3, 0] * TCP_OFFSET - tip_xyz)
-    if miss > 2e-3:
-        raise ValueError(f"no IK solution within 2 mm of {tip_xyz} (missed by {miss * 1000:.1f} mm)")
-    return sol.x
+    """Joints (6, deg) that put the fingertip at tip_xyz (base frame, m) with the fingers pointing straight down, turned
+    to yaw_deg. Any orientation: calibration.kinematics.tool_ik."""
+    return tool_ik(tip_xyz, (-180.0, 0.0, yaw_deg), q0)
 
 
 def tcp_pose_uf0(joints) -> list[float]:
-    T = flange_pose(joints)
-    tip = T[:3, 3] + T[:3, 0] * TCP_OFFSET
-    return [tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, -180.0, 0.0, 0.0]
+    return tcp_uf0(joints)
 
 
 # ---------------------------------------------------------------- rendering

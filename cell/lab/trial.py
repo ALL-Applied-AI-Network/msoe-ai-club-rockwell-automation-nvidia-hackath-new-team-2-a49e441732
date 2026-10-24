@@ -215,6 +215,8 @@ def run(name: str, seed: int | None = None, policy: str = "explore", view: bool 
                     f"contact sheet in labels/sheet.jpg)", level="DEBUG")
     viz.narrate(f"done: {cell.t:.0f} s of robot time, {time.time() - t0:.0f} s on this computer. Truth check: {score}")
     score["sim_flung"] = n_flung[0]
+    if hasattr(cell, "faults"):  # Isaac: collisions the real cell would have faulted on
+        score["faults"] = cell.faults
     (rec.dir / "summary.json").write_text(json.dumps({"trial": name, "seed": seed, "policy": policy, "robot_s": round(cell.t),
                                                       "wall_s": round(time.time() - t0), "score": score}))
     print(f"recorded {rec.dir}\nrobot time {cell.t:.0f} s, wall {time.time() - t0:.0f} s\nfinal: {score}")

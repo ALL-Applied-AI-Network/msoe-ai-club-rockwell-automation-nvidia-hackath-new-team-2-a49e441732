@@ -23,6 +23,10 @@ Sim-only extras (lab/isaaccell.py uses them):
     GET  /api/v1/sim/wait                   blocks until every queued action has played; returns the per-row truth
     GET  /api/v1/sim/truth                  every object's pose now
     POST /api/v1/sim/end                    end the trial (run.py's loop stops)
+Joel's hands (a person changing the table mid-trial; the robot isn't told, it has to notice):
+    POST /api/v1/sim/add {"objects": [...]}           new objects (usually above the table: a cup poured out)
+    POST /api/v1/sim/remove {"ids": [...]}            take objects away
+    POST /api/v1/sim/move {"poses": {id: pose}}       put objects somewhere else (a box tipped out: its contents)
 
 Time is simulated: each 0.1 s row is 0.1 s of physics, however long it takes to compute. Idle, nothing moves.
 """
@@ -69,45 +73,18 @@ from isaacsim.core.api import World  # noqa: E402
 from isaacsim.core.prims import RigidPrim, SingleArticulation, XFormPrim  # noqa: E402
 from isaacsim.core.utils.types import ArticulationAction  # noqa: E402
 from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdPhysics, UsdShade  # noqa: E402
-from scipy.optimize import least_squares  # noqa: E402
 
 import cell as twin  # noqa: E402
 import scene_config as C  # noqa: E402
-from calibration.geometry import UF0_Z_MM, flange_pose, load as load_cams  # noqa: E402
+from calibration.geometry import UF0_Z_MM, load as load_cams  # noqa: E402
+from calibration.kinematics import HOME, tcp_of, tool_ik  # noqa: E402
 
+JUMP_DEG = 20.0  # a row whose joints are this far from the last row's: a wrist flip the controller would refuse
+BLOCKED_MM = 12.0  # the fingertip this far from where it was told to be after a row: something is in the way (a fault)
 BASE_Z = C.TABLE_TOP_Z  # the robot base in Isaac's world: base frame = world - (0, 0, 0.90)
-JOINT_LIMITS = [(-170, 170), (-110, 120), (-69, 205), (-190, 190), (-120, 120), (-360, 360)]
-HOME = [-0.0065, 3.2909, -11.8967, -0.0007, -74.8218, -0.0286]  # the real cell's home (twin convention, deg)
-TCP_OFFSET = 0.293  # fingertip, along the flange's +x
 TCP_BOX = [(150.0, 650.0), (-450.0, 450.0), (-334.0, 300.0)]  # the cell's limits, mm in UF0
 APERTURE = 20.955  # mm; any value works, the focal length is scaled to match
 OBJ_ROOT = "/World/Objects"
-
-
-# ---------------------------------------------------------------- kinematics (ours: the same chain as the twin's fk.py)
-
-def tip_of(q_deg) -> tuple[np.ndarray, float]:
-    """Fingertip position (base frame, m) and yaw (deg) for joints in degrees."""
-    T = flange_pose(q_deg)
-    yaw = np.degrees(np.arctan2(T[1, 1], T[0, 1])) - 90.0
-    return T[:3, 3] + T[:3, 0] * TCP_OFFSET, (yaw + 180.0) % 360.0 - 180.0
-
-
-def ik(tip, yaw_deg: float, q0) -> np.ndarray:
-    """Joints (deg) putting the fingertip at tip (base, m), fingers straight down, turned to yaw. As lab/synth.wrist_ik."""
-    yaw = np.radians(yaw_deg)
-
-    def err(q):
-        T = flange_pose(q)
-        return np.concatenate([(T[:3, 3] + T[:3, 0] * TCP_OFFSET - tip) * 10, T[:3, 0] - [0, 0, -1],
-                               0.3 * (T[:3, 1] - [np.cos(yaw + np.pi / 2), np.sin(yaw + np.pi / 2), 0])])
-
-    lo, hi = np.array(JOINT_LIMITS, float).T
-    sol = least_squares(err, np.clip(q0, lo + 1e-6, hi - 1e-6), bounds=(lo, hi))
-    miss = np.linalg.norm(tip_of(sol.x)[0] - tip)
-    if miss > 2e-3:
-        raise ValueError(f"no IK solution within 2 mm of {np.round(tip * 1000)} mm (missed by {miss * 1000:.1f} mm)")
-    return sol.x
 
 
 # ---------------------------------------------------------------- cameras: ours, from cameras.json
@@ -207,6 +184,9 @@ class Cell:
         self.t = 0.0
         self.playing = False
         self.objects: list[dict] = []
+        self.fault = None
+        self.taken: set[int] = set()
+        self.looks: dict = {}
         self.view = None
         self.trial = None
         self.n_trials = 0
@@ -245,14 +225,14 @@ class Cell:
         if self.stage.GetPrimAtPath(OBJ_ROOT).IsValid():
             self.stage.RemovePrim(OBJ_ROOT)
         UsdGeom.Xform.Define(self.stage, OBJ_ROOT)
-        looks = {}
+        self.looks = {}
+        self.taken = set()  # ids in Joel's pocket
         for o in objects:
-            self._add(o, looks)
-        self.objects = objects
+            self._add(o, self.looks)
+        self.objects = list(objects)
         self.world.reset()
         self._arm()
-        self.view = RigidPrim(prim_paths_expr=[f"{OBJ_ROOT}/obj_{o['id']}" for o in objects], name=f"objs{self.n_trials}")
-        self.view.initialize()
+        self._new_view()
         with self.lock:
             self.rows.clear()
             self.frames = []
@@ -265,6 +245,57 @@ class Cell:
         self.trial = {"trial_id": f"isaac-{self.n_trials:03d}", "index": self.n_trials - 1, "layout": "sim",
                       "status": "running", "instruction": instruction, "scored": False}
         return {"trial": self.trial, "truth": self.truth()}
+
+    def _new_view(self) -> None:
+        """The physics view the truth is read through: rebuilt whenever objects come or go."""
+        self.n_views = getattr(self, "n_views", 0) + 1
+        self.view = None
+        if self.objects:
+            self.view = RigidPrim(prim_paths_expr=[f"{OBJ_ROOT}/obj_{o['id']}" for o in self.objects], name=f"objs{self.n_views}")
+            self.view.initialize()
+
+    # ------------------------------------------------------------ Joel's hands: changes to the table, mid-trial
+
+    def add(self, objects: list[dict], fall_s: float = 1.5) -> dict:
+        """New objects (poses in the base frame, usually above the table: a cup poured out), then let them fall. The
+        robot's clock doesn't move: this is a person's hand, not the robot's time."""
+        for o in objects:
+            self._add(o, self.looks)
+        self.objects += objects
+        self.world.step(render=False)  # physics picks up the new bodies
+        self._new_view()
+        self._settle(fall_s)
+        return {"truth": self.truth()}
+
+    def remove(self, ids: list[int]) -> dict:
+        """Take objects off the table (a hand picks them up). They go to "Joel's pocket", on the floor well away from
+        the cell and every camera: deleting a body mid-simulation would invalidate the physics views (the arm's too)."""
+        idx = {int(o["id"]): k for k, o in enumerate(self.objects)}
+        ks = [idx[int(i)] for i in ids if int(i) in idx and int(i) not in self.taken]
+        if ks:
+            p = np.array([[-2.0 - 0.1 * (len(self.taken) + n), 2.0, 0.05] for n in range(len(ks))])
+            q = np.tile([1.0, 0, 0, 0], (len(ks), 1))
+            self.view.set_world_poses(positions=p, orientations=q, indices=np.array(ks))
+            self.view.set_velocities(np.zeros((len(ks), 6)), indices=np.array(ks))
+            self.taken |= {int(self.objects[k]["id"]) for k in ks}
+        self._settle(0.2)
+        return {"truth": self.truth()}
+
+    def move(self, poses: dict) -> dict:
+        """Put objects somewhere else, by hand: {id: [x, y, z (base, m), qw, qx, qy, qz]}; then let them fall."""
+        idx = {str(o["id"]): k for k, o in enumerate(self.objects)}
+        ks = [idx[str(i)] for i in poses]
+        p = np.array([poses[i][:3] for i in poses], float) + [0, 0, BASE_Z]
+        q = np.array([poses[i][3:7] for i in poses], float)
+        self.view.set_world_poses(positions=p, orientations=q, indices=np.array(ks))
+        self.view.set_velocities(np.zeros((len(ks), 6)), indices=np.array(ks))
+        self._settle(1.5)
+        return {"truth": self.truth()}
+
+    def _settle(self, seconds: float) -> None:
+        for _ in range(int(seconds * args.physics_hz)):
+            self._command(self.q, self.grip)
+            self.world.step(render=(_ % 8 == 0) and not args.headless)
 
     def _look(self, rgb, looks: dict):
         key = tuple(int(c) for c in rgb)
@@ -331,7 +362,8 @@ class Cell:
             return {}
         pos, quat = self.view.get_world_poses()
         pos, quat = np.asarray(pos), np.asarray(quat)
-        return {str(o["id"]): [*(pos[k] - [0, 0, BASE_Z]).tolist(), *quat[k].tolist()] for k, o in enumerate(self.objects)}
+        return {str(o["id"]): [*(pos[k] - [0, 0, BASE_Z]).tolist(), *quat[k].tolist()] for k, o in enumerate(self.objects)
+                if int(o["id"]) not in self.taken}
 
     # ------------------------------------------------------------ motion
 
@@ -339,9 +371,18 @@ class Cell:
         if kind == "tcp":
             tip = np.array([row[0], row[1], row[2] - UF0_Z_MM]) / 1000
             try:
-                goal = ik(tip, float(row[5]), self.q)
+                goal = tool_ik(tip, row[3:6], self.q)
             except ValueError as e:
                 print(f"[isaac-cell] {e}; holding", flush=True)
+                goal = self.q
+            jump = np.abs(goal - self.q)
+            if jump.max() > JUMP_DEG:  # the real controller faults on a move that needs the wrist to flip
+                with self.lock:
+                    dropped = len(self.rows)
+                    self.rows.clear()
+                    self.fault = (f"refused: the next pose needs J{int(jump.argmax()) + 1} to turn {jump.max():.0f} deg in "
+                                  f"{dt:.1f} s (a wrist flip); stopped, {dropped} queued rows dropped")
+                print(f"[isaac-cell] FAULT {self.fault}", flush=True)
                 goal = self.q
         else:
             goal = np.asarray(row[:6], float)
@@ -352,12 +393,26 @@ class Cell:
         for s in range(1, n + 1):
             self._command(q0 + (goal - q0) * s / n, grip)
             self.world.step(render=(s % every == 0) and not args.headless)
-        self.q, self.grip = goal, grip
         self.t += dt
-        tip, yaw = tip_of(goal)
+        lag = np.linalg.norm(tcp_of(self.joints_now()[:6])[0] - tcp_of(goal)[0]) * 1000
+        self.max_lag = max(getattr(self, "max_lag", 0.0), lag)
+        if lag > BLOCKED_MM:  # blocked: the real cell would fault here instead of pushing harder. Stop where it is.
+            self.q = self.joints_now()[:6]
+            self.grip = grip
+            self._command(self.q, grip)
+            with self.lock:
+                dropped = len(self.rows)
+                self.rows.clear()
+                self.fault = (f"collision: the fingertip is {lag:.0f} mm from its target at t = {self.t:.1f} s "
+                              f"(something is in the way); stopped, {dropped} queued rows dropped")
+            print(f"[isaac-cell] FAULT {self.fault}", flush=True)
+        else:
+            self.q, self.grip = goal, grip
+        tip, wpr = tcp_of(self.q)
         with self.lock:
-            self.frames.append({"t": self.t, "poses": self.truth(), "tip": tip.tolist(), "yaw": yaw, "grip": grip,
-                                "joints": goal.tolist()})
+            self.frames.append({"t": self.t, "poses": self.truth(), "tip": tip.tolist(), "wpr": wpr.tolist(), "grip": grip,
+                                "joints": goal.tolist(), "fault": self.fault})
+            self.fault = None
 
     def joints_now(self) -> np.ndarray:
         q = np.degrees(np.asarray(self.arm.get_joint_positions())[self.arm_idx])
@@ -384,12 +439,12 @@ class Cell:
                 ok, buf = cv2.imencode(ext, cv2.cvtColor(img, cv2.COLOR_RGB2BGR), opts)
                 out_img[c] = base64.b64encode(buf.tobytes()).decode()
         q = self.joints_now()
-        tip, yaw = tip_of(q[:6])
+        tip, wpr = tcp_of(q[:6])
         with self.lock:
             queued = len(self.rows)
         obs = {"t": self.t, "status": "running" if (queued or self.playing) else "idle", "queued": queued,
-               "trial": self.trial, "joints": q.tolist(),
-               "tcp_pose": [tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, -180.0, 0.0, yaw],
+               "trial": self.trial, "joints": q.tolist(), "max_lag_mm": round(getattr(self, "max_lag", 0.0), 1),
+               "tcp_pose": [tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, *wpr.tolist()],
                "images": out_img}
         if out_depth:
             obs["depth"] = out_depth
@@ -517,6 +572,12 @@ def handler(cell: Cell):
                             frames, cell.frames = cell.frames, []
                             return {"t": cell.t, "frames": frames}
                     time.sleep(0.01)
+            if path == "sim/add":
+                return cell.run_job(cell.add, body["objects"])
+            if path == "sim/remove":
+                return cell.run_job(cell.remove, body["ids"])
+            if path == "sim/move":
+                return cell.run_job(cell.move, body["poses"])
             if path == "sim/truth":
                 return {"t": cell.t, "poses": cell.run_job(cell.truth)}
             if path == "sim/debug":  # world transforms (row-vector USD matrices, transposed to column form) of prims

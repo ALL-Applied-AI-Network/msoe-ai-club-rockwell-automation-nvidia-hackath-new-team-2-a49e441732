@@ -368,7 +368,7 @@ class Animator:
         self.n += 1
         if self.n % self.every:
             return
-        from lab.synth import wrist_ik
+        from calibration.kinematics import tool_ik
         set_sim_time(cell.t)
         tops = []
         for i in cell.instances:
@@ -381,7 +381,8 @@ class Animator:
                 T = cell.body_pose(body)
                 rr.log(f"{root}/gripper/{name}", rr.Transform3D(translation=T[:3, 3], mat3x3=T[:3, :3]))
         try:
-            self.q = wrist_ik(cell.tip(), np.degrees(cell.actual_yaw()), q0=self.q)
+            wpr = cell.actual_wpr() if hasattr(cell, "actual_wpr") else (-180.0, 0.0, np.degrees(cell.actual_yaw()))
+            self.q = tool_ik(cell.tip(), wpr, q0=self.q)
         except ValueError:
             pass
         joints = np.append(self.q, cell.grip)

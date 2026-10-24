@@ -23,7 +23,8 @@ import trimesh
 from calibration.geometry import SURFACE_Z, UF0_Z_MM, flange_pose, load
 from lab import gripper as G
 from lab.catalog import COLORS, DENSITY, KINDS, kind_mesh, rot_matrix
-from lab.synth import HOME, IMAGE_SIZE, TCP_OFFSET, Renderer, wrist_ik
+from calibration.kinematics import hand_matrix, tool_from_hand, tool_ik, wpr_of
+from lab.synth import HOME, IMAGE_SIZE, TCP_OFFSET, Renderer
 
 TCP_BOX = [(150.0, 650.0), (-450.0, 450.0), (-334.0, 300.0)]  # the cell's limits, mm in UF0
 OPEN_GAP = 2 * G.STROKE          # flat faces 12 mm apart when open (the hooked tips: 16 mm)
@@ -48,6 +49,15 @@ def _quat(R: np.ndarray) -> np.ndarray:
     T = np.eye(4)
     T[:3, :3] = R
     return trimesh.transformations.quaternion_from_matrix(T)  # w, x, y, z
+
+
+def _hand_quat(wpr) -> np.ndarray:
+    """MuJoCo quaternion (w, x, y, z) of the hand for a tool w, p, r (deg)."""
+    return _quat(hand_matrix(wpr))
+
+
+def _slerp(a: np.ndarray, b: np.ndarray, f: float) -> np.ndarray:
+    return trimesh.transformations.quaternion_slerp(a, b, f)
 
 
 def _fmt(v) -> str:
@@ -104,8 +114,8 @@ def build_mjcf(instances: list[Instance], chute: tuple | None = None) -> str:
     <geom name="table" type="box" size="0.54 0.735 0.01" pos="0.17 0.01 {SURFACE_Z - 0.01}" rgba=".8 .78 .74 1"/>
     {walls}
     {"".join(bodies)}
-    <body name="hand_target" mocap="true" pos="{_fmt(home_tip)}"/>
-    <body name="hand" pos="{_fmt(home_tip)}" gravcomp="1">
+    <body name="hand_target" mocap="true" pos="{_fmt(home_tip)}" quat="{_fmt(_hand_quat((-180.0, 0.0, 0.0)))}"/>
+    <body name="hand" pos="{_fmt(home_tip)}" quat="{_fmt(_hand_quat((-180.0, 0.0, 0.0)))}" gravcomp="1">
       <freejoint name="hand_free"/>
       <inertial pos="0 0 0.09" mass="0.6" diaginertia="2e-3 2e-3 1e-3"/>
       <geom name="palm" type="box" size="{bw / 2} {bd / 2} {bh / 2}" pos="0 0 {G.LENGTH + bh / 2}" rgba=".27 .27 .29 1"/>
@@ -146,6 +156,7 @@ class SimCell:
         self.local = {i.id: kind_mesh(KINDS[i.kind]) for i in instances}
         self.instruction = instruction
         self.yaw = 0.0
+        self.wpr = np.array([-180.0, 0.0, 0.0])  # the tool's commanded w, p, r (deg)
         self.grip = 0.0
         self.q = np.array(HOME, float)
         self.t = 0.0
@@ -153,7 +164,7 @@ class SimCell:
         mujoco.mj_forward(self.model, self.data)
         self.cmd_pos = self.data.mocap_pos[0].copy()   # where the controller has been told to go
         n_lag = max(1, int(round(lag_s / self.model.opt.timestep)))
-        self.lagged = deque([(self.cmd_pos.copy(), 0.0)] * n_lag, maxlen=n_lag)  # what the arm actually follows
+        self.lagged = deque([(self.cmd_pos.copy(), _hand_quat(self.wpr))] * n_lag, maxlen=n_lag)  # what the arm actually follows
 
     # ------------------------------------------------------------ state
 
@@ -225,23 +236,30 @@ class SimCell:
         for row in a:
             start = self.cmd_pos.copy()
             goal = np.array([row[0] / 1000, row[1] / 1000, (row[2] - UF0_Z_MM) / 1000])
-            yaw0, yaw1 = self.yaw, np.radians(row[5])
+            q0, q1 = _hand_quat(self.wpr), _hand_quat(row[3:6])  # the whole tool rotation: w, p (tilt) and r
             self.grip = 1.0 if row[6] >= 0.5 else 0.0
             self.data.ctrl[:] = OPEN_GAP / 2 * self.grip  # the gripper valve isn't delayed
             for s in range(1, n + 1):
                 f = s / n
-                self.lagged.append((start + f * (goal - start), yaw0 + f * (yaw1 - yaw0)))
-                pos, yaw = self.lagged[0]  # the arm is where it was told to be lag_s ago
+                self.lagged.append((start + f * (goal - start), _slerp(q0, q1, f)))
+                pos, quat = self.lagged[0]  # the arm is where it was told to be lag_s ago
                 self.data.mocap_pos[0] = pos
-                self.data.mocap_quat[0] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
+                self.data.mocap_quat[0] = quat
                 mujoco.mj_step(self.model, self.data)
-            self.cmd_pos, self.yaw = goal, yaw1
+            self.cmd_pos, self.wpr = goal, np.asarray(row[3:6], float)
+            self.yaw = np.radians(row[5])
             self.t += dt
             if on_frame is not None:
                 on_frame(self)
 
+    def actual_wpr(self) -> np.ndarray:
+        """The tool's w, p, r (deg) where the arm actually is now."""
+        T = np.eye(4)
+        T[:3, :3] = trimesh.transformations.quaternion_matrix(self.lagged[0][1])[:3, :3]
+        return wpr_of(tool_from_hand(T[:3, :3]))
+
     def actual_yaw(self) -> float:
-        return float(self.lagged[0][1])
+        return float(np.radians(self.actual_wpr()[2]))
 
     # ------------------------------------------------------------ cameras
 
@@ -249,7 +267,7 @@ class SimCell:
         """What the real cell would send: RGB from table/side/wrist, table + wrist depth, joints, fingertip pose."""
         tip = self.tip()
         try:
-            self.q = wrist_ik(tip, np.degrees(self.actual_yaw()), q0=self.q)
+            self.q = tool_ik(tip, self.actual_wpr(), q0=self.q)
         except ValueError:
             pass  # keep the last joints: the wrist camera pose will be slightly off
         scene = [*self.object_meshes(), *self.finger_meshes()]
@@ -259,7 +277,7 @@ class SimCell:
             "t": self.t, "status": "running", "queued": 0,
             "trial": {"status": "running", "instruction": self.instruction},
             "joints": np.append(self.q, self.grip),
-            "tcp_pose": [tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, -180.0, 0.0, np.degrees(self.actual_yaw())],
+            "tcp_pose": [tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, *self.actual_wpr().tolist()],
             "images": {c: r.rgb(c, joints=self.q, size=self.image_size) for c in ("table", "side", "wrist")},
             "depth": {c: r.depth(c, joints=self.q, rng=rng) for c in ("table", "wrist")},
         }
