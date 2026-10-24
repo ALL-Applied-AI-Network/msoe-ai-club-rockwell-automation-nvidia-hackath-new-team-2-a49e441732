@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 
 from calibration.geometry import CHAIN, SURFACE_Z, UF0_Z_MM, _rot
-from calibration.kinematics import FLANGE_FROM_TOOL, JAW_AXIS_DEG, TCP_OFFSET, tool_ik, wpr_matrix
+from calibration.kinematics import FLANGE_FROM_TOOL, JAW_AXIS_DEG, JOINT_LIMITS, TCP_OFFSET, tool_ik, tool_pose, wpr_matrix
 from lab import gripper as G
 
 JUMP_DEG = 20.0       # most any joint may turn in one 0.1 s row
@@ -112,8 +112,32 @@ def shapes(q, grip: float) -> list[tuple[str, np.ndarray, float, bool]]:
     return out
 
 
-def check(rows, q0, obstacles: list[Box] = ()) -> Report:
-    """Walk the rows in order (see the module docstring). Returns the first problem, or ok with the joints."""
+def pose_problem(q, grip: float, obstacles: list[Box] = (), held=None) -> str | None:
+    """What the arm at joints q would hit (None: nothing). held: (local points (N, 3), T_tool_object, name): an object
+    in the gripper, whose points are checked against the table and the obstacles too."""
+    for name, pts, rad, finger in shapes(q, grip):
+        low = pts[:, 2] - rad - SURFACE_Z
+        limit = (TIP_MM if finger else TABLE_MM) / 1000
+        if low.min() < limit:
+            return f"the {name} would hit the table ({low.min() * 1000:.0f} mm above it)"
+        for b in obstacles:
+            if finger and not b.what.startswith("box"):
+                continue  # fingers may touch things: that's gripping and raking
+            if (b.distance(pts) - rad).min() < 0:
+                return f"the {name} would hit {b.what}"
+    if held is not None:
+        local, X, what = held
+        P = (tool_pose(q) @ X @ np.c_[local, np.ones(len(local))].T).T[:, :3]
+        if (P[:, 2] - SURFACE_Z).min() < TABLE_MM / 1000:
+            return f"the {what} it's holding would hit the table"
+        for b in obstacles:
+            if b.distance(P).min() < 0.002:
+                return f"the {what} it's holding would hit {b.what}"
+    return None
+
+
+def check(rows, q0, obstacles: list[Box] = (), held=None) -> Report:
+    """Walk the tcp rows in order (see the module docstring). Returns the first problem, or ok with the joints."""
     q = np.asarray(q0, float)[:6]
     qs = []
     for k, row in enumerate(np.atleast_2d(np.asarray(rows, float))):
@@ -126,21 +150,28 @@ def check(rows, q0, obstacles: list[Box] = ()) -> Report:
         if jump.max() > JUMP_DEG:
             return Report(False, k, f"row {k} needs J{int(jump.argmax()) + 1} to turn {jump.max():.0f} deg at once "
                                     f"(a wrist flip): the arm would whip round", qs)
-        grip = row[6] if len(row) > 6 else 0.0
-        for name, pts, rad, finger in shapes(q1, grip):
-            low = pts[:, 2] - rad - SURFACE_Z
-            limit = (TIP_MM if finger else TABLE_MM) / 1000
-            if low.min() < limit:
-                return Report(False, k, f"row {k}: the {name} would hit the table ({low.min() * 1000:.0f} mm above it)", qs)
-            for b in obstacles:
-                if finger and not b.what.startswith("box"):
-                    continue  # fingers may touch things: that's gripping and raking
-                d = b.distance(pts) - rad
-                if d.min() < 0:
-                    return Report(False, k, f"row {k}: the {name} would hit {b.what}", qs)
+        problem = pose_problem(q1, row[6] if len(row) > 6 else 0.0, obstacles, held)
+        if problem:
+            return Report(False, k, f"row {k}: {problem}", qs)
         qs.append(q1)
         q = q1
     return Report(True, None, "", qs)
+
+
+def check_joints(qs, grip: float, obstacles: list[Box] = (), held=None) -> Report:
+    """The same for joint rows (deg): limits, jumps, and what the arm (and what it holds) would hit."""
+    lo, hi = np.array(JOINT_LIMITS, float).T
+    for k, q in enumerate(qs):
+        q = np.asarray(q, float)[:6]
+        if np.any(q < lo) or np.any(q > hi):
+            j = int(np.argmax((q < lo) | (q > hi)))
+            return Report(False, k, f"row {k}: J{j + 1} at {q[j]:.0f} deg is past its limit")
+        if k and np.abs(q - np.asarray(qs[k - 1])[:6]).max() > JUMP_DEG:
+            return Report(False, k, f"row {k}: a joint turns more than {JUMP_DEG:.0f} deg at once")
+        problem = pose_problem(q, grip, obstacles, held)
+        if problem:
+            return Report(False, k, f"row {k}: {problem}")
+    return Report(True, None, "", [np.asarray(q, float)[:6] for q in qs])
 
 
 def tool_axis_down(wpr) -> bool:

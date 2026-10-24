@@ -80,6 +80,7 @@ from calibration.geometry import UF0_Z_MM, load as load_cams  # noqa: E402
 from calibration.kinematics import HOME, tcp_of, tool_ik  # noqa: E402
 
 JUMP_DEG = 20.0  # a row whose joints are this far from the last row's: a wrist flip the controller would refuse
+TORSION_M = 0.004  # torsional friction patch radius on objects (m): a finger pad's contact, roughly
 BLOCKED_MM = 12.0  # the fingertip this far from where it was told to be after a row: something is in the way (a fault)
 BASE_Z = C.TABLE_TOP_Z  # the robot base in Isaac's world: base frame = world - (0, 0, 0.90)
 TCP_BOX = [(150.0, 650.0), (-450.0, 450.0), (-334.0, 300.0)]  # the cell's limits, mm in UF0
@@ -346,6 +347,11 @@ class Cell:
             UsdShade.MaterialBindingAPI.Apply(s).Bind(mat)
             twin.bind_physics_material(s)
             twin.small_contact_offsets(s)
+            # torsional friction: PhysX's default has none, so a part held between two pads spins freely about the
+            # line between them (a box held by its wall hung like a pendulum). A pad ~ a few mm across resists that.
+            col = PhysxSchema.PhysxCollisionAPI.Apply(s)
+            col.CreateTorsionalPatchRadiusAttr().Set(TORSION_M)
+            col.CreateMinTorsionalPatchRadiusAttr().Set(TORSION_M / 2)
         prim = xf.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(prim)
         UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(float(o["mass"]))

@@ -167,10 +167,12 @@ class IsaacCell:
         obs["trial"] = {"status": "running", "instruction": self.instruction}
         return obs
 
-    def play(self, chunk, dt: float = 0.1, on_frame=None) -> None:
-        """Send the rows, wait until Isaac has played them, then replay its per-row truth for the viewer and checks."""
+    def play(self, chunk, dt: float = 0.1, on_frame=None, kind: str = "tcp") -> None:
+        """Send the rows (tcp, or joints: [J1..J6 deg, grip]), wait until Isaac has played them, then replay its
+        per-row truth for the viewer and checks."""
         try:
-            self.client.act_tcp(np.atleast_2d(np.asarray(chunk, float)), dt)
+            rows = np.atleast_2d(np.asarray(chunk, float))
+            (self.client.act if kind == "joints" else self.client.act_tcp)(rows, dt)
         except RuntimeError as e:
             raise ValueError(str(e)) from e  # like SimCell: a target outside the cell's limits
         for f in self._get("sim/wait")["frames"]:

@@ -73,6 +73,15 @@ def tcp_of(joints) -> tuple[np.ndarray, np.ndarray]:
     return T[:3, 3] + T[:3, 0] * TCP_OFFSET, wpr_of(T[:3, :3] @ FLANGE_FROM_TOOL.T)
 
 
+def tool_pose(joints) -> np.ndarray:
+    """The tool frame's 4x4 pose in the base frame (origin at the fingertip, z along the approach) for joints in deg."""
+    F = flange_pose(joints)
+    T = np.eye(4)
+    T[:3, :3] = F[:3, :3] @ FLANGE_FROM_TOOL.T
+    T[:3, 3] = F[:3, 3] + F[:3, 0] * TCP_OFFSET
+    return T
+
+
 def tcp_uf0(joints) -> list[float]:
     """The controller's tcp_pose: x, y, z mm in UF0, w, p, r deg."""
     tip, wpr = tcp_of(joints)
