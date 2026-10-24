@@ -111,9 +111,15 @@ class Robot:
             pass
 
     def reset(self) -> str:
-        """The simulator from scratch: the starting table (three empty boxes), the arm at home, no job, no rules."""
+        """From scratch. Simulator: the starting table (three empty boxes), the arm at home, no job, no rules. Real
+        cell: the robot's head only (no job, no rules, nothing remembered); the table is reset by hand, the trials
+        are the operator's, and the connection stays."""
         if self.mode != "sim":
-            return "reset is for the simulator; on the real cell, the table is reset by hand"
+            self._stop_now()
+            self.parked, self.instruction, self.rules, self.done_log, self.baseline = None, "", [], [], None
+            self.state = "connected"
+            self._emit("state", "reset")
+            return "cleared: no job, no rules, nothing remembered (still connected to the real cell)"
         self._stop_now()
         with self.cell_lock:
             self.cell = IsaacCell(build(load_trial(self.trial_name), self.seed))

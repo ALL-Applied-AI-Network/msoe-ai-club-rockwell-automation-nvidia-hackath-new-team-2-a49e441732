@@ -152,7 +152,9 @@ function setMode(m) {
   $("m-real").classList.toggle("on", m === "real");
   $("realpanel").hidden = m !== "real";
   $("hands").hidden = m !== "sim";
-  $("reset").hidden = m !== "sim";
+  $("reset").textContent = m === "sim" ? "Reset" : "Clear";
+  $("reset").title = m === "sim" ? "the simulator from scratch: three empty boxes, no job, no rules"
+                                 : "clear the robot's head: no job, no rules, nothing remembered (stays connected)";
 }
 fetch("/config").then(r => r.json()).then(c => { $("viewer").src = c.viewer; $("distract").checked = c.distract; setMode(c.mode); });
 $("m-sim").onclick = () => { if (mode !== "sim") post("/mode", {mode: "sim"}).then(() => setMode("sim")); };
