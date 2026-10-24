@@ -125,13 +125,17 @@ def sort_check(truth: list[dict], expect: str | None) -> dict:
 
 
 def run(name: str, seed: int | None = None, policy: str = "explore", view: bool = True, use_vlm: bool = False,
-        max_steps: int = 400, vlm_model: str | None = None, name_things: bool = False) -> Path:
+        max_steps: int = 400, vlm_model: str | None = None, name_things: bool = False, where: str = "mujoco") -> Path:
     """Two timelines in the viewer: "step" (one per decision / observation) and "sim_time" (the motion, every 0.1 s)."""
     trial = load_trial(name)
     seed = trial.get("seed", 0) if seed is None else seed
     t0 = time.time()
     cell = build(trial, seed)
-    rec = Recorder(f"sim_{name}_s{seed}_{policy}", meta={"source": "sim", "trial": trial, "seed": seed, "policy": policy})
+    if where == "isaac":  # the same layout, handed to Isaac Sim on the 4090 box: it does the physics and cameras
+        from lab.isaaccell import IsaacCell
+        cell = IsaacCell(cell)
+    rec = Recorder(f"{'isaac' if where == 'isaac' else 'sim'}_{name}_s{seed}_{policy}",
+                   meta={"source": where, "trial": trial, "seed": seed, "policy": policy})
     cell.save_truth(rec.dir / "truth")
     viz.start(f"{name} (seed {seed}, {policy})", save_to=rec.dir / "replay.rrd", spawn=view)
     if policy == "explore":
@@ -322,6 +326,8 @@ def main() -> None:
     r.add_argument("--print", action="store_true", help="also print the narration here")
     r.add_argument("--vlm", help="which VLM_<NAME> from cell/.env (e.g. nemotron), or a full model id")
     r.add_argument("--label", action="store_true", help="name each confirmed thing with the VLM, then plan the sort")
+    r.add_argument("--cell", default="mujoco", choices=["mujoco", "isaac"],
+                   help="isaac: physics and cameras in Isaac Sim on the 4090 box (isaac/server.py must be running there)")
     a = p.parse_args()
     if a.cmd == "list":
         for f in sorted(TRIALS.glob("*.yaml")):
@@ -334,7 +340,8 @@ def main() -> None:
         print(f"\ncolors: {', '.join(COLORS)}")
     else:
         viz.PRINT = a.print
-        run(a.name, a.seed, a.policy, view=not a.no_view, use_vlm=a.vlm_glance, vlm_model=a.vlm, name_things=a.label)
+        run(a.name, a.seed, a.policy, view=not a.no_view, use_vlm=a.vlm_glance, vlm_model=a.vlm, name_things=a.label,
+            where=a.cell)
 
 
 if __name__ == "__main__":

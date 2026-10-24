@@ -67,6 +67,8 @@ def project(cam: dict, pts) -> np.ndarray:
     T = np.linalg.inv(cam["T"])
     pc = pts @ T[:3, :3].T + T[:3, 3]
     x, y = pc[:, 0] / pc[:, 2], pc[:, 1] / pc[:, 2]
+    if cam.get("depth"):  # a depth stream: pinhole with its own principal point, no distortion
+        return np.stack([cam["fx"] * x + cam["cx"], cam["fy"] * y + cam["cy"]], -1)
     d = 1 + cam["k1"] * (x * x + y * y)
     w, h = cam["size"]
     return np.stack([cam["fx"] * x * d + w / 2, cam["fx"] * y * d + h / 2], -1)

@@ -25,6 +25,7 @@ import numpy as np
 
 from lab import vlm
 from lab.labels import measure
+from calibration.geometry import project
 from lab.viz import id_color, project_to_image
 
 PLAN = """You are the planner for a robot arm that sorts objects on a table. You are the expert: you recognise things
@@ -94,20 +95,41 @@ def colour_name(rgb) -> str:
 def box_colours(world, obs: dict, cams: dict) -> dict[int, tuple[str, tuple]]:
     """{box id: (colour word, RGB)} measured from the table camera: the median pixel of each box's rim (its top). A box's
     colour is a measurement, not a guess: the close-up model once called a gray box "black", and the plan put Lego in
-    the wrong one. Two boxes with the same word get told apart: "the darker gray one"."""
+    the wrong one. Rim pixels the table depth camera sees something nearer than (the arm parked over the box: its
+    orange hose made a red box "orange") are left out, and a colour measured cleanly once is kept: boxes don't change
+    colour. Two boxes with the same word get told apart: "the darker gray one"."""
     img = obs["images"]["table"]
     h, w = img.shape[:2]
+    depth = (obs.get("depth") or {}).get("table")
+    dcam = cams.get("table_depth")
     out = {}
     for b in world.bins():
+        if getattr(b, "rim_rgb", None) is not None:
+            out[b.id] = (colour_name(b.rim_rgb), b.rim_rgb)
+            continue
         p = b.points[:, :3]
         z = p[:, 2]
         rim = p[z > z.min() + 0.8 * (z.max() - z.min())]
+        if depth is not None and dcam is not None:  # keep the rim points the depth camera sees (nothing in front)
+            dh, dw = depth.shape
+            uvd = project(dcam, rim)
+            ok = np.all(np.isfinite(uvd), 1) & (uvd[:, 0] >= 0) & (uvd[:, 0] < dw) & (uvd[:, 1] >= 0) & (uvd[:, 1] < dh)
+            rim, uvd = rim[ok], uvd[ok].astype(int)
+            along = (rim - dcam["T"][:3, 3]) @ dcam["T"][:3, 2] * 1000  # mm along the depth camera's axis
+            seen = depth[uvd[:, 1], uvd[:, 0]].astype(float)
+            clear = (seen == 0) | (seen > along - 15)
+            frac = clear.mean() if len(clear) else 0.0
+            rim = rim[clear]
+        else:
+            frac = 1.0
         uv = project_to_image("table", cams, rim, (w, h))
         uv = uv[np.all(np.isfinite(uv), 1)].astype(int)
         uv = uv[(uv[:, 0] >= 0) & (uv[:, 0] < w) & (uv[:, 1] >= 0) & (uv[:, 1] < h)]
         if len(uv) < 10:
             continue
         rgb = tuple(int(c) for c in np.median(img[uv[:, 1], uv[:, 0]], axis=0))
+        if frac > 0.9:
+            b.rim_rgb = rgb
         out[b.id] = (colour_name(rgb), rgb)
     for word in {c for c, _ in out.values()}:
         same = sorted((i for i, (c, _) in out.items() if c == word), key=lambda i: sum(out[i][1]))
