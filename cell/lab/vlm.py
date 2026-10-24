@@ -7,6 +7,8 @@ Any OpenAI-compatible endpoint works (NVIDIA build.nvidia.com, OpenAI, a local s
     VLM_NEMOTRON=nvidia/nemotron-3.5-super-vl-120b-a12b   # any VLM_<NAME>=<model id> is a choosable model
     VLM_COSMOS=nvidia/cosmos-reason2-8b
 VLM_MODEL (if set) is the default, else the first VLM_<NAME>. Pick another with model="cosmos" (or --vlm cosmos).
+A model id starting "openrouter/" goes to OpenRouter instead, with OPENROUTER_API_KEY
+(e.g. "openrouter/openai/gpt-5.6-luna": the director's default when that key is set).
 With no key, everything here returns None and the rest of the lab runs without it.
 
 The model only ever *describes and decides*: it never gives coordinates the arm moves to.
@@ -59,8 +61,20 @@ def model_id(name: str | None = None) -> str | None:
     return m.get(name.lower(), name if "/" in name else None)
 
 
+OPENROUTER = "openrouter/"
+
+
 def configured(name: str | None = None) -> bool:
-    return bool(os.getenv("VLM_API_KEY") and model_id(name))
+    mid = model_id(name)
+    return bool(mid and os.getenv("OPENROUTER_API_KEY" if mid.startswith(OPENROUTER) else "VLM_API_KEY"))
+
+
+def _client(mid: str):
+    """(client, the provider's own model id)."""
+    from openai import OpenAI
+    if mid.startswith(OPENROUTER):
+        return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.getenv("OPENROUTER_API_KEY")), mid[len(OPENROUTER):]
+    return OpenAI(base_url=os.getenv("VLM_BASE_URL") or None, api_key=os.getenv("VLM_API_KEY")), mid
 
 
 def tile(images: dict[str, np.ndarray], width: int = 1280) -> np.ndarray:
@@ -89,22 +103,26 @@ def ask_image(image: np.ndarray | None, prompt: str, max_tokens: int = 8000, mod
     think=False turns off a reasoning model's thinking (Nemotron: same labels in ~3 s instead of ~90 s)."""
     if not configured(model):
         return None
-    mid = model_id(model)
-    from openai import OpenAI
-    client = OpenAI(base_url=os.getenv("VLM_BASE_URL") or None, api_key=os.getenv("VLM_API_KEY"))
+    client, mid = _client(model_id(model))
     content = [{"type": "text", "text": prompt}]
     if image is not None:
         ok, buf = cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
         content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()}})
     t0 = time.time()
-    extra = {"extra_body": {"chat_template_kwargs": {"enable_thinking": think}}} if think is not None and "nemotron" in mid else {}
-    resp = client.chat.completions.create(model=mid, max_tokens=max_tokens, temperature=0.2,
+    extra = {}
+    if think is not None and "nemotron" in mid:
+        extra = {"extra_body": {"chat_template_kwargs": {"enable_thinking": think}}}
+    elif think is not None and mid.startswith("openai/gpt"):  # GPT reasons always; low effort answers in ~8 s
+        extra = {"extra_body": {"reasoning": {"effort": "low" if think else "minimal"}}}
+    else:
+        extra = {"temperature": 0.2}  # GPT reasoning models take no temperature
+    resp = client.chat.completions.create(model=mid, max_tokens=max_tokens,
                                           messages=[{"role": "user", "content": content}], **extra)
     msg = resp.choices[0].message
     text = msg.content or ""
     thinking = (getattr(msg, "model_extra", None) or {}).get("reasoning_content") or ""
     return {"text": text, "json": _parse(text), "thinking": thinking, "finish": resp.choices[0].finish_reason,
-            "seconds": time.time() - t0, "model": mid}
+            "seconds": time.time() - t0, "model": model_id(model)}
 
 
 def ask_text(prompt: str, max_tokens: int = 4000, model: str | None = None, think: bool | None = None) -> dict | None:

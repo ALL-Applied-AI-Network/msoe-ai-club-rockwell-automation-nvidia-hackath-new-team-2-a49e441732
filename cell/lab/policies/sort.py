@@ -314,7 +314,7 @@ class SortPolicy(ExplorePolicy):
             viz.label_crop({"id": "plan", "picture": r["image"], "answer": None})
             plan = r["plan"]
             if plan:
-                viz.vlm(f"Director ({r['seconds']:.0f} s): {plan.get('scene')} State: {plan.get('state')}. Rule: {plan.get('rule')}")
+                viz.vlm(f"Director ({(r['model'] or '').split('/')[-1]}, {r['seconds']:.0f} s): {plan.get('scene')} State: {plan.get('state')}. Rule: {plan.get('rule')}")
                 viz.vlm("Groups: " + "; ".join(f"{g.get('name')} → box {g.get('box')}: " + ", ".join(f"#{i}" for i in g.get("ids") or [])
                                                for g in plan.get("groups", [])))
                 if plan.get("sure"):

@@ -15,6 +15,7 @@ It runs in the background; the arm keeps working on the last plan while a new on
 from __future__ import annotations
 
 import json
+import os
 import time
 from concurrent.futures import Future
 from pathlib import Path
@@ -45,7 +46,7 @@ Answer in JSON only:
 {{
   "scene": "one sentence: what is on the table",
   "state": "pile | partly spread | spread out",
-  "rule": "the sorting rule, one sentence (the user's if they gave one)",
+  "rule": "<the rule for THIS table, naming its groups, e.g. 'screws in one box, cubes in another'>",
   "groups": [{{"name": "group name", "box": 0, "ids": [1, 2]}}],
   "sure": [1, 2],
   "check": [{{"id": 3, "why": "<your reason>"}}],
@@ -63,10 +64,16 @@ Rules: put every thing id (not the boxes) in exactly one group, or in "check" if
 Keep the same rule and groups as your previous plan unless new information changes them."""
 
 
+# GPT-5.6 Luna on OpenRouter: same plans as Nemotron in ~8 s instead of 25-600 s, about $0.001 a call (Oct 23).
+# Override with DIRECTOR_MODEL in cell/.env; without an OpenRouter key the director uses the close-up models.
+DIRECTOR = os.getenv("DIRECTOR_MODEL") or "openrouter/openai/gpt-5.6-luna"
+
+
 class Director:
     def __init__(self, labeler, cams: dict, instruction: str = ""):
         self.labeler, self.cams, self.instruction = labeler, cams, instruction
-        self.think = True  # slower (~1 min), but without it plans flip between calls and put a thing in two groups
+        self.think = True  # without it plans flip between calls and put a thing in two groups
+        self.models = ([DIRECTOR] if vlm.configured(DIRECTOR) else []) + labeler.models
         self.plan: dict | None = None
         self.pending: Future | None = None
         self.n = 0
@@ -156,7 +163,7 @@ class Director:
 
     def _call(self, n: int, image: np.ndarray, prompt: str) -> dict:
         t0, r, model, tries = time.time(), None, None, []
-        for model in self.labeler.models:
+        for model in self.models:
             try:
                 r = vlm.ask_image(image, prompt, model=model, max_tokens=6000, think=self.think)
                 if r and isinstance(r["json"], dict) and r["json"].get("groups") is not None:
