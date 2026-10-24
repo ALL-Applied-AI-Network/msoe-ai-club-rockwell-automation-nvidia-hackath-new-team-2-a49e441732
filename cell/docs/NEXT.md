@@ -58,7 +58,16 @@ pose). But perception falls apart on real depth, so it never closed the jaws. Re
 5. **VLM sanity:** allow "nothing there" (count 0); reject a name that contradicts the measured size (a 22 x 4 mm
    "10 mm cube").
 6. **Strict box detection:** ~60 mm with a rim and a well, or just the scene card's boxes.
-7. **Fix lab.armcheck's fingers** (test the fingertip itself, not a capsule 4 mm fatter) before it blocks anything again.
+7. **Touchdown check (safety, before anything else touches the real cell again).** On t05 a rake's closed fingers
+   (a rake closes them on purpose, as a blade) came down on a cube: the rake was planned through a noise-merged blob
+   ("#3, touching something") and its start point landed on the cube; the cell faulted on force. Rule: never lower
+   the fingers where depth sees anything standing in the fingers' footprint at that spot (rake start, grip, set-down).
+   Gripper values are right: 0 open, 1 closed (FRAMES.md), as ours.
+8. **A restart button on the page** (restart the app in place: picks up new code, clears everything).
+9. **Not just sorting.** "There are three boxes, just move them around" -> "I only sort": the chat agent's only tool
+   for doing work is start_sorting, and the robot only knows the sort. Part of the rewrite: general skills the agent
+   can call directly (move thing X to Y, push, rake, look, place on top), sorting being one plan among many.
+10. **Fix lab.armcheck's fingers** (test the fingertip itself, not a capsule 4 mm fatter) before it blocks anything again.
 
 ## Then (agreed with Joel)
 
