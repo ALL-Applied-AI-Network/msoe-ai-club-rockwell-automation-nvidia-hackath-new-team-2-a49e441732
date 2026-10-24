@@ -23,6 +23,15 @@ pose). But perception falls apart on real depth, so it never closed the jaws. Re
 
 ## To build (in the simulator first), in this order
 
+0. **Look first, then touch** (Joel: "just use Luna to look at one photo so it can say: there's one object, the blue
+   cube, over there"). Today depth proposes ~90 blobs and the VLM is asked about every one: noise gets 90 questions.
+   Instead: one glance by the director model at the whole table image (~8 s): what's here, roughly where (a rough box
+   per object). That list gates everything: only depth blobs where the glance named something become things; the rest
+   is noise (no question, no look, no test). Back it with cheap checks: a coloured part on the white table is easy to
+   find by colour in the image; depth only has to agree something stands up there. With the scene card ("one blue
+   cube") it's expect one, find one. There's an unused full-table `vlm.gist` from the first lab days to start from.
+   Cap the close-up questions per look.
+
 1. **TSDF fusion instead of `carve_merge`** (KinectFusion; Open3D's ScalableTSDFVolume is already installed). Every
    look adds weighted evidence to one 3D grid; noise averages out; free space seen through a phantom outvotes it;
    angled views keep their walls; shapes accumulate. Segmentation, grasping and models read the fused surface.
