@@ -59,14 +59,14 @@ def app_blueprint() -> rrb.Blueprint:
     eye = rrb.EyeControls3D(position=(0.88, 0.02, 0.50), look_target=(0.36, -0.08, 0.0), eye_up=(0, 0, 1))
     sensors = [rrb.Spatial2DView(name=f"{c} camera", origin=f"cams/{c}/rgb") for c in ("table", "side", "wrist")]
     sensors += [rrb.Spatial2DView(name=f"{c} depth", origin=f"cams/{c}/depth") for c in ("table", "wrist")]
-    sensors += [rrb.Spatial2DView(name="height map", origin="heightmap"), rrb.Spatial2DView(name="VLM close-up", origin="vlm_crop")]
+    sensors = [rrb.Spatial2DView(name="evidence (top view)", origin="evidence_top")] + sensors
     return rrb.Blueprint(
         rrb.Horizontal(
             rrb.Vertical(
                 rrb.Tabs(rrb.Spatial3DView(name="Robot's mind", origin="mind", eye_controls=eye),
                          rrb.Spatial3DView(name="World (truth)", origin="truth", eye_controls=eye), active_tab=0),
-                rrb.Horizontal(*sensors),
-                row_shares=[3, 1],
+                rrb.Grid(*sensors, grid_columns=3),
+                row_shares=[3, 2],
             ),
             rrb.Tabs(rrb.TextLogView(name="log", origin="/", contents=["/vlm", "/narration"]),
                      rrb.TextDocumentView(name="objects", origin="roster"), active_tab=0),

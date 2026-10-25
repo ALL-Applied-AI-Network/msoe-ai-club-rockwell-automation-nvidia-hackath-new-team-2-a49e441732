@@ -90,7 +90,22 @@ def visible(emap, pts: np.ndarray, Tc: np.ndarray, cam: dict) -> np.ndarray:
     return ok
 
 
-def best_view(emap, cams: dict, q_now, tip_now, sample: int = 2500) -> dict | None:
+def in_view(pts: np.ndarray, Tc: np.ndarray, cam: dict) -> np.ndarray:
+    """Cheap: which points fall inside the camera's view and range (no occlusion test)."""
+    R, t = Tc[:3, :3], Tc[:3, 3]
+    pc = (pts - t) @ R
+    z = pc[:, 2]
+    W, H = cam["size"]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = pc[:, 0] / z * cam["fx"] + cam["cx"]
+        v = pc[:, 1] / z * cam["fy"] + cam["cy"]
+    return (z > RANGE[0]) & (z < RANGE[1]) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+
+
+def best_view(emap, cams: dict, q_now, tip_now, sample: int = 1500, shortlist: int = 6) -> dict | None:
+    """A good next view, fast: every candidate gets a cheap count (gap voxels inside its view, per second of moving);
+    only the best few get the expensive part (rays marched through the map for occlusion, then IK). A pretty good view
+    now beats the perfect one later."""
     cam = cams["wrist_depth"]
     T_ct = _cam_in_tool(cam)
     fr = emap.frontier_points()
@@ -98,32 +113,38 @@ def best_view(emap, cams: dict, q_now, tip_now, sample: int = 2500) -> dict | No
         return None
     if len(fr) > sample:
         fr = fr[np.random.default_rng(0).choice(len(fr), sample, replace=False)]
-    best = None
+    cands = []
     for target in targets(emap):
         for tilt in TILTS:
             for az in ([0.0] if tilt == 0 else np.arange(0, 360, 45)):
                 a, e = np.radians(az), np.radians(tilt)
                 direction = np.array([np.sin(e) * np.cos(a), np.sin(e) * np.sin(a), -np.cos(e)])
-                for standoff in STANDOFF:
-                    for roll in np.radians([0, 90, 180, 270]):
-                        Tc = _look_at(target, direction, standoff, roll)
-                        Tt = Tc @ np.linalg.inv(T_ct)
-                        tip = Tt[:3, 3]
-                        if (tip[2] - SURFACE_Z) * 1000 < MIN_TIP_MM or not P.reachable(*tip[:2], margin_mm=20):
-                            continue
-                        vis = visible(emap, fr, Tc, cam)
-                        sees = int(vis.sum())
-                        if sees < 20 or (best is not None and sees <= best["sees"] * 0.5):
-                            continue
-                        wpr = wpr_of(Tt[:3, :3])
-                        try:
-                            q = tool_ik(tip, wpr, q_now)
-                        except ValueError:
-                            continue
-                        seconds = np.linalg.norm(tip - tip_now) / (P.TRAVEL / 1000) + np.abs(q - q_now).max() / 60.0 + 1.5
-                        value = sees / seconds
-                        if best is None or value > best["value"]:
-                            best = {"tip": tip, "wpr": wpr, "q": q, "sees": sees, "seconds": float(seconds), "value": value,
-                                    "target": target, "tilt": tilt, "cam": Tc, "expected": fr[vis]}
-                        break  # one roll that works is enough
+                for roll in np.radians([0, 90, 180, 270]):
+                    Tc = _look_at(target, direction, STANDOFF[0], roll)
+                    Tt = Tc @ np.linalg.inv(T_ct)
+                    tip = Tt[:3, 3]
+                    if (tip[2] - SURFACE_Z) * 1000 < MIN_TIP_MM or not P.reachable(*tip[:2], margin_mm=20):
+                        continue
+                    n = int(in_view(fr, Tc, cam).sum())
+                    if n < 20:
+                        continue
+                    secs = np.linalg.norm(tip - tip_now) / (P.TRAVEL / 1000) + 2.0  # a rough cost; IK comes later
+                    cands.append((n / secs, n, tilt, Tc, Tt))
+    cands.sort(key=lambda c: -c[0])
+    best = None
+    for _, n, tilt, Tc, Tt in cands[:shortlist]:
+        vis = visible(emap, fr, Tc, cam)
+        sees = int(vis.sum())
+        if sees < 20:
+            continue
+        tip, wpr = Tt[:3, 3], wpr_of(Tt[:3, :3])
+        try:
+            q = tool_ik(tip, wpr, q_now)
+        except ValueError:
+            continue
+        seconds = np.linalg.norm(tip - tip_now) / (P.TRAVEL / 1000) + np.abs(q - q_now).max() / 60.0 + 1.5
+        value = sees / seconds
+        if best is None or value > best["value"]:
+            best = {"tip": tip, "wpr": wpr, "q": q, "sees": sees, "seconds": float(seconds), "value": value,
+                    "target": None, "tilt": tilt, "cam": Tc, "expected": fr[vis]}
     return best

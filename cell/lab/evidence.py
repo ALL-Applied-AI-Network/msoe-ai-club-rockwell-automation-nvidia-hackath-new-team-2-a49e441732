@@ -41,7 +41,8 @@ class EvidenceMap:
         self.sdf = np.ones(self.shape, np.float32)
         self.w = np.zeros(self.shape, np.float32)
         self.k_table = int(round((SURFACE_Z - z0) / self.v))  # the z index of the table's top
-        self.tries = np.zeros(self.shape, np.uint8)  # looks aimed at a gap voxel that still left it unknown
+        self.tries = np.zeros(self.shape, np.uint8)
+        self.sharpest = np.full(self.shape, np.inf, np.float16)  # the smallest sensor error (m) of any hit on the voxel  # looks aimed at a gap voxel that still left it unknown
 
     # ------------------------------------------------------------ geometry
 
@@ -96,6 +97,8 @@ class EvidenceMap:
         strength = np.minimum(1.0, 1.5 * self.v / (2.0 * sig))
         self.L[i[free], j[free], k[free]] += L_FREE
         self.L[i[hit], j[hit], k[hit]] += L_HIT * strength[hit]
+        hi, hj, hk = i[hit], j[hit], k[hit]
+        self.sharpest[hi, hj, hk] = np.minimum(self.sharpest[hi, hj, hk], sig[hit].astype(np.float16))
         np.clip(self.L, L_MIN, L_MAX, out=self.L)
         seen = free | hit
         self.looks[i[seen], j[seen], k[seen]] = np.minimum(self.looks[i[seen], j[seen], k[seen]] + 1, 65000)
@@ -115,6 +118,13 @@ class EvidenceMap:
         m = np.zeros(self.shape, bool)
         m[:, :, self.k_table + 3:] = True  # 6 mm up: clear of the table's own band of hits (a few mm of sensor error)
         return m
+
+    def clear_of_table(self) -> np.ndarray:
+        """Voxels higher above the table than the sensor error of the sharpest reading that hit them (x 2.5): a hit
+        any lower could just be the table, seen through that reading's noise. (A fixed line fails: a look from 0.4 m
+        smears the table 7 mm up.)"""
+        h = (np.arange(self.shape[2]) - self.k_table) * self.v
+        return self.above_table() & (h[None, None, :] > 2.5 * self.sharpest.astype(np.float32))
 
     def solid(self) -> np.ndarray:
         return self.L >= L_SOLID
@@ -152,8 +162,55 @@ class EvidenceMap:
         return {"known_pct": round(100 * seen / max(n, 1), 1), "solid_voxels": int((self.solid() & a).sum()),
                 "frontier_voxels": int(self.frontier().sum()), "voxel_mm": self.v * 1000}
 
+    def leaning(self, sharp: float | None = None, above: float = 0.7) -> np.ndarray:
+        """Some evidence of solid, not enough yet to be sure (a far, noisy look's hit is worth little on its own).
+        sharp: only where some hit was at least this precise (m): a 10 mm part can't be told from 12 mm of noise."""
+        m = self.L > above  # objects: more than one agreeing reading (one sharp hit is worth ~0.64): a lone speck never shows
+        return m & (self.sharpest <= sharp) if sharp else m
+
+    def table_found(self, sure: bool = True) -> np.ndarray:
+        """Columns (x, y) where solid evidence sits at the table's height: "we found depth here and it matches the table".
+        sure=False: leaning that way."""
+        band = (self.solid() if sure else self.leaning(above=0.1))[:, :, max(0, self.k_table - 2):self.k_table + 3]  # a big flat surface: faint evidence counts
+        return band.any(2)
+
+    def top_view(self) -> np.ndarray:
+        """A top-down picture of what's known, per column: an object (coloured by its height), the table found, seen
+        but no surface yet, or never seen (purple). RGB, x down the rows (away from the robot), y across."""
+        nx, ny, nz = self.shape
+        img = np.zeros((nx, ny, 3), np.uint8)
+        img[:] = (70, 30, 95)                                    # never seen
+        seen = (self.looks > 0).any(2)
+        img[seen] = (40, 44, 52)                                 # seen, no surface found yet
+        img[self.table_found(sure=False)] = (88, 94, 104)        # leaning: the table, probably
+        img[self.table_found()] = (160, 168, 180)                # the table, confirmed
+        for sure, dim in ((False, 0.55), (True, 1.0)):           # objects: leaning (dim; close looks only), then confirmed
+            above = (self.solid() if sure else self.leaning()) & self.clear_of_table()
+            has = above.any(2)
+            top = np.where(has, nz - 1 - np.argmax(above[:, :, ::-1], axis=2), 0)
+            h = np.clip((top - self.k_table) * self.v / 0.05, 0, 1)
+            col = (np.stack([255 * h, 200 - 120 * h, 60 + 40 * (1 - h)], -1) * dim).astype(np.uint8)
+            img[has] = col[has]
+        return img[::-1, ::-1]  # far side at the top, robot's left on the left, as the table camera sees it
+
+    def table_points(self, step: int = 2, sure: bool = True) -> np.ndarray:
+        """The table's surface where it was found (every `step`-th voxel), at the table's height."""
+        i, j = np.nonzero(self.table_found(sure)[::step, ::step])
+        return self.centers(i * step, j * step, np.full(len(i), self.k_table))
+
+    def unseen_points(self, step: int = 4, height: float = 0.06) -> np.ndarray:
+        """A coarse sample of the space low over the table that no ray has reached yet."""
+        kz = self.k_table + 3 + int(height / self.v)
+        u = self.unknown()[::step, ::step, self.k_table + 3:kz:step]
+        i, j, k = np.nonzero(u)
+        return self.centers(i * step, j * step, self.k_table + 3 + k * step)
+
+    def leaning_points(self) -> np.ndarray:
+        """Above the table: some evidence of solid, not yet confirmed."""
+        return self.centers(*np.nonzero(self.leaning() & ~self.solid() & self.clear_of_table()))
+
     def solid_points(self, above_only: bool = True) -> np.ndarray:
-        m = self.solid() & (self.above_table() if above_only else True)
+        m = self.solid() & (self.clear_of_table() if above_only else True)
         return self.centers(*np.nonzero(m))
 
     def frontier_points(self) -> np.ndarray:

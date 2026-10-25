@@ -107,10 +107,18 @@ class MapperMind:
             h = (pts[:, 2] - SURFACE_Z) / 0.06
             cols = (np.stack([0.95 * np.clip(h, 0, 1), 0.55 + 0.3 * (1 - np.clip(h, 0, 1)), 0.9 - 0.6 * np.clip(h, 0, 1)], 1) * 255).astype(np.uint8)
             rr.log("mind/evidence/solid", rr.Points3D(pts, colors=cols, radii=self.map.v * 0.45))
+        lean_t = self.map.table_points(sure=False)
+        rr.log("mind/evidence/table_leaning", rr.Points3D(lean_t, colors=[[88, 94, 104]], radii=self.map.v * 0.6))
+        rr.log("mind/evidence/table", rr.Points3D(self.map.table_points(), colors=[[160, 168, 180]], radii=self.map.v * 0.8))
+        lean = self.map.leaning_points()
+        rr.log("mind/evidence/leaning", rr.Points3D(lean, colors=[[200, 140, 60, 140]], radii=self.map.v * 0.35))
         fr = self.map.frontier_points()
         if len(fr) > 6000:
             fr = fr[np.random.default_rng(0).choice(len(fr), 6000, replace=False)]
-        rr.log("mind/evidence/gaps", rr.Points3D(fr, colors=[[170, 60, 230]], radii=self.map.v * 0.35))
+        rr.log("mind/evidence/gaps", rr.Points3D(fr, colors=[[190, 70, 255]], radii=self.map.v * 0.45))
+        un = self.map.unseen_points()
+        rr.log("mind/evidence/unseen", rr.Points3D(un, colors=[[110, 60, 150, 90]], radii=self.map.v * 0.6))
+        rr.log("evidence_top", rr.Image(self.map.top_view()))
         viz.narrate(f"{line} The tank is {st['known_pct']}% known above the table; {st['frontier_voxels']:,} gap voxels left.")
         self.version += 1
 
