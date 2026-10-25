@@ -88,3 +88,16 @@ pose). But perception falls apart on real depth, so it never closed the jaws. Re
   Never seen yet: it hasn't gripped anything long.
 - The boxes' real size: outer, wall, height.
 - The team letter for task_id (submitted without one; accepted).
+- Image vs joint timing: in the lab recording, a wrist image matches the joints logged ~100 ms earlier (best fit
+  60-140 ms on different stretches: jittery). Anything pairing a wrist image with joints while moving (corner
+  tracking, fusing depth on the move) needs this lag; our looks are safe because the arm holds 1.2 s first.
+  Measure it properly: a slow sweep (<= 30 mm/s) through observe() calls, fit as in experiments/corners.py.
+
+## Experiments (Oct 24)
+
+- MapAnything (experiments/mapanything): worse than raw wrist depth at our scale (object error 0.9 mm raw vs
+  1.4-3.7 mm); treats given poses and depth as hints. Not worth wiring in.
+- Corner tracking + triangulation with the arm's poses (experiments/corners.py): in sim, at object outlines, 0.5 mm
+  median and no corner worse than 4 mm, vs raw depth 0.7 mm, 8% worse than 4 mm, 18% no reading. Small sample (44
+  corners); flat-coloured sim images. Real wrist video: inconclusive (motion blur, timing jitter). Promising for
+  edges; next: a slow real sweep with the lag measured.
