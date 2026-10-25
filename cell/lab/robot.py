@@ -121,6 +121,7 @@ class Robot:
         if self.mode != "sim":
             self._stop_now()
             viz.clear_scene()
+            self.step = viz.STEP_OFFSET[0] + 1
             self.parked, self.instruction, self.rules, self.done_log, self.baseline = None, "", [], [], None
             self.state = "connected"
             self._emit("state", "reset")
@@ -130,6 +131,7 @@ class Robot:
             self.cell = IsaacCell(build(load_trial(self.trial_name), self.seed))
             self.cell.noise = True
             viz.clear_scene()
+            self.step = viz.STEP_OFFSET[0] + 1  # draw the new session after the clear, not under it
             self.anim = viz.Animator(self.cell)
             viz.truth_setup(self.cell)
         self.instruction, self.rules, self.done_log, self.baseline, self.state, self.parked = "", [], [], None, "idle", None

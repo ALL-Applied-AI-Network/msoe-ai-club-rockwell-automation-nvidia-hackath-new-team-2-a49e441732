@@ -126,13 +126,23 @@ def start_served(name: str, save_to: Path | None = None, grpc_port: int = 9876, 
 
 
 def clear_scene() -> None:
-    """Everything the robot believed and saw, gone from the viewer (a fresh start); the static scenery comes back."""
+    """Everything the robot believed and saw, gone from the viewer (a fresh start); the static scenery stays.
+    The new session's clock starts at 0 again, and the viewer shows the latest moment, which would still be the old
+    session: so the timeline moves past everything shown so far, and the clear lands there."""
+    global TIME_OFFSET
+    TIME_OFFSET = LAST_T + 5.0
+    rr.set_time("sim_time", duration=TIME_OFFSET)
+    rr.set_time("step", sequence=STEP_OFFSET[0] + 1)
+    STEP_OFFSET[0] += 1
     for path in ("mind", "truth", "cams", "evidence_top", "heightmap", "vlm_crop", "narration", "vlm"):
         rr.log(path, rr.Clear(recursive=True))
-    _scenery()
+
+
+STEP_OFFSET = [0]  # the step timeline also moves on at a Reset
 
 
 def set_step(i: int) -> None:
+    STEP_OFFSET[0] = max(STEP_OFFSET[0], i)
     rr.set_time("step", sequence=i)
 
 
@@ -394,8 +404,14 @@ def plan_rake(start_xy, end_xy, height_mm) -> None:
 
 # ---------------------------------------------------------------- animation (sim)
 
+TIME_OFFSET = 0.0   # added to the robot's clock on the timelines: a Reset moves it past everything already shown
+LAST_T = 0.0
+
+
 def set_sim_time(t: float) -> None:
-    rr.set_time("sim_time", duration=float(t))
+    global LAST_T
+    LAST_T = float(t) + TIME_OFFSET
+    rr.set_time("sim_time", duration=LAST_T)
 
 
 def truth_setup(cell) -> None:
@@ -406,14 +422,14 @@ def truth_setup(cell) -> None:
         m = cell.local[i.id]
         rr.log(f"truth/objects/{i.id}", rr.Mesh3D(vertex_positions=m.vertices, triangle_indices=m.faces,
                                                   vertex_normals=m.vertex_normals, albedo_factor=list(COLORS[i.color]) + [255]),
-               static=True)
+               static=False)
     from lab import gripper as G
     parts = [("finger_l", G.finger_body_mesh(-1), [175, 175, 180]), ("finger_r", G.finger_body_mesh(1), [175, 175, 180])]
     parts += [(f"body{k}", m, list(c)) for k, (m, c) in enumerate(G.body_meshes())]
     for root in ("truth", "mind"):
         for name, m, col in parts:
             rr.log(f"{root}/gripper/{name}", rr.Mesh3D(vertex_positions=m.vertices, triangle_indices=m.faces,
-                                                       vertex_normals=m.vertex_normals, albedo_factor=col + [255]), static=True)
+                                                       vertex_normals=m.vertex_normals, albedo_factor=col + [255]), static=False)
 
 
 class Animator:
