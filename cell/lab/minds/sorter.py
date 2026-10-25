@@ -30,14 +30,21 @@ DROP_ABOVE_RIM_MM = 4.0
 STILL_VOXELS = 6       # after a pick and one fresh look: this many voxels with any solid evidence at the spot = still there
 STILL_MM = 5.0         # ... within this of the grip (a cube's half width: a neighbour 5 mm away mustn't count)
 TOP_SHARE = 0.75       # ... counting only evidence up near the part's top (table noise sits just above the table: 7-9 mm)
+MAYBES = 4             # unconfirmed things looked at per round
 ROUNDS = 3             # passes over the table: what's left after one (merged, knocked) gets another go
-FRAMES = 4            # table-camera depth frames averaged to spot changes (one is too noisy for a 10 mm part at ~1 m)
-CHANGE_MM = 6.0       # averaged depth this much closer than before: something new stands there
-CHANGE_PX = 10        # ... over at least this many pixels
+FRAMES = 12           # table-camera depth frames (median) to spot changes: one has ~9 mm of noise at 0.85 m (sim)
+CHANGE_MM = 8.0       # median depth this much closer than before: something new stands there
+CHANGE_PX = 8         # ... over at least this many pixels (a 10 mm cube is ~16 px); measured on an unchanged table:
+                      # 12 frames, 8 mm, 8 px -> no false patches (4 frames, 6 mm, 5 px gave 158)
 GRIP_SHARE = 0.45     # the hooked fingertips close at most this far up the part (its measured top face): below the middle
 
 
 class SorterMind(MapperMind):
+    def __init__(self, instruction: str = "", budget: int = 24, **kw):
+        # 12 looks are enough for spread and close cubes (~20 s faster) but not for touching ones (a cube left, and
+        # a red one carried with its neighbour into the wrong box, 2 of 3 seeds); 24: all sorted
+        super().__init__(instruction, budget=budget, **kw)
+
     def reset(self) -> None:
         super().reset()
         self.things = Things()
@@ -89,7 +96,10 @@ class SorterMind(MapperMind):
         for round_ in range(ROUNDS):
             todo = [tid for tid in self._todo(found) if tid not in self.given_up]
             if not todo:
-                break
+                obs, found = yield from self._check_maybes(obs)
+                todo = [tid for tid in self._todo(found) if tid not in self.given_up]
+                if not todo:
+                    break
             if round_:
                 self._say(f"Round {round_ + 1}: {len(todo)} part(s) still on the table.")
             for tid in todo:
@@ -114,6 +124,24 @@ class SorterMind(MapperMind):
         self.assigned[colour] = free[0].id
         self._say(f"No {colour} box: {colour} things go in the {free[0].color} box.")
         return free[0]
+
+    def _check_maybes(self, obs):
+        """Things seen but not confirmed (one look after a pick, or a part that got knocked somewhere new): look at
+        each, twice, so it either becomes a thing to put away or fades."""
+        maybes = [t for t in self.things.maybe if t.kind == "part" and t.top_mm > 4
+                  and not any(_inside(t.xy, b, margin_mm=6) for b in self.boxes.values())][:MAYBES]
+        for t in maybes:
+            look = self._look_rows(tuple(t.xy), obs)
+            if look is None:
+                continue
+            viz.narrate(f"Something unconfirmed at ({t.xy[0] * 1000:.0f}, {t.xy[1] * 1000:.0f}) mm: looking closer.")
+            obs = yield look
+            self._fuse_wrist(obs)
+            obs = yield self._still(obs, 3)
+            self._fuse_wrist(obs)
+        found = self.things.update(self.map, self.table_rgb, self.cams)
+        self._draw_things(found)
+        return obs, found
 
     def _todo(self, found) -> list[int]:
         """Parts on the table (not already in a box), nearest the boxes first."""
@@ -184,10 +212,9 @@ class SorterMind(MapperMind):
         for _ in range(FRAMES - 1):
             obs = yield self._still(obs, 2)
             frames.append(obs["depth"]["table"])
-        mean = lambda fs: np.where(np.all(np.stack(fs) > 0, 0), np.stack(fs).astype(float).mean(0), 0)
-        before, now = mean(baseline), mean(frames)
+        med = lambda fs: np.where(np.all(np.stack(fs) > 0, 0), np.median(np.stack(fs).astype(float), 0), 0)
+        before, now = med(baseline), med(frames)  # the median handles noise (an opening erased 4-px cubes)
         closer = (before > 0) & (now > 0) & (before - now > CHANGE_MM)
-        closer = ndimage.binary_opening(closer, iterations=1)
         lab, n = ndimage.label(closer)
         spots = []
         cam = self.cams["table_depth"]

@@ -1,0 +1,16 @@
+# Six cubes almost touching (1 mm apart at least, in a 60 x 70 mm patch): the fingers have no room beside some of
+# them, neighbours get knocked, and touching cubes read as one blob. Plain boxes, as in the chat app.
+instruction: Sort the cubes by color.
+layout: spread
+gap: 0.001
+half: [0.03, 0.035]
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+  - {kind: cube_10, color: blue, count: 2}
+fixtures:
+  - {kind: box_60, color: white, at: [0.27, -0.24]}
+  - {kind: box_60, color: gray, at: [0.36, -0.24]}
+  - {kind: box_60, color: black, at: [0.45, -0.24]}
+expect: color
