@@ -292,8 +292,8 @@ class Robot:
         if blocked:  # only a fingertip into the table is held back (real cell); skip it, carry on with the job
             self._emit("note", f"I skipped a move: {blocked}.")
             return self.cell.observe(), True
-        self._emit("motion", self._describe(chunk, obs))
-        self.cell.play(chunk, on_frame=self.anim)
+        self._emit("motion", self._describe(P.tcp_rows(chunk) if isinstance(chunk, P.JointRows) else chunk, obs))
+        P.send(self.cell, chunk, on_frame=self.anim)
         fresh = getattr(pol, "wants_obs", True)
         return (self.cell.observe() if fresh else obs), fresh
 
@@ -333,14 +333,16 @@ class Robot:
         check (IK continuity, the arm against the table) is only logged: on the real cell it blocked moves the arm
         could make (its IK is stricter than the controller's, and its fingers fatter than the real ones), and the
         controller enforces its own limits."""
-        rows = np.atleast_2d(np.asarray(chunk, float))
+        joints = isinstance(chunk, P.JointRows)
+        rows = np.atleast_2d(np.asarray(P.tcp_rows(chunk) if joints else chunk, float))
         if rows.shape[1] != 7 or obs is None:
             return None
         lowest = float((rows[:, 2] - P.TABLE_UF0).min())  # the fingertip's height over the table, mm
         if self.mode == "real" and lowest < 0.5:
             return f"it would put the fingertips {lowest:.1f} mm into the table"
         try:
-            rep = armcheck.check(rows, np.asarray(obs["joints"][:6], float), [])
+            rep = (armcheck.check_joints(np.asarray(chunk)[:, :6], 0.0) if joints
+                   else armcheck.check(rows, np.asarray(obs["joints"][:6], float), []))
             if not rep.ok:
                 viz.narrate(f"(arm check, not blocking: {rep.problem})", level="WARN")
         except Exception:

@@ -64,12 +64,19 @@ class MapperMind:
             q_now = np.asarray(obs["joints"][:6], float)
             tip_now = np.array([obs["tcp_pose"][0], obs["tcp_pose"][1], obs["tcp_pose"][2] - P.UF0_Z_MM]) / 1000
             v = best_view(self.map, self.cams, q_now, tip_now, nearby=nearby)
+            if v is None and nearby:  # nothing nearby can be reached cleanly: the best view anywhere
+                nearby = False
+                v = best_view(self.map, self.cams, q_now, tip_now, nearby=False)
             self.t_compute += time.time() - t0
             if v is None:
                 viz.narrate("No reachable view sees any of the remaining gaps. Done looking.", level="WARN")
                 break
             viz.camera_frustum("mind/evidence/next_view", self.cams["wrist_depth"], v["cam"])
-            rows, what = P.move_to_pose(obs["tcp_pose"], v["tip"], v["wpr"])
+            rows = v["rows"]  # planned in joint space by best_view, and checked against the table and the arm itself
+            what = f"move to ({v['tip'][0] * 1000:.0f}, {v['tip'][1] * 1000:.0f}, {(v['tip'][2] - SURFACE_Z) * 1000:.0f} mm up)"
+            if v["rejected"]:
+                viz.narrate(f"Skipped {len(v['rejected'])} better-looking views whose path wasn't clear: "
+                            f"{v['rejected'][0]}.", level="DEBUG")
             viz.narrate(f"Look {self.looks + 1}: {what}; should see {v['sees']} gap voxels "
                         f"({'straight down' if v['tilt'] == 0 else 'tilted %.0f deg' % v['tilt']}), "
                         f"~{v['seconds']:.1f} s of moving (chosen in {time.time() - t0:.1f} s).")

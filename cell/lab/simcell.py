@@ -27,7 +27,7 @@ from calibration.kinematics import hand_matrix, tool_from_hand, tool_ik, wpr_of
 from lab.sensor import realistic_depth
 from lab.synth import HOME, IMAGE_SIZE, TCP_OFFSET, Renderer
 
-TCP_BOX = [(150.0, 650.0), (-450.0, 450.0), (-334.0, 300.0)]  # the cell's limits, mm in UF0
+from lab.primitives import TCP_BOX  # the cell's limits, mm in UF0
 OPEN_GAP = 2 * G.STROKE          # flat faces 12 mm apart when open (the hooked tips: 16 mm)
 SUBSTEPS = 50                     # physics steps per 0.1 s target (2 ms each)
 GRIP_N = float(os.getenv("SIM_GRIP_N", 20))  # finger force limit, N: the real MHZL2-16D grips with ~14 N; at 180 N parts squirted out at 1.7 m/s

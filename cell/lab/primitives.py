@@ -24,6 +24,7 @@ TABLE_UF0 = SURFACE_Z * 1000 + UF0_Z_MM
 MIN_Z_UF0 = -334.0  # the cell refuses anything lower
 TCP_X, TCP_Y = (155.0, 645.0), (-445.0, 445.0)  # the cell's box (mm, UF0), with 5 mm to spare
 REACH_MM = 540.0
+TCP_BOX = [(150.0, 650.0), (-450.0, 450.0), (-334.0, 300.0)]  # the cell's limits on fingertip targets, mm in UF0
 
 
 def reachable(x_m: float, y_m: float, margin_mm: float = 0.0) -> bool:
@@ -194,6 +195,93 @@ def pour(cur, box_xy_m, toward_xy_m, outer_mm: float = 60.0, height_mm: float = 
     what = (f"pour the box at ({box[0] * 1000:.0f}, {box[1] * 1000:.0f}) mm out over ({toward_xy_m[0] * 1000:.0f}, "
             f"{toward_xy_m[1] * 1000:.0f}): grip its far wall, lift, swing it {tilt_deg:.0f} deg about its lip, put it back")
     return rows, what
+
+
+class JointRows(list):
+    """Rows of [J1..J6 deg, grip] instead of fingertip rows: a policy returns these for moves planned in joint space
+    (send() plays them as joint actions)."""
+
+
+JOINT_STEP_DEG = 4.0  # most any joint turns in one row of a joint move (40 deg/s)
+
+
+def tcp_rows(rows) -> list:
+    """Fingertip rows (UF0 mm, deg, grip) for joint rows, by forward kinematics: for checks and descriptions."""
+    from calibration.kinematics import tcp_uf0
+    return [[*tcp_uf0(r[:6]), float(r[6])] for r in np.atleast_2d(np.asarray(rows, float))]
+
+
+def send(cell, chunk, on_frame=None) -> None:
+    """Play a chunk on any cell: fingertip rows as they are; JointRows as joint actions where the cell takes them
+    (Isaac, the real cell), else as the fingertip rows they amount to (the MuJoCo cell moves only the gripper)."""
+    if isinstance(chunk, JointRows):
+        import inspect
+        if "kind" in inspect.signature(cell.play).parameters:
+            return cell.play(np.asarray(chunk, float), on_frame=on_frame, kind="joints")
+        cell.play(tcp_rows(chunk), on_frame=on_frame)
+        if hasattr(cell, "q"):  # the MuJoCo cell works its joints out from the fingertip: start it from the right ones
+            cell.q = np.asarray(chunk[-1][:6], float)
+        return
+    cell.play(chunk, on_frame=on_frame)
+
+
+def joint_move(q_now, tip_now_m, wpr_now, q_goal, tip_m, wpr, height_mm: float = SAFE_MM,
+               settle: int = HOLD) -> JointRows | None:
+    """A look move planned in joint space, so the wrist can't flip: up to a safe height, every joint turned smoothly
+    straight to the pose above the goal, then down, then still for `settle` rows. Fingertip-straight moves made the
+    wrist writhe whenever they passed near J5 = 0 (a tilted look from a straight-down one), and the controller refused.
+    None if the lift or the pose above the goal can't be reached."""
+    from calibration.kinematics import tcp_of, tool_ik
+    q_now, q_goal = np.asarray(q_now, float)[:6], np.asarray(q_goal, float)[:6]
+    safe_z = SURFACE_Z + height_mm / 1000
+    up = np.array([tip_now_m[0], tip_now_m[1], max(safe_z, tip_now_m[2])])
+    above = np.array([tip_m[0], tip_m[1], max(safe_z, tip_m[2])])
+    try:
+        q_up = tool_ik(up, wpr_now, q_now, near=True)
+        q_above = tool_ik(above, wpr, q_goal, near=True)
+    except ValueError:
+        return None
+    travel = _clear(q_up, q_above, safe_z - 0.005)
+    if travel is None:
+        return None
+    rows = JointRows()
+    legs = [(q_now, q_up, up[2] - tip_now_m[2], APPROACH)]
+    legs += [(a, b, np.linalg.norm(tcp_of(b)[0] - tcp_of(a)[0]), TRAVEL) for a, b in zip(travel[:-1], travel[1:])]
+    legs += [(q_above, q_goal, above[2] - tip_m[2], APPROACH)]
+    for a, b, dist_m, speed in legs:
+        n = max(1, int(np.ceil(np.abs(b - a).max() / JOINT_STEP_DEG)), int(np.ceil(abs(dist_m) * 1000 / (speed * DT))))
+        rows += [[*(a + (b - a) * f).tolist(), 0.0] for f in np.linspace(0, 1, n + 1)[1:]]
+    rows += [rows[-1]] * settle
+    tcp = np.array(tcp_rows(rows))
+    if any(tcp[:, k].min() < lo or tcp[:, k].max() > hi for k, (lo, hi) in enumerate(TCP_BOX)):
+        return None  # the path swings the fingertip out of the cell's box: the cell would refuse it
+    return rows
+
+
+def _lowest(q) -> float:
+    """The lowest point of the arm and gripper at joints q (base frame z, m)."""
+    from lab.armcheck import shapes
+    return min((pts[:, 2] - r).min() for name, pts, r, _ in shapes(q, 0.0) if name != "base")
+
+
+def _clear(qa, qb, floor: float, depth: int = 5) -> list | None:
+    """Joint waypoints from qa to qb whose straight joint-space legs keep the whole arm above `floor`: a leg that sags
+    (turning the joints evenly doesn't move the fingertip straight; one dipped to 20 mm and shoved the parts) is split
+    at its middle pose, raised back up to the floor (IK started from that pose: no flip), and both halves rechecked."""
+    from calibration.kinematics import tcp_of, tool_ik
+    low = min(_lowest(qa + (qb - qa) * f) for f in np.linspace(0, 1, 9))
+    if low >= floor:
+        return [qa, qb]
+    if depth == 0:
+        return None
+    mid = (qa + qb) / 2
+    tip, wpr = tcp_of(mid)
+    try:
+        q_mid = tool_ik(tip + [0, 0, floor - _lowest(mid) + 0.01], wpr, mid, near=True)
+    except ValueError:
+        return None
+    left, right = _clear(qa, q_mid, floor, depth - 1), _clear(q_mid, qb, floor, depth - 1)
+    return None if left is None or right is None else left[:-1] + right
 
 
 def move_to_pose(cur, tip_m, wpr, height_mm: float = SAFE_MM, settle: int = HOLD) -> tuple[list, str]:

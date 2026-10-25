@@ -34,6 +34,7 @@ import yaml
 from calibration.geometry import SURFACE_Z
 from lab import viz
 from lab.catalog import COLORS, KINDS, kind_mesh
+from lab import primitives as P
 from lab.minds import MINDS
 from lab.recorder import Recorder
 from lab.simcell import Instance, SimCell, dump_layout, spread_layout, tile_layout
@@ -149,7 +150,7 @@ def run(name: str, seed: int | None = None, mind: str = "map", view: bool = True
         chunk = m.act(obs)
         if getattr(m, "done", False):
             break
-        cell.play(chunk, on_frame=anim)
+        P.send(cell, chunk, on_frame=anim)
         obs = cell.observe()
     score = {"robot_s": round(cell.t), "wall_s": round(time.time() - t0)}
     if hasattr(m, "score"):

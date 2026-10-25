@@ -7,7 +7,8 @@ them, per second of moving. Deterministic: no model, no guessing.
 2. candidate camera poses per target: straight down, and tilted 30 / 45 deg from 8 directions, at a standoff the depth
    camera reads well, rolled four ways; each turned into the tool pose that puts the wrist camera there (the camera is
    bolted to the flange: tool pose = camera pose x a fixed offset)
-3. keep the reachable ones (IK from the current joints), fingertips well above the table
+3. keep the reachable ones (IK from the current joints), fingertips well above the table, whose joint-space path
+   there (lab.primitives.joint_move) keeps the arm off the table and off itself (lab.armcheck)
 4. score: frontier voxels inside the camera's view and range, not hidden behind solid evidence (a ray marched through
    the map), divided by the time the move takes
 """
@@ -17,6 +18,7 @@ import numpy as np
 
 from calibration.geometry import SURFACE_Z, flange_pose
 from calibration.kinematics import HOME, tool_ik, tool_pose, wpr_of
+from lab import armcheck
 from lab import primitives as P
 
 STANDOFF = (0.23,)       # m from the target to the depth camera (it reads well from ~0.12 m)
@@ -140,7 +142,13 @@ def best_view(emap, cams: dict, q_now, tip_now, sample: int = 1500, shortlist: i
                     cands.append((n / secs ** (1.6 if nearby else 1.0), n, tilt, Tc, Tt))  # nearby: distance costs more
     cands.sort(key=lambda c: -c[0])
     best = None
-    for _, n, tilt, Tc, Tt in cands[:shortlist]:
+    wpr_now = wpr_of(tool_pose(q_now)[:3, :3])
+    rejected = []
+    tried = 0
+    for _, n, tilt, Tc, Tt in cands[:40]:  # the best few; further down the list only while none has a clear path
+        if tried >= shortlist and best is not None:
+            break
+        tried += 1
         vis = visible(emap, fr, Tc, cam)
         sees = int(vis.sum())
         if sees < 20:
@@ -150,9 +158,18 @@ def best_view(emap, cams: dict, q_now, tip_now, sample: int = 1500, shortlist: i
             q = tool_ik(tip, wpr, q_now)
         except ValueError:
             continue
-        seconds = np.linalg.norm(tip - tip_now) / (P.TRAVEL / 1000) + np.abs(q - q_now).max() / 60.0 + 1.5
+        rows = P.joint_move(q_now, tip_now, wpr_now, q, tip, wpr)
+        if rows is None:
+            continue
+        rep = armcheck.check_joints(np.asarray(rows)[:, :6], 0.0)
+        if not rep.ok:
+            rejected.append(rep.problem)
+            continue
+        seconds = len(rows) * P.DT
         value = sees / seconds ** (1.6 if nearby else 1.0)
         if best is None or value > best["value"]:
             best = {"tip": tip, "wpr": wpr, "q": q, "sees": sees, "seconds": float(seconds), "value": value,
-                    "target": None, "tilt": tilt, "cam": Tc, "expected": fr[vis]}
+                    "target": None, "tilt": tilt, "cam": Tc, "expected": fr[vis], "rows": rows}
+    if best is not None:
+        best["rejected"] = rejected
     return best

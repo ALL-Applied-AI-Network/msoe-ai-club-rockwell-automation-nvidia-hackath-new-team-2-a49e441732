@@ -99,7 +99,8 @@ def shapes(q, grip: float) -> list[tuple[str, np.ndarray, float, bool]]:
 
     def seg(a, b, n=6):
         return np.linspace(a, b, n)
-    out = [("upper arm", seg(joints[1], joints[2]), 0.055, False),
+    out = [("base", seg(np.zeros(3), joints[1], 4), 0.07, False),
+           ("upper arm", seg(joints[1], joints[2]), 0.055, False),
            ("forearm", seg(joints[3], joints[4], 8), 0.045, False),
            ("wrist", seg(wc, wc + tool * FLANGE_FACE, 3), 0.045, False),
            ("gripper body", seg(wc + tool * FLANGE_FACE, wc + tool * FINGER_ROOT, 6), 0.026, False)]
@@ -109,13 +110,58 @@ def shapes(q, grip: float) -> list[tuple[str, np.ndarray, float, bool]]:
     for side in (-1, 1):
         root, tip = wc + tool * FINGER_ROOT + side * half * jaw, wc + tool * TCP_OFFSET + side * half * jaw
         out.append((f"{'left' if side < 0 else 'right'} finger", seg(root, tip, 8), 0.004, True))
+    cam = _wrist_cam_points(q)
+    out.append(("wrist camera", cam, 0.02, False))
     return out
+
+
+_CAM = []
+
+
+def _wrist_cam_points(q) -> np.ndarray:
+    """The wrist depth camera's body: a short bar along its lens axis, bolted to the flange."""
+    if not _CAM:
+        from calibration.geometry import load
+        _CAM.append(load()["wrist_depth"]["T"])
+    from calibration.geometry import flange_pose
+    T = flange_pose(q) @ _CAM[0]
+    return np.array([T[:3, 3] - T[:3, 2] * 0.015, T[:3, 3], T[:3, 3] + T[:3, 0] * 0.03, T[:3, 3] - T[:3, 0] * 0.03])
+
+
+# the arm against itself: what rides on the wrist against the links it could fold back into (neighbours excluded)
+SELF = {"wrist camera": ("base", "upper arm", "forearm"), "gripper body": ("base", "upper arm", "forearm"),
+        "left finger": ("base", "upper arm", "forearm"), "right finger": ("base", "upper arm", "forearm"),
+        "wrist": ("base", "upper arm")}
+
+
+def self_problem(parts) -> str | None:
+    """The first part that would run into another part of the arm."""
+    by = {name: (pts, rad) for name, pts, rad, _ in parts}
+    wc = by["wrist"][0][0]
+    for a, others in SELF.items():
+        pa, ra = by[a]
+        for b in others:
+            pb, rb = by[b]
+            if b == "forearm":  # the forearm's end is joined to the wrist: only the part that can fold onto it counts
+                pb = pb[np.linalg.norm(pb - wc, axis=1) > 0.12]
+                if not len(pb):
+                    continue
+            d = np.linalg.norm(pa[:, None] - pb[None], axis=2).min()
+            if d < ra + rb:
+                return f"the {a} would hit the arm's own {b}"
+    return None
 
 
 def pose_problem(q, grip: float, obstacles: list[Box] = (), held=None) -> str | None:
     """What the arm at joints q would hit (None: nothing). held: (local points (N, 3), T_tool_object, name): an object
     in the gripper, whose points are checked against the table and the obstacles too."""
-    for name, pts, rad, finger in shapes(q, grip):
+    parts = shapes(q, grip)
+    problem = self_problem(parts)
+    if problem:
+        return problem
+    for name, pts, rad, finger in parts:
+        if name == "base":  # bolted down below the table top: only the arm folding back into it matters
+            continue
         low = pts[:, 2] - rad - SURFACE_Z
         limit = (TIP_MM if finger else TABLE_MM) / 1000
         if low.min() < limit:
