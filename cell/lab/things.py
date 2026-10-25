@@ -23,6 +23,8 @@ BOX_MM = 40.0          # a footprint this wide on both sides: a box to sort into
 MATCH_MM = 15.0        # an update's thing this close to an earlier one keeps its id
 SURE = 0.4             # and once this share of its voxels is confirmed solid (real parts: 0.73-0.93; noise that
                        # leans solid but never got confirmed: ~0.1)
+MIN_LAYERS = 2         # and confirmed evidence at two or more heights: table noise that passes the rest is one 2 mm
+                       # layer at 7-9 mm (in Isaac it made "white parts" near the robot, and the arm went to pick them)
 SHARP_MM = 4.0         # a thing counts once some reading of it was this precise (expected error along the ray); seen
                        # only by far, noisy readings (the table camera, ~1 cm out there) it's a "maybe": look closer
 
@@ -40,6 +42,7 @@ class Thing:
     rgb: tuple = (128, 128, 128)
     kind: str = "part"             # part | box
     sharp_mm: float = 99.0         # the most precise reading among its voxels (median of their best), mm
+    layers: int = 0                # distinct voxel heights with confirmed evidence
     pts: np.ndarray = field(default=None, repr=False)   # its voxel centres (base, m)
 
     @property
@@ -97,7 +100,7 @@ class Things:
             found.append(t)
         found = _absorb_into_boxes(found)
         _name_pale_boxes(found)
-        ok = lambda t: t.sharp_mm <= SHARP_MM and t.sure >= SURE
+        ok = lambda t: t.sharp_mm <= SHARP_MM and t.sure >= SURE and t.layers >= MIN_LAYERS
         self.maybe = [t for t in found if not ok(t)]
         found = [t for t in found if ok(t)]
         self._keep_ids(found)
@@ -121,6 +124,7 @@ class Things:
                   float((np.median(top[:, 2]) - SURFACE_Z) * 1000 + emap.v * 500), len(idx), float(sure.mean()), pts=pts)
         t.kind = "box" if short > BOX_MM else "part"
         t.sharp_mm = float(np.median(emap.sharpest[tuple(idx.T)].astype(float)) * 1000)
+        t.layers = len(np.unique(idx[sure, 2]))  # distinct heights of confirmed evidence
         if table_rgb is not None and cams is not None:
             t.rgb = _sample_colour(t, table_rgb, cams["table"])
             t.color = colour_name(t.rgb)
