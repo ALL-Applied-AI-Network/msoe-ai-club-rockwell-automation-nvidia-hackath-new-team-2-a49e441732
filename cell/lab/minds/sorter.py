@@ -19,7 +19,7 @@ import rerun as rr
 
 from calibration.geometry import SURFACE_Z
 from calibration.kinematics import tcp_uf0, tool_ik, tool_pose, tool_r, wpr_of
-from lab import armcheck, grasp, primitives as P, viz
+from lab import armcheck, grasp, mindview, primitives as P, viz
 from lab.minds.mapper import MapperMind
 from lab.things import Things, _inside
 from lab.views import _cam_in_tool, _look_at
@@ -40,6 +40,8 @@ GRIP_SHARE = 0.45     # the hooked fingertips close at most this far up the part
 
 
 class SorterMind(MapperMind):
+    JOB = "sorting"
+
     def __init__(self, instruction: str = "", budget: int = 24, **kw):
         # 12 looks are enough for spread and close cubes (~20 s faster) but not for touching ones (a cube left, and
         # a red one carried with its neighbour into the wrong box, 2 of 3 seeds); 24: all sorted
@@ -47,8 +49,6 @@ class SorterMind(MapperMind):
 
     def reset(self) -> None:
         super().reset()
-        self.things = Things()
-        self.table_rgb = None
         self.report: list[str] = []
         self.picks = {"tried": 0, "verified": 0, "failed": 0, "unchecked": 0, "no_grip": 0, "no_box": 0}
         self.given_up: set[int] = set()
@@ -63,6 +63,7 @@ class SorterMind(MapperMind):
         yield from super()._loop(obs)            # map the table first
         obs = self.obs
         found = self.things.update(self.map, self.table_rgb, self.cams)
+        self.sorting = True                      # from here, the view shows the things as the sorter sees them
         self.boxes = {t.id: t for t in found if t.kind == "box"}  # by id: two boxes can look the same colour
         self.assigned: dict[str, str] = {}
         self.part_colours = {t.color for t in found if t.kind == "part"}
@@ -319,13 +320,7 @@ class SorterMind(MapperMind):
         viz.narrate(line)
 
     def _draw_things(self, found) -> None:
-        rr.log("mind/things", rr.Clear(recursive=True))
-        for t in found:
-            h = max(t.top_mm, 2.0) / 1000
-            rr.log(f"mind/things/{t.id}", rr.Boxes3D(centers=[[*t.xy, SURFACE_Z + h / 2]],
-                                                     half_sizes=[[t.size_mm[0] / 2000, t.size_mm[1] / 2000, h / 2]],
-                                                     rotation_axis_angles=[rr.RotationAxisAngle([0, 0, 1], degrees=t.angle)],
-                                                     colors=[t.rgb], labels=[t.name]))
+        mindview.things(found, self.things.maybe)
 
     def _draw_grip(self, g) -> None:
         a = np.radians(g.yaw)

@@ -25,15 +25,19 @@ HERE = Path(__file__).resolve().parent / "chat"
 MODEL = os.getenv("CHAT_MODEL") or "openrouter/openai/gpt-6-luna"
 
 SYSTEM = """You are the robot: a FANUC ER-4iA arm with a two-finger gripper and a depth camera on the wrist, at a
-table of small parts and boxes. You're being rebuilt: right now your one skill is MAPPING (looking around the table from
-many angles to build a 3D map of evidence: what's empty, what's solid, what you haven't seen yet). You can't pick,
-place, sort or move things yet; say so plainly if asked, and offer to map instead. A person is standing next to you and talking to you in this chat while you work. Speak as the robot, in the first
+table of small parts and boxes. You're being rebuilt: right now you have two skills. MAPPING: looking around the table
+from many angles to build a 3D map of evidence (what's empty, what's solid, what you haven't seen yet). SORTING BY
+COLOUR: map first, then pick each part and drop it in the box of its colour (no box of that colour: one free box per
+colour, said out loud), check each pick, and look again at the end for anything left out. That is all: you can't
+sort by anything but colour, follow rules about what goes where, stack, pour, or take things back out of a box yet;
+say so plainly if asked, and offer what you can do. A person is standing next to you and talking to you in this chat while you work. Speak as the robot, in the first
 person, briefly (one to three short sentences, like talking out loud). You keep working while you talk.
 
 Decide what each message is and act on it:
-- a job ("map the table", "take a look", "go", or anything you can only answer by looking): call start_mapping.
+- "sort these", "put them away", "clean up the table": call start_sorting.
+- any other job ("map the table", "take a look", "go", or anything you can only answer by looking): call start_mapping.
 - a correction or preference ("no, Lego goes in the white box", "leave the ring out"): call add_rule with it, in plain
-  words, then say briefly what you'll do differently. Things already in a box stay there unless they ask; if they ask,
+  words. Be honest: the sorter doesn't read rules yet (it only sorts by colour), so say it's noted for when you can. Things already in a box stay there unless they ask; if they ask,
   say honestly whether you can get them back out (see what you can't do).
 - news about the table from the person ("I just dumped more on", "I took the ring"): call table_changed. Never for
   your own plan or moves: something you can't identify yet is not a change to the table.
@@ -66,6 +70,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "start_mapping", "description": "Start (or restart) mapping what's on the table: look around from many angles until the gaps are filled.",
      "parameters": {"type": "object", "properties": {"instruction": {"type": "string", "description": "the person's words for what to do; empty to choose a sensible rule"}},
                     "required": ["instruction"]}}},
+    {"type": "function", "function": {"name": "start_sorting", "description": "Map the table, then sort the parts by colour into the boxes (no box of a part's colour: a free box per colour).",
+     "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "add_rule", "description": "A correction or standing preference from the person; the plan is redone before the next move.",
      "parameters": {"type": "object", "properties": {"rule": {"type": "string"}}, "required": ["rule"]}}},
     {"type": "function", "function": {"name": "table_changed", "description": "The person changed the table (added or took things): take a fresh look and carry on with the job.",
@@ -144,7 +150,9 @@ class Chat:
 
     def _do(self, name: str, args: dict) -> str:
         if name == "start_mapping":
-            return self.robot.start(args.get("instruction", ""))
+            return self.robot.start(args.get("instruction", "") or "map the table", mind="map")
+        if name == "start_sorting":
+            return self.robot.start("sort the parts by colour into the boxes", mind="sort")
         if name == "add_rule":
             return self.robot.add_rule(args.get("rule", ""))
         if name == "table_changed":

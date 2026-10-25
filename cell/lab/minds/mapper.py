@@ -4,8 +4,8 @@
 2. then, over and over: the best view of the gaps (lab.views: tilted looks allowed), move there, fuse the wrist depth
 3. stop when the gaps are gone, the views stop finding anything, or the look budget is spent
 
-Shown live in Rerun (mind/evidence/...): solid voxels coloured by height, the frontier (the gaps) in purple, the next
-view's camera, and how full the tank is after each look.
+Shown live in Rerun by lab.mindview, one layer per kind of belief (mind/1_depth_now ... mind/7_things), the next
+look's camera (mind/plan/next_look), and a legend with live counts after each look.
 """
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ import time
 import numpy as np
 
 from calibration.geometry import SURFACE_Z, flange_pose, load
-from lab import primitives as P, viz
+from lab import mindview, primitives as P, viz
 from lab.evidence import EvidenceMap
+from lab.things import Things
 from lab.views import best_view
 
 import rerun as rr
@@ -36,6 +37,9 @@ class MapperMind:
         self.gen = None
         self.version = 0
         self.t_compute = 0.0
+        self.things = Things()  # touching evidence grouped into things, for showing (the sorter acts on them)
+        self.table_rgb = None
+        self.sorting = False    # once set, the things shown are the ones the sorter is working with
 
     def act(self, obs):
         try:
@@ -51,8 +55,11 @@ class MapperMind:
 
     def _loop(self, obs):
         self.obs = obs  # the latest observation, for whoever continues after mapping (lab.minds.sorter)
+        if self.table_rgb is None:
+            self.table_rgb = obs["images"]["table"]  # for the colour of things, before the arm wanders into view
         t0 = time.time()
         r = self.map.integrate(obs["depth"]["table"], self.cams["table_depth"])
+        mindview.depth_now(obs["depth"]["table"], self.cams["table_depth"], which="table")
         self._show(obs, f"The table camera's depth: {r['free']:,} voxels seen empty, {r['hit']:,} solid.", t0)
         self._fuse_wrist(obs)
         stall, nearby = 0, True
@@ -72,7 +79,7 @@ class MapperMind:
             if v is None:
                 viz.narrate("No reachable view sees any of the remaining gaps. Done looking.", level="WARN")
                 break
-            viz.camera_frustum("mind/evidence/next_view", self.cams["wrist_depth"], v["cam"])
+            viz.camera_frustum("mind/plan/next_look", self.cams["wrist_depth"], v["cam"])
             rows = v["rows"]  # planned in joint space by best_view, and checked against the table and the arm itself
             what = f"move to ({v['tip'][0] * 1000:.0f}, {v['tip'][1] * 1000:.0f}, {(v['tip'][2] - SURFACE_Z) * 1000:.0f} mm up)"
             if v["rejected"]:
@@ -108,6 +115,7 @@ class MapperMind:
         r = self.map.integrate(obs["depth"]["wrist"], self.cams["wrist_depth"], joints=obs["joints"])
         self.looks += 1
         gained = int((self.map.looks > 0).sum()) - before
+        mindview.depth_now(obs["depth"]["wrist"], self.cams["wrist_depth"], obs["joints"])
         self._show(obs, f"Look {self.looks} fused: {gained:,} voxels seen for the first time ({r['free']:,} empty, {r['hit']:,} solid).", t0)
         return gained
 
@@ -121,29 +129,24 @@ class MapperMind:
         viz.narrate(f"{line} The tank is {st['known_pct']}% known above the table; {st['frontier_voxels']:,} gap voxels left.")
         self.version += 1
 
+    JOB = "mapping"
+
     def _draw(self) -> None:
-        """Three things, each its own colour: evidence that's the table, evidence that's not the table (by height),
-        and a sparse lattice of space with no evidence yet (it empties as the rays clear it). Empty space: nothing."""
+        """The whole belief, layer by layer (lab.mindview), the legend, and the top view."""
         m = self.map
-        table = m.table_points(step=3, sure=False)
-        rr.log("mind/evidence/table", rr.Points3D(table, colors=[[90, 110, 130]], radii=m.v * 0.7))
-        objs = np.vstack([m.solid_points(), m.leaning_points()])
-        n_sure = len(m.solid_points())
-        if len(objs):
-            h = np.clip((objs[:, 2] - SURFACE_Z) / 0.05, 0, 1)
-            cols = np.stack([255 * np.ones_like(h), 200 * (1 - h) + 40, 40 * np.ones_like(h)], 1)
-            cols[n_sure:] *= 0.55  # leaning: dimmer
-            rr.log("mind/evidence/objects", rr.Points3D(objs, colors=cols.astype(np.uint8), radii=m.v * 0.55))
-        else:
-            rr.log("mind/evidence/objects", rr.Clear(recursive=False))
-        rr.log("mind/evidence/no_evidence", rr.Points3D(m.lattice_unknown(), colors=[[150, 110, 200]], radii=0.0009))
+        mindview.context()
+        counts = mindview.evidence(m)
+        if not self.sorting:
+            self.things.update(m, self.table_rgb, self.cams)
+        mindview.things(self.things.known, self.things.maybe)
+        mindview.legend(counts, self.looks, self.things.known, self.things.maybe, self.JOB)
         rr.log("evidence_top", rr.Image(m.top_view()))
 
     def _mesh(self) -> None:
         m = self.map.surface_mesh()
         if m is not None:
             v, f = m
-            rr.log("mind/evidence/surface", rr.Mesh3D(vertex_positions=v, triangle_indices=f, albedo_factor=[200, 205, 215, 255]))
+            rr.log("mind/8_surface_mesh", rr.Mesh3D(vertex_positions=v, triangle_indices=f, albedo_factor=[200, 205, 215, 255]))
 
     def status(self) -> str:
         st = self.map.stats()

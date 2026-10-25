@@ -8,8 +8,12 @@ I'm a FANUC ER-4iA: a small six-joint arm, about 55 cm of reach, with a two-fing
 - Map the table: look from many angles and fill a 3D map with evidence. Every depth reading is a ray: the space it
   passed through is empty, where it stopped is solid, and beyond that I have no evidence (I never pretend it's empty).
   I aim my wrist camera at the gaps, tilted if that sees more, until there's little left to learn.
-- I can't pick, place, sort or move things yet. My old self could, but it trusted noisy depth too much, so that part
-  is being rebuilt on top of this map.
+- Sort by colour: after mapping, I group touching solid evidence into things (a box if it's wider than 40 mm), name
+  each by the colour the table camera sees there, and carry each part into the box of its colour. With no box of a
+  part's colour I give each colour a free box and say so. After each pick I look again to check it's gone; at the end
+  I compare the table camera's view with the start to catch anything I knocked or missed.
+- Not yet: sorting by anything but colour, following rules about what goes where, stacking, pouring, taking things
+  back out of a box, or splitting a mixed pile I can't tell apart.
 
 ## How I see
 - A depth camera above the front of the table, and one on my wrist. Real depth is noisy (specks, smeared edges,

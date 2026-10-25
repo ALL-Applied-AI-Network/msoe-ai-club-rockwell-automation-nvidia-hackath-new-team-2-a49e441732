@@ -40,9 +40,10 @@ def blueprint() -> rrb.Blueprint:
             rrb.Horizontal(
                 rrb.Spatial3DView(name="World (truth)", origin="truth"),
                 rrb.Spatial3DView(name="Robot's mind", origin="mind"),
-                rrb.Vertical(rrb.TextLogView(name="VLM thinking", origin="vlm"),
-                             rrb.TextDocumentView(name="objects", origin="roster"),
-                             rrb.TextLogView(name="narration", origin="narration"), row_shares=[2, 2, 2]),
+                rrb.Vertical(rrb.TextDocumentView(name="what you're looking at", origin="legend"),
+                             rrb.Tabs(rrb.TextDocumentView(name="objects", origin="roster"),
+                                      rrb.TextLogView(name="VLM thinking", origin="vlm")),
+                             rrb.TextLogView(name="narration", origin="narration"), row_shares=[3, 2, 2]),
                 column_shares=[3, 3, 2],
             ),
             rrb.Horizontal(*raw),
@@ -53,9 +54,9 @@ def blueprint() -> rrb.Blueprint:
 
 
 def app_blueprint() -> rrb.Blueprint:
-    """The chat page's view: only what a person can take in. The robot's mind (big, aimed at the table), every sensor
-    in a strip under it, one log of everything it thinks and does. The truth, the object roster and Rerun's own
-    panels are a click away, not on screen."""
+    """The chat page's view: the robot's mind (big, aimed at the table) with the key to it beside it, every sensor in
+    a strip under it, one log of everything it thinks and does. The left tree lists the mind's layers (eye icons hide
+    them); the truth and the object roster are a tab away."""
     eye = rrb.EyeControls3D(position=(0.88, 0.02, 0.50), look_target=(0.36, -0.08, 0.0), eye_up=(0, 0, 1))
     sensors = [rrb.Spatial2DView(name=f"{c} camera", origin=f"cams/{c}/rgb") for c in ("table", "side", "wrist")]
     sensors += [rrb.Spatial2DView(name=f"{c} depth", origin=f"cams/{c}/depth") for c in ("table", "wrist")]
@@ -68,11 +69,17 @@ def app_blueprint() -> rrb.Blueprint:
                 rrb.Grid(*sensors, grid_columns=3),
                 row_shares=[3, 2],
             ),
-            rrb.Tabs(rrb.TextLogView(name="log", origin="/", contents=["/vlm", "/narration"]),
-                     rrb.TextDocumentView(name="objects", origin="roster"), active_tab=0),
+            rrb.Vertical(
+                rrb.TextDocumentView(name="what you're looking at", origin="legend"),
+                rrb.Tabs(rrb.TextLogView(name="log", origin="/", contents=["/vlm", "/narration"]),
+                         rrb.TextDocumentView(name="objects", origin="roster"), active_tab=0),
+                row_shares=[3, 2],
+            ),
             column_shares=[3, 1],
         ),
-        collapse_panels=True,
+        rrb.BlueprintPanel(state="expanded"),   # the layers, with eye icons
+        rrb.SelectionPanel(state="collapsed"),  # opens on a click: a point's numbers
+        rrb.TimePanel(state="collapsed"),
     )
 
 
@@ -134,7 +141,7 @@ def clear_scene() -> None:
     rr.set_time("sim_time", duration=TIME_OFFSET)
     rr.set_time("step", sequence=STEP_OFFSET[0] + 1)
     STEP_OFFSET[0] += 1
-    for path in ("mind", "truth", "cams", "evidence_top", "heightmap", "vlm_crop", "narration", "vlm"):
+    for path in ("mind", "truth", "cams", "evidence_top", "heightmap", "vlm_crop", "narration", "vlm", "legend"):
         rr.log(path, rr.Clear(recursive=True))
 
 
