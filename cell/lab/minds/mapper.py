@@ -50,6 +50,7 @@ class MapperMind:
     # ------------------------------------------------------------ the loop
 
     def _loop(self, obs):
+        self.obs = obs  # the latest observation, for whoever continues after mapping (lab.minds.sorter)
         t0 = time.time()
         r = self.map.integrate(obs["depth"]["table"], self.cams["table_depth"])
         self._show(obs, f"The table camera's depth: {r['free']:,} voxels seen empty, {r['hit']:,} solid.", t0)
@@ -81,6 +82,7 @@ class MapperMind:
                         f"({'straight down' if v['tilt'] == 0 else 'tilted %.0f deg' % v['tilt']}), "
                         f"~{v['seconds']:.1f} s of moving (chosen in {time.time() - t0:.1f} s).")
             obs = yield rows
+            self.obs = obs
             gained = self._fuse_wrist(obs)
             # the nearby area stopped paying off: put it down and go to the best view anywhere (Joel's block rule)
             if gained < 400 and nearby:

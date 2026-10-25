@@ -113,6 +113,26 @@ class EvidenceMap:
 
     # ------------------------------------------------------------ what it believes
 
+    def forget(self, xy, radius: float) -> None:
+        """We acted here (picked or placed something): what we knew in these columns is stale. Back to never seen,
+        so the next look learns it afresh (old confirmed evidence would otherwise take ~6 looks to wear off)."""
+        c = (np.asarray(xy, float) - self.origin[:2]) / self.v
+        r = radius / self.v
+        i0, i1 = max(0, int(c[0] - r)), min(self.shape[0], int(c[0] + r) + 2)
+        j0, j1 = max(0, int(c[1] - r)), min(self.shape[1], int(c[1] + r) + 2)
+        if i0 >= i1 or j0 >= j1:
+            return  # off the map
+        ii, jj = np.mgrid[i0:i1, j0:j1]
+        m = np.hypot(ii + 0.5 - c[0], jj + 0.5 - c[1]) <= r
+        I, J = ii[m], jj[m]
+        k0 = self.k_table + 1  # keep the table itself: it hasn't moved
+        self.L[I, J, k0:] = 0.0
+        self.looks[I, J, k0:] = 0
+        self.tries[I, J, k0:] = 0
+        self.sharpest[I, J, k0:] = np.inf
+        self.sdf[I, J, k0:] = 1.0
+        self.w[I, J, k0:] = 0.0
+
     def above_table(self) -> np.ndarray:
         """A mask over z: the voxels above the table's top (the space that can hold things)."""
         m = np.zeros(self.shape, bool)

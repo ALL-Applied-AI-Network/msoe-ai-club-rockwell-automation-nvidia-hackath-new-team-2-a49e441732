@@ -162,7 +162,7 @@ def pose_problem(q, grip: float, obstacles: list[Box] = (), held=None) -> str | 
     for name, pts, rad, finger in parts:
         if name == "base":  # bolted down below the table top: only the arm folding back into it matters
             continue
-        low = pts[:, 2] - rad - SURFACE_Z
+        low = pts[:, 2] - (0.0 if finger else rad) - SURFACE_Z  # a finger ends flat at its tip: no capsule below it
         limit = (TIP_MM if finger else TABLE_MM) / 1000
         if low.min() < limit:
             return f"the {name} would hit the table ({low.min() * 1000:.0f} mm above it)"
