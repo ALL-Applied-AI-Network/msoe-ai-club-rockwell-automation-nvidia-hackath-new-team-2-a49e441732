@@ -45,19 +45,24 @@ def _look_at(target, direction, standoff, roll) -> np.ndarray:
     return T
 
 
-def targets(emap, k: int = 3) -> list[np.ndarray]:
-    """Centres of the biggest frontier clusters."""
+def targets(emap, k: int = 3, near=None) -> list[np.ndarray]:
+    """Centres of frontier clusters: the biggest, or with `near`, the ones closest to it first (keep working on the
+    area already in view: a cheap wrist turn beats a trip across the table)."""
     from scipy import ndimage
     fr = emap.frontier()
     if not fr.any():
         return []
     lab, n = ndimage.label(ndimage.binary_dilation(fr, iterations=2))
     sizes = ndimage.sum(fr, lab, range(1, n + 1))
-    out = []
-    for c in np.argsort(sizes)[::-1][:k]:
-        idx = np.argwhere((lab == c + 1) & fr)
-        out.append(emap.centers(*idx.mean(0)))
-    return out
+    big = [c + 1 for c in range(n) if sizes[c] >= 30]  # noise makes thousands of tiny clusters: skip those
+    if not big:
+        return []
+    cents = [emap.centers(*np.asarray(c)) for c in ndimage.center_of_mass(fr, lab, big)]
+    if near is None:
+        order = np.argsort([-sizes[c - 1] for c in big])
+    else:
+        order = np.argsort([np.linalg.norm(c - near) for c in cents])
+    return [cents[i] for i in order[:k]]
 
 
 def visible(emap, pts: np.ndarray, Tc: np.ndarray, cam: dict) -> np.ndarray:
@@ -102,7 +107,7 @@ def in_view(pts: np.ndarray, Tc: np.ndarray, cam: dict) -> np.ndarray:
     return (z > RANGE[0]) & (z < RANGE[1]) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
 
 
-def best_view(emap, cams: dict, q_now, tip_now, sample: int = 1500, shortlist: int = 6) -> dict | None:
+def best_view(emap, cams: dict, q_now, tip_now, sample: int = 1500, shortlist: int = 6, nearby: bool = True) -> dict | None:
     """A good next view, fast: every candidate gets a cheap count (gap voxels inside its view, per second of moving);
     only the best few get the expensive part (rays marched through the map for occlusion, then IK). A pretty good view
     now beats the perfect one later."""
@@ -114,7 +119,10 @@ def best_view(emap, cams: dict, q_now, tip_now, sample: int = 1500, shortlist: i
     if len(fr) > sample:
         fr = fr[np.random.default_rng(0).choice(len(fr), sample, replace=False)]
     cands = []
-    for target in targets(emap):
+    look_at = None
+    if nearby and tip_now is not None:  # roughly where the camera is looking now: the fingertip plus a bit down
+        look_at = np.asarray(tip_now) + np.array([0, 0, -0.15])
+    for target in targets(emap, near=look_at):
         for tilt in TILTS:
             for az in ([0.0] if tilt == 0 else np.arange(0, 360, 45)):
                 a, e = np.radians(az), np.radians(tilt)
@@ -128,8 +136,8 @@ def best_view(emap, cams: dict, q_now, tip_now, sample: int = 1500, shortlist: i
                     n = int(in_view(fr, Tc, cam).sum())
                     if n < 20:
                         continue
-                    secs = np.linalg.norm(tip - tip_now) / (P.TRAVEL / 1000) + 2.0  # a rough cost; IK comes later
-                    cands.append((n / secs, n, tilt, Tc, Tt))
+                    secs = np.linalg.norm(tip - tip_now) / (P.TRAVEL / 1000) + 1.0  # a rough cost; IK comes later
+                    cands.append((n / secs ** (1.6 if nearby else 1.0), n, tilt, Tc, Tt))  # nearby: distance costs more
     cands.sort(key=lambda c: -c[0])
     best = None
     for _, n, tilt, Tc, Tt in cands[:shortlist]:
@@ -143,7 +151,7 @@ def best_view(emap, cams: dict, q_now, tip_now, sample: int = 1500, shortlist: i
         except ValueError:
             continue
         seconds = np.linalg.norm(tip - tip_now) / (P.TRAVEL / 1000) + np.abs(q - q_now).max() / 60.0 + 1.5
-        value = sees / seconds
+        value = sees / seconds ** (1.6 if nearby else 1.0)
         if best is None or value > best["value"]:
             best = {"tip": tip, "wpr": wpr, "q": q, "sees": sees, "seconds": float(seconds), "value": value,
                     "target": None, "tilt": tilt, "cam": Tc, "expected": fr[vis]}

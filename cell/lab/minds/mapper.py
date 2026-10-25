@@ -54,7 +54,7 @@ class MapperMind:
         r = self.map.integrate(obs["depth"]["table"], self.cams["table_depth"])
         self._show(obs, f"The table camera's depth: {r['free']:,} voxels seen empty, {r['hit']:,} solid.", t0)
         self._fuse_wrist(obs)
-        stall = 0
+        stall, nearby = 0, True
         while self.looks < self.budget:
             st = self.map.stats()
             if st["frontier_voxels"] < self.min_frontier:
@@ -63,7 +63,7 @@ class MapperMind:
             t0 = time.time()
             q_now = np.asarray(obs["joints"][:6], float)
             tip_now = np.array([obs["tcp_pose"][0], obs["tcp_pose"][1], obs["tcp_pose"][2] - P.UF0_Z_MM]) / 1000
-            v = best_view(self.map, self.cams, q_now, tip_now)
+            v = best_view(self.map, self.cams, q_now, tip_now, nearby=nearby)
             self.t_compute += time.time() - t0
             if v is None:
                 viz.narrate("No reachable view sees any of the remaining gaps. Done looking.", level="WARN")
@@ -75,11 +75,17 @@ class MapperMind:
                         f"~{v['seconds']:.1f} s of moving (chosen in {time.time() - t0:.1f} s).")
             obs = yield rows
             gained = self._fuse_wrist(obs)
+            # the nearby area stopped paying off: put it down and go to the best view anywhere (Joel's block rule)
+            if gained < 400 and nearby:
+                nearby = False
+                viz.narrate("This area has stopped paying off; next, the best view anywhere.", level="DEBUG")
+            elif gained >= 400:
+                nearby = True
             missed = self.map.missed(v["expected"])
             if missed > 0.5 * len(v["expected"]):
                 viz.narrate(f"That look should have seen {len(v['expected'])} gap voxels and {missed} are still unknown: "
                             f"marking them (twice missed = not reachable from here).", level="DEBUG")
-            stall = stall + 1 if gained < 200 else 0
+            stall = stall + 1 if (gained < 200 and not nearby) else 0
             if stall >= 3:
                 viz.narrate("Three looks in a row added almost nothing. Done looking.")
                 break
@@ -102,25 +108,27 @@ class MapperMind:
         self.t_compute += time.time() - t0
         st = self.map.stats()
         self.history.append({"look": self.looks, "robot_s": None, **st})
-        pts = self.map.solid_points()
-        if len(pts):
-            h = (pts[:, 2] - SURFACE_Z) / 0.06
-            cols = (np.stack([0.95 * np.clip(h, 0, 1), 0.55 + 0.3 * (1 - np.clip(h, 0, 1)), 0.9 - 0.6 * np.clip(h, 0, 1)], 1) * 255).astype(np.uint8)
-            rr.log("mind/evidence/solid", rr.Points3D(pts, colors=cols, radii=self.map.v * 0.45))
-        lean_t = self.map.table_points(sure=False)
-        rr.log("mind/evidence/table_leaning", rr.Points3D(lean_t, colors=[[88, 94, 104]], radii=self.map.v * 0.6))
-        rr.log("mind/evidence/table", rr.Points3D(self.map.table_points(), colors=[[160, 168, 180]], radii=self.map.v * 0.8))
-        lean = self.map.leaning_points()
-        rr.log("mind/evidence/leaning", rr.Points3D(lean, colors=[[200, 140, 60, 140]], radii=self.map.v * 0.35))
-        fr = self.map.frontier_points()
-        if len(fr) > 6000:
-            fr = fr[np.random.default_rng(0).choice(len(fr), 6000, replace=False)]
-        rr.log("mind/evidence/gaps", rr.Points3D(fr, colors=[[190, 70, 255]], radii=self.map.v * 0.45))
-        un = self.map.unseen_points()
-        rr.log("mind/evidence/unseen", rr.Points3D(un, colors=[[110, 60, 150, 90]], radii=self.map.v * 0.6))
-        rr.log("evidence_top", rr.Image(self.map.top_view()))
+        self._draw()
         viz.narrate(f"{line} The tank is {st['known_pct']}% known above the table; {st['frontier_voxels']:,} gap voxels left.")
         self.version += 1
+
+    def _draw(self) -> None:
+        """Three things, each its own colour: evidence that's the table, evidence that's not the table (by height),
+        and a sparse lattice of space with no evidence yet (it empties as the rays clear it). Empty space: nothing."""
+        m = self.map
+        table = m.table_points(step=3, sure=False)
+        rr.log("mind/evidence/table", rr.Points3D(table, colors=[[90, 110, 130]], radii=m.v * 0.7))
+        objs = np.vstack([m.solid_points(), m.leaning_points()])
+        n_sure = len(m.solid_points())
+        if len(objs):
+            h = np.clip((objs[:, 2] - SURFACE_Z) / 0.05, 0, 1)
+            cols = np.stack([255 * np.ones_like(h), 200 * (1 - h) + 40, 40 * np.ones_like(h)], 1)
+            cols[n_sure:] *= 0.55  # leaning: dimmer
+            rr.log("mind/evidence/objects", rr.Points3D(objs, colors=cols.astype(np.uint8), radii=m.v * 0.55))
+        else:
+            rr.log("mind/evidence/objects", rr.Clear(recursive=False))
+        rr.log("mind/evidence/no_evidence", rr.Points3D(m.lattice_unknown(), colors=[[150, 110, 200]], radii=0.0009))
+        rr.log("evidence_top", rr.Image(m.top_view()))
 
     def _mesh(self) -> None:
         m = self.map.surface_mesh()

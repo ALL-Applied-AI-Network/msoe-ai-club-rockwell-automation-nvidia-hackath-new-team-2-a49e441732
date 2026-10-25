@@ -107,6 +107,7 @@ def tool_ik(tip, wpr=DOWN, q0=HOME, tol_mm: float = 2.0, near: bool = False) -> 
             best = sol
         if sol.cost < 1e-8:
             break
+    best.x = _nearest_turn(best.x, q0)
     T = flange_pose(best.x)
     miss = np.linalg.norm(T[:3, 3] + T[:3, 0] * TCP_OFFSET - tip)
     turn = np.degrees(np.arccos(np.clip((np.trace(T[:3, :3].T @ Rf) - 1) / 2, -1, 1)))
@@ -114,6 +115,19 @@ def tool_ik(tip, wpr=DOWN, q0=HOME, tol_mm: float = 2.0, near: bool = False) -> 
         raise ValueError(f"no IK solution for {np.round(tip * 1000)} mm, w p r {np.round(wpr, 1)} "
                          f"(missed by {miss * 1000:.1f} mm, {turn:.1f} deg)")
     return best.x
+
+
+def _nearest_turn(q, q0) -> np.ndarray:
+    """J4 and J6 can turn more than a full circle: +180 and -180 are the same pose. Take the one nearest q0, so a motion
+    never asks the wrist to spin all the way round (the controller refuses that, rightly)."""
+    q = np.array(q, float)
+    lo, hi = np.array(JOINT_LIMITS, float).T
+    q0 = np.asarray(q0, float)[:6]
+    for j in (3, 5):
+        alt = q[j] + 360.0 * np.round((q0[j] - q[j]) / 360.0)
+        if lo[j] <= alt <= hi[j]:
+            q[j] = alt
+    return q
 
 
 def _starts(q0):

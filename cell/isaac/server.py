@@ -212,6 +212,13 @@ class Cell:
             self._command(self.q, 0.0)
             self.world.step(render=False)
 
+    def _reattach(self) -> None:
+        """New bodies mid-run invalidate the arm's physics view ("Failed to get DOF positions"): a fresh handle, the
+        arm left where it is."""
+        self.arm = SingleArticulation(prim_path=C.ROBOT_PRIM, name=f"er4ia_{time.time_ns()}")
+        self.arm.initialize()
+        self._command(self.q, self.grip)
+
     def _command(self, q_deg, grip: float) -> None:
         full = self.arm.get_joint_positions().copy()
         full[self.arm_idx] = np.radians(q_deg)
@@ -265,6 +272,7 @@ class Cell:
             self._add(o, self.looks)
         self.objects += objects
         self.world.step(render=False)  # physics picks up the new bodies
+        self._reattach()
         self._new_view()
         self._settle(fall_s)
         return {"truth": self.truth()}

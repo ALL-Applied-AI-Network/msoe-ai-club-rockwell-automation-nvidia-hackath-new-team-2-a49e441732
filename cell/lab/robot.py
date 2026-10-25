@@ -120,6 +120,7 @@ class Robot:
         are the operator's, and the connection stays."""
         if self.mode != "sim":
             self._stop_now()
+            viz.clear_scene()
             self.parked, self.instruction, self.rules, self.done_log, self.baseline = None, "", [], [], None
             self.state = "connected"
             self._emit("state", "reset")
@@ -128,9 +129,11 @@ class Robot:
         with self.cell_lock:
             self.cell = IsaacCell(build(load_trial(self.trial_name), self.seed))
             self.cell.noise = True
+            viz.clear_scene()
             self.anim = viz.Animator(self.cell)
             viz.truth_setup(self.cell)
-        self.instruction, self.rules, self.done_log, self.baseline, self.state = "", [], [], None, "idle"
+        self.instruction, self.rules, self.done_log, self.baseline, self.state, self.parked = "", [], [], None, "idle", None
+        self.events.clear()
         self._emit("state", "reset")
         return "the simulator is back to the starting table"
 
@@ -287,6 +290,7 @@ class Robot:
         if blocked:  # only a fingertip into the table is held back (real cell); skip it, carry on with the job
             self._emit("note", f"I skipped a move: {blocked}.")
             return self.cell.observe(), True
+        self._emit("motion", self._describe(chunk, obs))
         self.cell.play(chunk, on_frame=self.anim)
         fresh = getattr(pol, "wants_obs", True)
         return (self.cell.observe() if fresh else obs), fresh
@@ -306,6 +310,21 @@ class Robot:
                             **{f"depth_{c}": v for c, v in (obs.get("depth") or {}).items()})
         for c, img in (obs.get("images") or {}).items():
             cv2.imwrite(str(d / f"{self.step:04d}_{c}.jpg"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 92])
+
+    def _describe(self, chunk, obs) -> str:
+        """One line for the actions panel: where the fingertip goes, how it's turned, the gripper, how long."""
+        from calibration.kinematics import wpr_matrix
+        rows = np.atleast_2d(np.asarray(chunk, float))
+        if rows.shape[1] != 7:
+            return f"joint motion, {len(rows)} rows ({len(rows) * P.DT:.1f} s)"
+        up = lambda r: f"({r[0]:.0f}, {r[1]:.0f}, {r[2] - P.TABLE_UF0:.0f} up)"
+        a, b = np.asarray(obs["tcp_pose"], float) if obs is not None else rows[0], rows[-1]
+        tilt = np.degrees(np.arccos(np.clip(-wpr_matrix(*b[3:6])[2, 2], -1, 1)))
+        grips = np.diff(rows[:, 6] >= 0.5).nonzero()[0]
+        g = "" if not len(grips) else " · " + ", ".join("close" if rows[k + 1, 6] >= 0.5 else "open" for k in grips)
+        still = int(np.sum(np.all(np.abs(np.diff(rows[:, :3], axis=0)) < 1e-6, axis=1)))
+        return (f"{up(a)} → {up(b)} mm · {'straight down' if tilt < 3 else f'tilted {tilt:.0f}°'}{g} · "
+                f"{len(rows) * P.DT:.1f} s" + (f" (holds {still * P.DT:.1f} s to look)" if still >= 5 else ""))
 
     def _precheck(self, chunk, obs) -> str | None:
         """What should hold a tcp chunk back: on the real cell, a fingertip below the table. The arm model's fuller

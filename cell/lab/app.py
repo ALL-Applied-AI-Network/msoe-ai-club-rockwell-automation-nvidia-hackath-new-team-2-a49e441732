@@ -37,6 +37,12 @@ class Board:
             self.items.append({"n": len(self.items), "who": who, "text": text, "t": time.time()})
             self.cv.notify_all()
 
+    def reset(self) -> None:
+        """Clear the page: everyone's messages, gone (the page empties when it sees the 'reset' item)."""
+        with self.cv:
+            self.items.append({"n": len(self.items), "who": "reset", "text": "", "t": time.time()})
+            self.cv.notify_all()
+
     def after(self, n: int, wait: float = 15.0) -> list[dict]:
         with self.cv:
             if len(self.items) <= n:
@@ -55,6 +61,9 @@ def main() -> None:
 
     def on_event(kind: str, text: str) -> None:
         """The robot's own news: shown as a log line; the ones a person cares about also go to the chat agent."""
+        if kind == "motion":  # the actions panel
+            board.add("motion", text)
+            return
         if kind == "state":  # the banner moves at once; the chat agent refines it when it has something to say
             phase, headline = {"working": ("looking", "Looking at the table…"), "paused": ("waiting", "Paused.")}.get(text, (None, None))
             if phase:
@@ -70,7 +79,7 @@ def main() -> None:
         elif kind != "done":
             board.add("log", text if kind != "move" else f"→ {text}")
         routine = text.startswith(("Sorted:", "Lost ", "(sim check"))  # its own bookkeeping: the log, not the chat
-        if kind in ("plan", "done", "seen", "check") or (kind == "note" and not routine):
+        if kind in ("plan", "done", "check") or (kind == "note" and not routine):  # (a table change: logged, not acted on)
             threading.Thread(target=chat.event, args=(kind, text), daemon=True).start()
 
     robot.listeners.append(on_event)
@@ -142,8 +151,17 @@ def main() -> None:
                     msg = f"couldn't: {e}"
                 board.add("hands", msg)
                 self._json({"ok": True, "msg": msg})
+            elif self.path == "/map":  # straight to the robot: no agent in between
+                msg = robot.start("map the table")
+                board.add("action", f"map the table: {msg}")
+                self._json({"msg": msg})
+            elif self.path == "/stop":
+                msg = robot.pause()
+                board.add("action", f"stop: {msg}")
+                self._json({"msg": msg})
             elif self.path == "/reset":
                 msg = robot.reset()
+                board.reset()
                 chat.history.clear()
                 chat.banner.update(phase="waiting", headline="Waiting for a job.", plan="")
                 board.add("status", json.dumps(chat.banner))

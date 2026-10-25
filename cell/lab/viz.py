@@ -125,6 +125,13 @@ def start_served(name: str, save_to: Path | None = None, grpc_port: int = 9876, 
     return uri
 
 
+def clear_scene() -> None:
+    """Everything the robot believed and saw, gone from the viewer (a fresh start); the static scenery comes back."""
+    for path in ("mind", "truth", "cams", "evidence_top", "heightmap", "vlm_crop", "narration", "vlm"):
+        rr.log(path, rr.Clear(recursive=True))
+    _scenery()
+
+
 def set_step(i: int) -> None:
     rr.set_time("step", sequence=i)
 

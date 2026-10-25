@@ -198,6 +198,16 @@ class EvidenceMap:
         i, j = np.nonzero(self.table_found(sure)[::step, ::step])
         return self.centers(i * step, j * step, np.full(len(i), self.k_table))
 
+    def lattice_unknown(self, spacing: float = 0.01, height: float = 0.08) -> np.ndarray:
+        """A sparse lattice (every `spacing` m) over the space above the table: the lattice points that no ray has
+        reached yet. Shown, they disappear as evidence arrives: watching the unknown get pulled out."""
+        s = max(1, int(round(spacing / self.v)))
+        k0 = self.k_table + 3
+        k1 = min(self.shape[2], k0 + int(height / self.v))
+        u = self.unknown()[s // 2::s, s // 2::s, k0:k1:s]
+        i, j, k = np.nonzero(u)
+        return self.centers(s // 2 + i * s, s // 2 + j * s, k0 + k * s)
+
     def unseen_points(self, step: int = 4, height: float = 0.06) -> np.ndarray:
         """A coarse sample of the space low over the table that no ray has reached yet."""
         kz = self.k_table + 3 + int(height / self.v)
