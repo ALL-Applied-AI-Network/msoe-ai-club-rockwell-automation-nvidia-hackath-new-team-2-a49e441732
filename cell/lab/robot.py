@@ -69,12 +69,14 @@ class Robot:
 
     # ------------------------------------------------------------ commands (from the chat or the page; any thread)
 
-    def start(self, instruction: str | None = None) -> str:
+    def start(self, instruction: str | None = None, mind: str | None = None) -> str:
         with self.lock:
             if self.policy is not None and self.pending is None:  # already on it: a second "go" must not wipe the work
                 return "already working on it"
             if instruction is not None:
                 self.instruction = instruction
+            if mind is not None:
+                self.mind_name = mind
             self.pending = "start"
         return f"starting: \"{self.full_instruction() or 'sort these'}\""
 

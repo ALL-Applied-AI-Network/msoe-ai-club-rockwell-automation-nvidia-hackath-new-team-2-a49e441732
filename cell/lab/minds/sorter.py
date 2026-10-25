@@ -27,7 +27,10 @@ from lab.views import _cam_in_tool, _look_at
 LOOK_M = 0.20          # wrist camera this far above a spot to check it
 TRIES = 2              # attempts per part
 DROP_ABOVE_RIM_MM = 4.0
-STILL_VOXELS = 8       # after a pick and one fresh look: this many voxels with any solid evidence at the spot = still there
+STILL_VOXELS = 6       # after a pick and one fresh look: this many voxels with any solid evidence at the spot = still there
+STILL_MM = 5.0         # ... within this of the grip (a cube's half width: a neighbour 5 mm away mustn't count)
+TOP_SHARE = 0.75       # ... counting only evidence up near the part's top (table noise sits just above the table: 7-9 mm)
+ROUNDS = 3             # passes over the table: what's left after one (merged, knocked) gets another go
 FRAMES = 4            # table-camera depth frames averaged to spot changes (one is too noisy for a 10 mm part at ~1 m)
 CHANGE_MM = 6.0       # averaged depth this much closer than before: something new stands there
 CHANGE_PX = 10        # ... over at least this many pixels
@@ -41,6 +44,7 @@ class SorterMind(MapperMind):
         self.table_rgb = None
         self.report: list[str] = []
         self.picks = {"tried": 0, "verified": 0, "failed": 0, "unchecked": 0, "no_grip": 0, "no_box": 0}
+        self.given_up: set[int] = set()
 
     def _loop(self, obs):
         self.table_rgb = obs["images"]["table"]  # before the arm wanders into the table camera's view
@@ -52,12 +56,13 @@ class SorterMind(MapperMind):
         yield from super()._loop(obs)            # map the table first
         obs = self.obs
         found = self.things.update(self.map, self.table_rgb, self.cams)
-        self.boxes = {t.color: t for t in found if t.kind == "box"}
+        self.boxes = {t.id: t for t in found if t.kind == "box"}  # by id: two boxes can look the same colour
+        self.assigned: dict[str, str] = {}
+        self.part_colours = {t.color for t in found if t.kind == "part"}
         self._draw_things(found)
         viz.narrate(f"Found {sum(t.kind == 'part' for t in found)} parts and {len(self.boxes)} boxes: "
                     + "; ".join(t.describe() for t in found))
-        for tid in self._todo(found):
-            obs = yield from self._put_away(tid, obs)
+        obs = yield from self._rounds(obs, found)
         for round_ in range(2):                  # anything new on the table that shouldn't be (dropped, knocked)?
             obs, spots = yield from self._changes(obs, baseline)
             if not spots:
@@ -75,9 +80,40 @@ class SorterMind(MapperMind):
                 self._fuse_wrist(obs)
             found = self.things.update(self.map, self.table_rgb, self.cams)
             self._draw_things(found)
-            for tid in self._todo(found):
-                obs = yield from self._put_away(tid, obs)
+            obs = yield from self._rounds(obs, found)
         self.obs = obs
+
+    def _rounds(self, obs, found):
+        """Put away every part on the table; then re-read the table and go again for what's left (a part that was
+        merged with its neighbour, or knocked), while that makes progress."""
+        for round_ in range(ROUNDS):
+            todo = [tid for tid in self._todo(found) if tid not in self.given_up]
+            if not todo:
+                break
+            if round_:
+                self._say(f"Round {round_ + 1}: {len(todo)} part(s) still on the table.")
+            for tid in todo:
+                obs = yield from self._put_away(tid, obs)
+            found = self.things.update(self.map, self.table_rgb, self.cams)
+            self._draw_things(found)
+        return obs
+
+    def _box_for(self, colour: str):
+        """The box of that colour if there is one; else the box this colour was given earlier; else a free box (one
+        whose colour no part here has), so each colour gets its own box. None when the boxes have run out."""
+        same = [b for b in self.boxes.values() if b.color == colour]
+        if len(same) == 1:
+            return same[0]
+        if colour in self.assigned:
+            return self.boxes[self.assigned[colour]]
+        taken = set(self.assigned.values())
+        free = [b for b in self.boxes.values() if b.id not in taken and b.color not in self.part_colours]
+        free = free or [b for b in self.boxes.values() if b.id not in taken]
+        if not free:
+            return None
+        self.assigned[colour] = free[0].id
+        self._say(f"No {colour} box: {colour} things go in the {free[0].color} box.")
+        return free[0]
 
     def _todo(self, found) -> list[int]:
         """Parts on the table (not already in a box), nearest the boxes first."""
@@ -90,15 +126,16 @@ class SorterMind(MapperMind):
             t = next((x for x in self.things.known if x.id == tid), None)
             if t is None:
                 break  # gone
-            box = self.boxes.get(t.color)
+            box = self._box_for(t.color)
             if box is None:
-                self._say(f"{t.name}: no {t.color} box, leaving it on the table.")
+                self._say(f"{t.name}: no box left for {t.color} things, leaving it on the table.")
                 self.picks["no_box"] += 1
                 break
             approach, rows, g = self._pick_rows(t, box, obs)
             if rows is None:
                 self._say(f"{t.name}: no clear grip from what I've seen; leaving it for now.")
                 self.picks["no_grip"] += 1
+                self.given_up.add(tid)
                 break
             self.picks["tried"] += 1
             viz.narrate(f"Pick {t.name} (try {attempt + 1}): grip at ({g.x * 1000:.0f}, {g.y * 1000:.0f}) mm, "
@@ -114,12 +151,14 @@ class SorterMind(MapperMind):
                 break
             obs = yield look
             self._fuse_wrist(obs)
-            if self._evidence_at((g.x, g.y)) < STILL_VOXELS:
+            if (self._evidence_heights((g.x, g.y)) >= TOP_SHARE * t.top_mm).sum() < STILL_VOXELS:
                 self.picks["verified"] += 1
                 self._say(f"{t.name}: gone from the table, into the {box.color} box.")
                 self._draw_things(self.things.update(self.map, self.table_rgb, self.cams))
                 break
             self.picks["failed"] += 1
+            hs = self._evidence_heights((g.x, g.y))
+            viz.narrate(f"(evidence at the grip spot: {len(hs)} voxels, heights {np.round(np.percentile(hs, [0, 50, 100]), 1).tolist()} mm)", level="DEBUG")
             self._say(f"{t.name}: still there after the pick (try {attempt + 1}); looking again to re-measure it.")
             obs = yield self._still(obs, 3)  # one fresh look only leans solid: a second makes it a thing again
             self._fuse_wrist(obs)
@@ -204,13 +243,15 @@ class SorterMind(MapperMind):
             viz.narrate(f"(grip at {g.yaw:.0f} deg skipped: {rep.problem})", level="DEBUG")
         return None, None, None
 
-    def _evidence_at(self, xy, radius: float = 0.008) -> int:
-        """Voxels above the table near xy with any solid evidence (one fresh look can't confirm, but it does hit)."""
+    def _evidence_heights(self, xy, radius: float = STILL_MM / 1000) -> np.ndarray:
+        """Heights above the table (mm) of the voxels near xy with any solid evidence (one fresh look can't confirm a
+        part, but it does hit)."""
         m = self.map
         c = ((np.asarray(xy) - m.origin[:2]) / m.v).astype(int)
         r = int(np.ceil(radius / m.v))
         sl = (slice(max(0, c[0] - r), c[0] + r + 1), slice(max(0, c[1] - r), c[1] + r + 1))
-        return int(((m.L[sl] > 0.3) & m.clear_of_table()[sl]).sum())
+        i, j, k = np.nonzero((m.L[sl] > 0.3) & m.clear_of_table()[sl])
+        return (m.origin[2] + (k + 0.5) * m.v - SURFACE_Z) * 1000
 
     def _surface(self, t):
         """Points for the grip search: everything seen around t (the table where it was found, solid evidence above

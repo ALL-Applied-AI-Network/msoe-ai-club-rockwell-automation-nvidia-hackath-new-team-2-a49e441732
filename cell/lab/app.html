@@ -25,7 +25,8 @@
   button { background: #262b34; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer; }
   button:hover { border-color: #4a5260; }
   button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .big { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .big { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  #sort { border-color: var(--action); color: #7ee2a0; }
   .big button { padding: 10px; font-size: 14px; font-weight: 600; }
   #map { border-color: var(--accent); color: #9cc4ff; }
   .top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -80,7 +81,8 @@
       <span class="state" id="state">…</span>
     </div>
     <div class="big"><button id="reset" title="everything from scratch: the table, the robot's map, the viewer, the chat">Reset</button>
-      <button id="map" title="look around the table until the gaps are filled">Map</button></div>
+      <button id="map" title="look around the table until the gaps are filled">Map</button>
+      <button id="sort" title="map, then put each part in the box of its colour (or one box per colour), checking each pick">Sort</button></div>
   </div>
 
   <details class="sec fold" id="scene" open>
@@ -165,6 +167,7 @@ $("m-sim").onclick = () => { if (mode !== "sim") post("/mode", {mode: "sim"}).th
 $("m-real").onclick = () => setMode("real");
 $("reset").onclick = () => post("/reset").then(refresh);
 $("map").onclick = () => post("/map");
+$("sort").onclick = () => post("/sort");
 $("check").onclick = () => {
   $("check").disabled = true; $("trials").textContent = "checking…";
   post("/real/check", {url: $("url").value, token: $("token").value}).then(r => {

@@ -88,33 +88,43 @@ class Things:
         found = []
         for c in np.nonzero(sizes >= MIN_VOXELS)[0] + 1:
             idx = np.argwhere(lab == c)
-            pts = emap.centers(*idx.T)
-            # size and height from the top face: seen from above, its edges sit where they are (sides are seen at
-            # grazing angles and smear outwards: a 10 mm cube measured 16-22 mm across that way)
-            sure = solid[tuple(idx.T)]
-            core = pts[sure] if sure.sum() >= 6 else pts  # confirmed voxels only, when there are enough
-            top_z = np.percentile(core[:, 2], 95)
-            top = core[core[:, 2] > top_z - 0.003]
-            (cx, cy), (w, h), ang = cv2.minAreaRect((top[:, :2] * 1000).astype(np.float32))
-            w, h = w + emap.v * 1000, h + emap.v * 1000  # voxel centres: the surface reaches half a voxel further
-            long_, short = max(w, h), min(w, h)
-            angle = (ang if w >= h else ang + 90) % 180
-            t = Thing(0, np.array([cx, cy]) / 1000, (long_, short), angle,
-                      float((np.median(top[:, 2]) - SURFACE_Z) * 1000 + emap.v * 500), len(idx),
-                      float(solid[tuple(idx.T)].mean()), pts=pts)
-            t.kind = "box" if short > BOX_MM else "part"
-            t.sharp_mm = float(np.median(emap.sharpest[tuple(idx.T)].astype(float)) * 1000)
-            if table_rgb is not None and cams is not None:
-                t.rgb = _sample_colour(t, table_rgb, cams["table"])
-                t.color = colour_name(t.rgb)
+            t = self._describe(emap, idx, solid, table_rgb, cams)
+            if t.kind == "part" and table_rgb is not None and cams is not None:
+                parts = _split_by_colour(emap, idx, t, table_rgb, cams["table"])
+                if len(parts) > 1:  # touching parts of different colours: one thing per colour
+                    found += [self._describe(emap, sub, solid, table_rgb, cams) for sub in parts if len(sub) >= MIN_VOXELS]
+                    continue
             found.append(t)
         found = _absorb_into_boxes(found)
+        _name_pale_boxes(found)
         ok = lambda t: t.sharp_mm <= SHARP_MM and t.sure >= SURE
         self.maybe = [t for t in found if not ok(t)]
         found = [t for t in found if ok(t)]
         self._keep_ids(found)
         self.known = found
         return found
+
+    @staticmethod
+    def _describe(emap, idx, solid, table_rgb, cams) -> Thing:
+        pts = emap.centers(*idx.T)
+        # size and height from the top face: seen from above, its edges sit where they are (sides are seen at
+        # grazing angles and smear outwards: a 10 mm cube measured 16-22 mm across that way)
+        sure = solid[tuple(idx.T)]
+        core = pts[sure] if sure.sum() >= 6 else pts  # confirmed voxels only, when there are enough
+        top_z = np.percentile(core[:, 2], 95)
+        top = core[core[:, 2] > top_z - 0.003]
+        (cx, cy), (w, h), ang = cv2.minAreaRect((top[:, :2] * 1000).astype(np.float32))
+        w, h = w + emap.v * 1000, h + emap.v * 1000  # voxel centres: the surface reaches half a voxel further
+        long_, short = max(w, h), min(w, h)
+        angle = (ang if w >= h else ang + 90) % 180
+        t = Thing(0, np.array([cx, cy]) / 1000, (long_, short), angle,
+                  float((np.median(top[:, 2]) - SURFACE_Z) * 1000 + emap.v * 500), len(idx), float(sure.mean()), pts=pts)
+        t.kind = "box" if short > BOX_MM else "part"
+        t.sharp_mm = float(np.median(emap.sharpest[tuple(idx.T)].astype(float)) * 1000)
+        if table_rgb is not None and cams is not None:
+            t.rgb = _sample_colour(t, table_rgb, cams["table"])
+            t.color = colour_name(t.rgb)
+        return t
 
     def _keep_ids(self, found: list[Thing]) -> None:
         """Nearest earlier thing within MATCH_MM keeps its id (greedy, closest pairs first); the rest get new ids."""
@@ -130,6 +140,32 @@ class Things:
             if i not in used_f:
                 f.id = self.next_id
                 self.next_id += 1
+
+
+def _split_by_colour(emap, idx, t: Thing, img, cam) -> list[np.ndarray]:
+    """A blob whose top shows two or more strong colours (touching parts: a red and a blue cube came out as one
+    64 mm "purple part") split into one voxel set per colour: each voxel's column takes the colour seen above it."""
+    pts = emap.centers(*idx.T)
+    uv = project(cam, pts) * [img.shape[1] / cam["size"][0], img.shape[0] / cam["size"][1]]
+    H, W = img.shape[:2]
+    u, v = np.clip(uv[:, 0].astype(int), 0, W - 1), np.clip(uv[:, 1].astype(int), 0, H - 1)
+    px = img[v, u].astype(np.uint8)
+    hsv = cv2.cvtColor(px[None], cv2.COLOR_RGB2HSV)[0]
+    vivid = hsv[:, 1] > 90
+    if vivid.sum() < 12:
+        return [idx]
+    names = np.array([colour_name(c) if ok else "" for c, ok in zip(px, vivid)])
+    kinds, counts = np.unique(names[vivid], return_counts=True)
+    big = kinds[(counts >= 6) & (counts >= 0.2 * vivid.sum())]
+    if len(big) < 2:
+        return [idx]
+    # every voxel joins the colour of the nearest vivid voxel (in xy): sides and pale pixels follow their top
+    from scipy.spatial import cKDTree
+    keep = np.isin(names, big)
+    tree = cKDTree(pts[keep, :2])
+    _, j = tree.query(pts[:, :2])
+    label = names[keep][j]
+    return [idx[label == k] for k in big]
 
 
 WALL_MM = 25.0  # a "part" this tall inside a box's footprint is a piece of the box's wall (a part in the well sits lower)
@@ -148,6 +184,17 @@ def _absorb_into_boxes(found: list[Thing]) -> list[Thing]:
                 continue
         keep.append(t)
     return keep
+
+
+def _name_pale_boxes(found: list[Thing]) -> None:
+    """Colourless boxes named against each other, not by absolute brightness (shade turns white gray and gray black):
+    of two or more, the brightest is white, the darkest black, any between gray."""
+    pale = [t for t in found if t.kind == "box" and t.color in ("white", "gray", "black")]
+    if len(pale) < 2:
+        return
+    pale.sort(key=lambda t: -sum(t.rgb))
+    for k, t in enumerate(pale):
+        t.color = "white" if k == 0 else "black" if k == len(pale) - 1 else "gray"
 
 
 def _inside(xy, box: Thing, margin_mm: float = 0.0) -> bool:

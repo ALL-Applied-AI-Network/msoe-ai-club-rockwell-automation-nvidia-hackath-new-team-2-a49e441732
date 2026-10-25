@@ -1,0 +1,14 @@
+# The chat app's table: six cubes, and three plain boxes (white, gray, black) that match no cube's colour, so the
+# robot has to give each colour its own box. Spread out.
+instruction: Sort the cubes by color.
+layout: spread
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+  - {kind: cube_10, color: blue, count: 2}
+fixtures:
+  - {kind: box_60, color: white, at: [0.27, -0.24]}
+  - {kind: box_60, color: gray, at: [0.36, -0.24]}
+  - {kind: box_60, color: black, at: [0.45, -0.24]}
+expect: color

@@ -152,8 +152,12 @@ def main() -> None:
                 board.add("hands", msg)
                 self._json({"ok": True, "msg": msg})
             elif self.path == "/map":  # straight to the robot: no agent in between
-                msg = robot.start("map the table")
+                msg = robot.start("map the table", mind="map")
                 board.add("action", f"map the table: {msg}")
+                self._json({"msg": msg})
+            elif self.path == "/sort":
+                msg = robot.start("sort the parts by colour into the boxes", mind="sort")
+                board.add("action", f"sort by colour: {msg}")
                 self._json({"msg": msg})
             elif self.path == "/stop":
                 msg = robot.pause()

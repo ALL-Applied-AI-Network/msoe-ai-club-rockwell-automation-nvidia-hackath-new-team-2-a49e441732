@@ -12,6 +12,7 @@ The minds are in lab/minds/ (v1's sort policy is archived: git checkout v1-sort)
 A trial is a small YAML file in lab/trials/:
     instruction: Sort the cubes by color.
     layout: spread            # spread (apart, flat) | dump (poured from a tube into a pile) | tile (flush rows; cols: N)
+    gap: 0.012                # spread only: least gap between things (m); half: [x, y] half-size of the area (m)
     seed: 0
     objects:
       - {kind: cube_10, color: red, count: 2}
@@ -69,7 +70,8 @@ def build(trial: dict, seed: int) -> SimCell:
         cell = SimCell(fixed(inst), trial.get("instruction", ""), seed, chute=chute)
         cell.dump()
     else:
-        cell = SimCell(fixed(spread_layout(order, rng)), trial.get("instruction", ""), seed)
+        kw = {k: (tuple(trial[k]) if isinstance(trial[k], list) else trial[k]) for k in ("gap", "half") if k in trial}
+        cell = SimCell(fixed(spread_layout(order, rng, **kw)), trial.get("instruction", ""), seed)
         cell.settle(max_s=2.0)
     return cell
 

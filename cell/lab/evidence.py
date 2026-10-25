@@ -30,6 +30,23 @@ SIG0, SIG2 = 0.0015, 0.010        # depth error (m): SIG0 + SIG2 * depth^2 (cali
 W_MAX = 30.0                      # TSDF weight cap (old surfaces can still be overturned)
 
 
+EDGE_SIGMAS = 4.0                 # a pixel whose 3 x 3 neighbourhood spans more depth than this many sensor errors is on
+EDGE_MIN = 0.006                  # a depth edge (at least this much, m): its reading may be a flying pixel, dropped
+
+
+def _drop_edges(D: np.ndarray) -> np.ndarray:
+    """No reading at depth discontinuities: there the sensor reports points between the near and the far surface
+    ("flying pixels"), which fuse into phantom slivers beside box rims and parts. The surfaces on both sides get
+    seen properly from other angles. (Real depth cameras ship the same as an edge filter.)"""
+    from scipy import ndimage
+    valid = D > 0
+    hi = ndimage.maximum_filter(np.where(valid, D, 0), 3)
+    lo = ndimage.minimum_filter(np.where(valid, D, 1e3), 3)
+    span = hi - lo
+    edge = valid & (span > np.maximum(EDGE_MIN, EDGE_SIGMAS * (SIG0 + SIG2 * D * D)))
+    return np.where(edge, 0, D)
+
+
 class EvidenceMap:
     def __init__(self, voxel: float = 0.002, x=(0.15, 0.65), y=(-0.45, 0.45), height: float = 0.12):
         self.v = float(voxel)
@@ -62,7 +79,7 @@ class EvidenceMap:
         joints: for the wrist camera. Returns counts of what this look said."""
         T = cam["T"] if cam["frame"] == "base" else flange_pose(joints) @ cam["T"]
         R, t = T[:3, :3], T[:3, 3]
-        D = np.asarray(depth_mm, np.float32) / 1000.0
+        D = _drop_edges(np.asarray(depth_mm, np.float32) / 1000.0)
         H, W = D.shape
         far = min(max_depth, float(np.percentile(D[D > 0], 99)) + 0.05) if (D > 0).any() else max_depth
         # the voxels inside the camera's pyramid (its bounding box, clipped to the grid)

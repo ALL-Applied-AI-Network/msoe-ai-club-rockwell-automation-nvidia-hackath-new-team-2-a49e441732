@@ -1,0 +1,16 @@
+# Six cubes close together (5 mm apart at least, in a 80 x 100 mm patch), like a careless pour: the fingers (6 mm
+# thick) have little room beside each cube. Plain boxes, as in the chat app.
+instruction: Sort the cubes by color.
+layout: spread
+gap: 0.005
+half: [0.04, 0.05]
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+  - {kind: cube_10, color: blue, count: 2}
+fixtures:
+  - {kind: box_60, color: white, at: [0.27, -0.24]}
+  - {kind: box_60, color: gray, at: [0.36, -0.24]}
+  - {kind: box_60, color: black, at: [0.45, -0.24]}
+expect: color
