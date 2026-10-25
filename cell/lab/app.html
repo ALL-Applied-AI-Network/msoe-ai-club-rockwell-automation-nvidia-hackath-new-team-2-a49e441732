@@ -5,113 +5,102 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Robot</title>
 <style>
-  :root { --bg: #111317; --panel: #191c22; --line: #2a2f38; --text: #e6e8eb; --dim: #8b93a1; --you: #2f6feb;
-          --robot: #232832; --log: #7d8796; --hands: #d29922; --action: #3fb950; }
+  :root { --bg: #111317; --panel: #171a20; --line: #2a2f38; --text: #e6e8eb; --dim: #8b93a1; --accent: #2f6feb;
+          --robot: #232832; --log: #7d8796; --hands: #d29922; --action: #3fb950; --motion: #c9d1d9; }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  body { margin: 0; height: 100vh; background: var(--bg); color: var(--text);
-         font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: grid;
-         grid-template-columns: minmax(340px, 420px) 1fr; }
-  #left { display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0; }
-  header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-  header b { flex: 1; }
-  header .state { color: var(--dim); font-size: 12px; }
-  button { background: #262b34; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px;
-           font: inherit; font-size: 12px; cursor: pointer; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         display: grid; grid-template-columns: minmax(340px, 420px) 1fr; }
+  #side { display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0; height: 100%; }
+  .sec { border-bottom: 1px solid var(--line); padding: 10px 12px; }
+  .sec h4 { margin: 0 0 6px; font-size: 11px; color: var(--dim); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; display: flex; align-items: center; gap: 8px; }
+  .sec h4 .r { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  button { background: #262b34; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer; }
   button:hover { border-color: #4a5260; }
-  #banner { padding: 9px 12px; border-bottom: 1px solid var(--line); background: #151a22; display: flex; flex-direction: column; gap: 3px; }
-  #banner .top { display: flex; align-items: center; gap: 8px; }
-  #banner .phase { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 1px 7px;
-                   border-radius: 10px; background: #2a2f38; color: var(--dim); white-space: nowrap; }
-  #banner .head { font-weight: 600; }
-  #banner .plan { color: var(--dim); font-size: 12px; }
-  #banner .plan:empty { display: none; }
-  #banner.looking .phase, #banner.planning .phase, #banner.working .phase { background: #1f3a66; color: #9cc4ff; }
-  #banner.working .phase::before, #banner.looking .phase::before { content: "● "; animation: pulse 1.2s infinite; }
-  #banner.rethinking .phase { background: #4d3a12; color: #f2cc60; }
-  #banner.needs .phase { background: #5c1f1f; color: #ff9b9b; }
-  #banner.done { background: #13261a; }
-  #banner.done .phase { background: #1f4d2c; color: #7ee2a0; }
-  @keyframes pulse { 50% { opacity: .3; } }
-  #msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-  .m { max-width: 88%; padding: 7px 10px; border-radius: 10px; white-space: pre-wrap; word-wrap: break-word; }
-  .you { align-self: flex-end; background: var(--you); }
-  .robot { align-self: flex-start; background: var(--robot); }
-  .log, .action, .hands, .system { align-self: stretch; max-width: 100%; padding: 1px 2px; font-size: 12px; }
-  .log { color: var(--log); font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
-  .action { color: var(--action); font-style: italic; }
-  .hands { color: var(--hands); }
-  .system { color: var(--dim); text-align: center; }
-  #say { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
-  #say textarea { flex: 1; resize: none; height: 44px; background: var(--panel); color: var(--text); border: 1px solid var(--line);
-                  border-radius: 8px; padding: 8px; font: inherit; }
-  details { border-top: 1px solid var(--line); background: var(--panel); max-height: 45vh; overflow-y: auto; }
-  summary { padding: 8px 12px; cursor: pointer; color: var(--hands); font-weight: 600; }
-  .hp { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 10px; }
-  .hp h4 { margin: 4px 0; font-size: 12px; color: var(--dim); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .big { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .big button { padding: 10px; font-size: 14px; font-weight: 600; }
+  #map { border-color: var(--accent); color: #9cc4ff; }
+  .top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .top .state { color: var(--dim); font-size: 12px; margin-left: auto; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: transparent; color: var(--dim); padding: 3px 8px; }
+  .seg button.on { background: var(--accent); color: #fff; }
   .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  select, input[type=number] { background: #20242c; color: var(--text); border: 1px solid var(--line); border-radius: 5px;
-                               padding: 3px 4px; font: inherit; font-size: 12px; }
-  input[type=number] { width: 46px; }
+  select, input[type=number], input[type=text], input[type=password] { background: #20242c; color: var(--text); border: 1px solid var(--line);
+         border-radius: 5px; padding: 3px 5px; font: inherit; font-size: 12px; }
+  input[type=number] { width: 44px; }
+  input[type=text], input[type=password] { flex: 1; min-width: 0; }
+  #objs { display: flex; flex-direction: column; gap: 3px; max-height: 150px; overflow-y: auto; margin-bottom: 8px; }
   .obj { display: flex; gap: 6px; align-items: center; font-size: 12px; }
   .obj span { flex: 1; }
+  .obj small { color: var(--dim); }
   .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; border: 1px solid #0006; }
+  details.add > summary { cursor: pointer; color: var(--hands); font-size: 12px; }
+  #cup { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+  #actions { flex: 1; min-height: 80px; overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 3px;
+             font: 12px/1.45 ui-monospace, Menlo, monospace; color: var(--motion); border-bottom: 1px solid var(--line); }
+  #actions .a { padding: 2px 0; border-bottom: 1px dashed #222730; white-space: pre-wrap; }
+  #actions .a b { color: var(--dim); font-weight: 400; margin-right: 6px; }
+  #actions .empty { color: var(--dim); font-family: inherit; }
+  #status { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: #151a22; }
+  #status .phase { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 2px 7px; border-radius: 10px;
+                   background: #2a2f38; color: var(--dim); white-space: nowrap; }
+  #status .head { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #status.looking .phase, #status.planning .phase, #status.working .phase { background: #1f3a66; color: #9cc4ff; }
+  #status.rethinking .phase { background: #4d3a12; color: #f2cc60; }
+  #status.needs .phase { background: #5c1f1f; color: #ff9b9b; }
+  #status.done .phase { background: #1f4d2c; color: #7ee2a0; }
+  #convo { max-height: 40vh; overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--line); }
+  .m { max-width: 90%; padding: 6px 9px; border-radius: 10px; white-space: pre-wrap; word-wrap: break-word; font-size: 13px; }
+  .you { align-self: flex-end; background: var(--accent); }
+  .robot { align-self: flex-start; background: var(--robot); }
+  .log, .action, .hands, .system { align-self: stretch; max-width: 100%; padding: 0 2px; font-size: 12px; }
+  .log { color: var(--log); font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  .action { color: var(--action); font-style: italic; } .hands { color: var(--hands); } .system { color: var(--dim); text-align: center; }
+  #chat { display: flex; gap: 6px; padding: 8px 12px; align-items: center; }
+  #chat textarea { flex: 1; resize: none; height: 34px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; font: inherit; }
+  #toggle { width: 30px; height: 30px; border-radius: 50%; padding: 0; position: relative; }
+  #toggle i { position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
   #right { position: relative; min-width: 0; }
   #right iframe { width: 100%; height: 100%; border: 0; display: block; background: #0d0f12; }
-  button.primary { border-color: #2f6feb; color: #9cc4ff; }
-  #chatbox { display: flex; flex-direction: column; min-height: 0; flex: 1; }
-  #chatbox > summary { padding: 6px 12px; cursor: pointer; color: var(--dim); font-size: 12px; border-bottom: 1px solid var(--line); }
-  #chatbox[open] { flex: 1; }
-  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-  .seg button { border: 0; border-radius: 0; background: transparent; color: var(--dim); }
-  .seg button.on { background: #2f6feb; color: #fff; }
-  #realpanel { border-top: 1px solid var(--line); background: var(--panel); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
-  #realpanel input[type=text], #realpanel input[type=password] { background: #20242c; color: var(--text); border: 1px solid var(--line);
-                  border-radius: 5px; padding: 4px 6px; font: inherit; font-size: 12px; flex: 1; min-width: 0; }
-  #realpanel .go { border-color: #3fb950; color: #7ee2a0; }
-  #realpanel .note { color: var(--dim); font-size: 12px; }
-  label { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
 </style>
 </head>
 <body>
-<div id="left">
-  <header>
-    <span class="seg"><button id="m-sim" class="on">Simulator</button><button id="m-real">Real cell</button></span>
-    <b>Robot</b><span class="state" id="state">…</span>
-    <button id="map" class="primary" title="map the table now (no chat needed)">Map the table</button>
-    <button id="stop" title="stop after the current move">Stop</button>
-    <button id="reset" title="everything from scratch: the table, the robot's map, the viewer, the chat">Reset everything</button>
-    <label title="each message holds the arm for ~2 s"><input type="checkbox" id="distract"> distracting</label>
-    <button id="native" title="open the native Rerun viewer on this machine">native viewer</button>
-  </header>
-  <div id="banner" class="waiting"><div class="top"><span class="phase">waiting</span><span class="head">Waiting for a job.</span></div><div class="plan"></div></div>
-  <details id="chatbox" open><summary>Chat and log</summary>
-  <div id="msgs"></div>
-  <div id="realpanel" hidden>
-    <div class="row"><input type="text" id="url" value="https://hackathon.sidclab.org" title="the cell's address"></div>
-    <div class="row"><input type="password" id="token" placeholder="run token (kept in memory only)"><button id="check">Check setup</button></div>
-    <div class="row"><button id="run" class="go" disabled>Run the test</button><span class="note" id="trials">not connected</span></div>
-  </div>
-  <details id="hands">
-    <summary>Joel's hands</summary>
-    <div class="hp">
-      <div>
-        <h4>Pour a cup</h4>
-        <div id="cup"></div>
-        <div class="row"><button id="addrow">+ part</button><button id="pour" style="border-color:var(--hands)">Pour it</button></div>
-      </div>
-      <div>
-        <h4>On the table</h4>
-        <div id="objs"></div>
-      </div>
-      <div>
-        <h4>Put a box down</h4>
-        <div class="row"><select id="boxcolor"></select><button id="addbox">Put it down</button></div>
-      </div>
+<div id="side">
+  <div class="sec">
+    <div class="top">
+      <span class="seg"><button id="m-sim" class="on">Simulator</button><button id="m-real">Real cell</button></span>
+      <span class="state" id="state">…</span>
     </div>
-  </details>
-  <div id="say"><textarea id="text" placeholder="Talk to it… (Enter sends)"></textarea><button id="send">Send</button></div>
-  </details>
+    <div class="big"><button id="reset" title="everything from scratch: the table, the robot's map, the viewer, the chat">Reset</button>
+      <button id="map" title="look around the table until the gaps are filled">Map</button></div>
+  </div>
+
+  <div class="sec" id="scene">
+    <h4>On the table <span class="r" id="count"></span></h4>
+    <div id="objs"></div>
+    <details class="add"><summary>Add things</summary>
+      <div id="cup"></div>
+      <div class="row"><button id="addrow">+ part</button><button id="pour">Pour these</button>
+        <span style="flex:1"></span><select id="boxcolor"></select><button id="addbox">Add a box</button></div>
+    </details>
+  </div>
+
+  <div class="sec" id="realpanel" hidden>
+    <h4>Real cell</h4>
+    <div class="row" style="margin-bottom:6px"><input type="text" id="url" value="https://hackathon.sidclab.org" title="the cell's address"></div>
+    <div class="row" style="margin-bottom:6px"><input type="password" id="token" placeholder="run token (empty: our approved request)"><button id="check">Check setup</button></div>
+    <div class="row"><button id="run" disabled>Run the test</button><span style="color:var(--dim);font-size:12px" id="trials">not connected</span></div>
+  </div>
+
+  <div id="actions"><div class="empty">The arm's moves show up here: from where to where, how it's turned, how long.</div></div>
+
+  <div id="status" class="waiting"><span class="phase">waiting</span><span class="head">Waiting for a job.</span></div>
+  <div id="convo" hidden></div>
+  <div id="chat"><textarea id="text" placeholder="Talk to it… (Enter sends)"></textarea>
+    <button id="toggle" title="show the conversation">💬<i hidden id="unread"></i></button></div>
 </div>
 <div id="right"><iframe id="viewer" title="the robot's mind"></iframe></div>
 <script>
@@ -119,127 +108,101 @@ const KINDS = ["cube_10", "cube_16", "lego_1x2", "lego_2x4", "screw_m6x30", "dow
 const COLORS = ["red", "yellow", "blue", "green", "orange", "purple", "white", "black", "gray", "steel", "gold", "wood", "olive", "tan"];
 const SW = {red:"#c82323",yellow:"#ebc81e",blue:"#2350cd",green:"#2a9d3a",orange:"#e8781e",purple:"#7b3fb5",white:"#eeeeee",
             black:"#222",gray:"#8c8c8c",steel:"#a9adb3",gold:"#d4a72c",wood:"#c8a070",olive:"#6b7b3a",tan:"#d2b48c"};
-const DEFAULT_CUP = [["cube_10","red",2],["cube_10","blue",1],["lego_1x2","yellow",2],["screw_m6x30","steel",2],["dowel","wood",1]];
+const DEFAULT_CUP = [["cube_10","red",2],["cube_10","blue",2],["lego_1x2","yellow",2],["screw_m6x30","steel",1]];
 const $ = id => document.getElementById(id);
 const post = (url, body) => fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})}).then(r => r.json());
 function opts(sel, list, val) { sel.innerHTML = list.map(x => `<option${x === val ? " selected" : ""}>${x}</option>`).join(""); }
+const EMPTY = '<div class="empty">The arm\'s moves show up here: from where to where, how it\'s turned, how long.</div>';
 
-// chat
-const msgs = $("msgs");
-function banner(s) {
-  const b = $("banner");
+// the stream: moves to the actions panel, the status to its line, everything else to the (folded) conversation
+const convo = $("convo"), acts = $("actions");
+let nMoves = 0;
+function atBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 40; }
+function status(s) {
+  const b = $("status");
   b.className = (s.phase || "waiting").split(" ")[0];
   b.querySelector(".phase").textContent = s.phase || "waiting";
   b.querySelector(".head").textContent = s.headline || "";
-  b.querySelector(".plan").textContent = s.plan ? "Plan: " + s.plan : "";
+  b.title = s.plan ? "Plan: " + s.plan : "";
 }
 function show(m) {
-  if (m.who === "reset") { msgs.innerHTML = ""; banner({phase: "waiting", headline: "Waiting for a job.", plan: ""}); return; }
-  if (m.who === "status") { try { banner(JSON.parse(m.text)); } catch (e) {} return; }
-  const d = document.createElement("div");
+  if (m.who === "reset") { convo.innerHTML = ""; nMoves = 0; acts.innerHTML = EMPTY; status({phase: "waiting", headline: "Waiting for a job."}); return; }
+  if (m.who === "status") { try { status(JSON.parse(m.text)); } catch (e) {} return; }
+  if (m.who === "motion") {
+    acts.querySelector(".empty")?.remove();
+    const d = document.createElement("div"), stick = atBottom(acts);
+    d.className = "a"; d.innerHTML = `<b>${++nMoves}</b>`; d.append(m.text);
+    acts.appendChild(d); if (stick) acts.scrollTop = acts.scrollHeight; return;
+  }
+  const d = document.createElement("div"), stick = atBottom(convo);
   d.className = "m " + m.who;
   d.textContent = (m.who === "hands" ? "✋ " : m.who === "action" ? "⚙ " : "") + m.text;
-  const atBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 40;
-  msgs.appendChild(d);
-  if (atBottom) msgs.scrollTop = msgs.scrollHeight;
+  convo.appendChild(d); if (stick) convo.scrollTop = convo.scrollHeight;
+  if (convo.hidden && m.who === "robot") $("unread").hidden = false;
 }
 new EventSource("/events").onmessage = e => show(JSON.parse(e.data));
-function send() {
-  const t = $("text").value.trim();
-  if (!t) return;
-  $("text").value = "";
-  post("/say", {text: t});
-}
-$("send").onclick = send;
+function send() { const t = $("text").value.trim(); if (!t) return; $("text").value = ""; convo.hidden = false; post("/say", {text: t}); }
 $("text").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+$("toggle").onclick = () => { convo.hidden = !convo.hidden; $("unread").hidden = true; if (!convo.hidden) convo.scrollTop = convo.scrollHeight; };
 
-// viewer + settings
+// mode, reset, map
 let mode = "sim";
 function setMode(m) {
   mode = m;
-  $("m-sim").classList.toggle("on", m === "sim");
-  $("m-real").classList.toggle("on", m === "real");
-  $("realpanel").hidden = m !== "real";
-  $("hands").hidden = m !== "sim";
-  $("reset").textContent = m === "sim" ? "Reset everything" : "Clear";
-  $("reset").title = m === "sim" ? "the simulator from scratch: three empty boxes, no job, no rules"
-                                 : "clear the robot's head: no job, no rules, nothing remembered (stays connected)";
+  $("m-sim").classList.toggle("on", m === "sim"); $("m-real").classList.toggle("on", m === "real");
+  $("realpanel").hidden = m !== "real"; $("scene").hidden = m !== "sim";
+  $("reset").textContent = m === "sim" ? "Reset" : "Clear";
 }
-fetch("/config").then(r => r.json()).then(c => { $("viewer").src = c.viewer; $("distract").checked = c.distract; setMode(c.mode); });
+fetch("/config").then(r => r.json()).then(c => { $("viewer").src = c.viewer; setMode(c.mode); });
 $("m-sim").onclick = () => { if (mode !== "sim") post("/mode", {mode: "sim"}).then(() => setMode("sim")); };
-$("m-real").onclick = () => setMode("real");  // connects when you press Check setup
+$("m-real").onclick = () => setMode("real");
 $("reset").onclick = () => post("/reset").then(refresh);
 $("map").onclick = () => post("/map");
-$("stop").onclick = () => post("/stop");
-try { $("chatbox").open = localStorage.getItem("chat") !== "closed"; } catch (e) {}
-$("chatbox").addEventListener("toggle", () => { try { localStorage.setItem("chat", $("chatbox").open ? "open" : "closed"); } catch (e) {} });
 $("check").onclick = () => {
-  $("check").disabled = true;
-  $("trials").textContent = "checking…";
+  $("check").disabled = true; $("trials").textContent = "checking…";
   post("/real/check", {url: $("url").value, token: $("token").value}).then(r => {
-    $("trials").textContent = r.ok === false && r.error ? "couldn't connect" :
-      (r.ready_trial ? `trial ${r.ready_trial} ready` : "connected · waiting for the operator");
+    $("trials").textContent = r.ok === false && r.error ? "couldn't connect" : (r.ready_trial ? `trial ${r.ready_trial} ready` : "connected · waiting for the operator");
     $("run").disabled = !(r.ready_trial || (r.trials || []).some(t => t.status === "running"));
   }).finally(() => { $("check").disabled = false; });
 };
 $("run").onclick = () => { $("run").disabled = true; post("/real/start"); };
-$("distract").onchange = e => post("/distract", {on: e.target.checked});
-$("native").onclick = () => post("/native");
-try { $("hands").open = localStorage.getItem("hands") !== "closed"; } catch (e) {}
-$("hands").addEventListener("toggle", () => { try { localStorage.setItem("hands", $("hands").open ? "open" : "closed"); } catch (e) {} });
 
-// hands: the cup
+// what's on the table (you looking at it: the true positions)
 function cupRow(k, c, n) {
-  const r = document.createElement("div");
-  r.className = "row";
-  r.innerHTML = `<select class="k"></select><select class="c"></select><input type="number" class="n" min="0" max="12" value="${n}"><button class="x">×</button>`;
-  opts(r.querySelector(".k"), KINDS, k);
-  opts(r.querySelector(".c"), COLORS, c);
+  const r = document.createElement("div"); r.className = "row";
+  r.innerHTML = `<select class="k"></select><select class="c"></select><input type="number" class="n" min="0" max="12" value="${n}"><button class="x" title="remove this line">×</button>`;
+  opts(r.querySelector(".k"), KINDS, k); opts(r.querySelector(".c"), COLORS, c);
   r.querySelector(".x").onclick = () => r.remove();
   $("cup").appendChild(r);
 }
 DEFAULT_CUP.forEach(r => cupRow(...r));
 $("addrow").onclick = () => cupRow("cube_10", "red", 1);
 $("pour").onclick = () => {
-  const items = [...$("cup").children].map(r => ({kind: r.querySelector(".k").value, color: r.querySelector(".c").value,
-                                                   count: +r.querySelector(".n").value})).filter(i => i.count > 0);
-  $("pour").disabled = true;
-  post("/hands", {action: "pour", items}).finally(() => { $("pour").disabled = false; refresh(); });
+  const items = [...$("cup").children].map(r => ({kind: r.querySelector(".k").value, color: r.querySelector(".c").value, count: +r.querySelector(".n").value})).filter(i => i.count > 0);
+  $("pour").disabled = true; post("/hands", {action: "pour", items}).finally(() => { $("pour").disabled = false; refresh(); });
 };
 opts($("boxcolor"), COLORS, "white");
 $("addbox").onclick = () => post("/hands", {action: "add_box", color: $("boxcolor").value}).then(refresh);
-
-// hands: what's on the table (this is you looking at it: the true positions)
 function refresh() {
   fetch("/objects").then(r => r.json()).then(d => {
-    $("state").textContent = `${d.state} · robot time ${Math.round(d.t)} s`;
+    $("state").textContent = `${d.state} · ${Math.round(d.t)} s`;
     if (d.mode === "real" && d.trials) {
       const ready = d.trials.find(t => t.status === "ready"), run = d.trials.find(t => t.status === "running");
       $("trials").textContent = run ? `trial ${run.id} running` : ready ? `trial ${ready.id} ready` : "waiting for the operator";
-      $("run").disabled = !(ready || run);
-      $("run").textContent = run && !ready ? "Rejoin the test" : "Run the test";  // a running trial: pick it up again
+      $("run").disabled = !(ready || run); $("run").textContent = run && !ready ? "Rejoin the test" : "Run the test";
     }
-    $("objs").innerHTML = "";
+    $("count").textContent = d.objects.length ? `${d.objects.length} things` : "";
+    $("objs").innerHTML = d.objects.length ? "" : '<span style="color:var(--dim);font-size:12px">Nothing yet: add things below.</span>';
     d.objects.sort((a, b) => (b.box - a.box) || a.name.localeCompare(b.name)).forEach(o => {
-      const r = document.createElement("div");
-      r.className = "obj";
-      r.innerHTML = `<i class="sw" style="background:${SW[o.color] || "#888"}"></i><span>${o.name.replace("_", " ")} <small style="color:var(--dim)">(${o.x}, ${o.y})</small></span>`;
-      const take = document.createElement("button");
-      take.textContent = "take";
-      take.onclick = () => post("/hands", {action: "take", id: o.id}).then(refresh);
-      if (o.box) {
-        const tip = document.createElement("button");
-        tip.textContent = "tip out";
-        tip.onclick = () => post("/hands", {action: "tip", id: o.id}).then(refresh);
-        r.appendChild(tip);
-      }
-      r.appendChild(take);
-      $("objs").appendChild(r);
+      const r = document.createElement("div"); r.className = "obj";
+      r.innerHTML = `<i class="sw" style="background:${SW[o.color] || "#888"}"></i><span>${o.name.replace("_", " ")} <small>(${o.x}, ${o.y})</small></span>`;
+      if (o.box) { const t = document.createElement("button"); t.textContent = "tip out"; t.onclick = () => post("/hands", {action: "tip", id: o.id}).then(refresh); r.appendChild(t); }
+      const x = document.createElement("button"); x.textContent = "take"; x.onclick = () => post("/hands", {action: "take", id: o.id}).then(refresh);
+      r.appendChild(x); $("objs").appendChild(r);
     });
   }).catch(() => {});
 }
-refresh();
-setInterval(refresh, 3000);
+refresh(); setInterval(refresh, 3000);
 </script>
 </body>
 </html>
