@@ -21,6 +21,7 @@ The real API (cell_client.py), same shapes:
 Sim-only extras (lab/isaaccell.py uses them):
     POST /api/v1/sim/reset {"objects": [...], "instruction"}   new trial: these objects at these poses (base frame)
     GET  /api/v1/sim/wait                   blocks until every queued action has played; returns the per-row truth
+    GET  /api/v1/sim/frames                 the per-row truth played so far, without waiting (+ "done")
     GET  /api/v1/sim/truth                  every object's pose now
     POST /api/v1/sim/end                    end the trial (run.py's loop stops)
 Joel's hands (a person changing the table mid-trial; the robot isn't told, it has to notice):
@@ -596,6 +597,11 @@ def handler(cell: Cell):
                             frames, cell.frames = cell.frames, []
                             return {"t": cell.t, "frames": frames}
                     time.sleep(0.01)
+            if path == "sim/frames":  # non-blocking: the rows played since the last call, and whether the queue is done
+                with cell.lock:
+                    done = not cell.rows and not cell.playing and not cell.jobs
+                    frames, cell.frames = cell.frames, []
+                return {"t": cell.t, "frames": frames, "done": done}
             if path == "sim/add":
                 return cell.run_job(cell.add, body["objects"])
             if path == "sim/remove":

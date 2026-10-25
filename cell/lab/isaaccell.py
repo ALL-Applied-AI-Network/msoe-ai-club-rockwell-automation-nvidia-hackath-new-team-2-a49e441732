@@ -178,8 +178,8 @@ class IsaacCell:
         return obs
 
     def play(self, chunk, dt: float = 0.1, on_frame=None, kind: str = "tcp") -> None:
-        """Send the rows (tcp, or joints: [J1..J6 deg, grip]), wait until Isaac has played them, then replay its
-        per-row truth for the viewer and checks."""
+        """Send the rows (tcp, or joints: [J1..J6 deg, grip]) and hand Isaac's per-row truth to on_frame as the rows
+        play, returning when all have played."""
         rows = np.atleast_2d(np.asarray(chunk, float))
         if len(rows) > 100:  # the cell takes at most 100 rows a chunk
             for k in range(0, len(rows), 100):
@@ -189,7 +189,16 @@ class IsaacCell:
             (self.client.act if kind == "joints" else self.client.act_tcp)(rows, dt)
         except RuntimeError as e:
             raise ValueError(str(e)) from e  # like SimCell: a target outside the cell's limits
-        for f in self._get("sim/wait")["frames"]:
+        done = False
+        while not done:  # draw each row as Isaac plays it, so the viewer keeps up (sim/wait only answers at the end)
+            r = self._get("sim/frames")
+            done = r["done"]
+            self._frames(r["frames"], on_frame)
+            if not done:
+                time.sleep(0.08)
+
+    def _frames(self, frames, on_frame) -> None:
+        for f in frames:
             if f.get("fault"):
                 self.faults.append(f["fault"])
                 print(f"[isaac] FAULT: {f['fault']}", flush=True)
