@@ -418,6 +418,13 @@ TIME_OFFSET = 0.0   # added to the robot's clock on the timelines: a Reset moves
 LAST_T = 0.0
 
 
+def sync_time() -> None:
+    """Rerun's clock is per thread: another thread (the ventral stream) logs at the robot thread's latest moment, or its
+    lines have no step and the panels (which follow the step timeline) never show them."""
+    rr.set_time("step", sequence=STEP_OFFSET[0])
+    rr.set_time("sim_time", duration=LAST_T)
+
+
 def set_sim_time(t: float) -> None:
     global LAST_T
     LAST_T = float(t) + TIME_OFFSET

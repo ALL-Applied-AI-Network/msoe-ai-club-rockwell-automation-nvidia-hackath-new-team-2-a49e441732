@@ -88,6 +88,7 @@ TOOLS = [
 
 
 def say(text: str, level: str = "INFO") -> None:
+    viz.sync_time()
     rr.log("ventral", rr.TextLog(text, level=level))
     viz._log("ventral", text, level)
 
@@ -182,14 +183,18 @@ class Ventral(threading.Thread):
             b.post("vouch", f"#{tid}")
             return "vouched: the dorsal stream may move it"
         if name == "request":
-            if a.get("mask"):
+            if a.get("mask") and str(a["mask"]).lstrip("m").isdigit():
                 j = int(str(a["mask"]).lstrip("m"))
                 with b.cond:
                     xy = b.masks[j]["xy"]
                 r = b.request(a["action"], None, a.get("note", ""), xy=xy)
                 say(f"→ dorsal: {a['action'].replace('_', ' ')} where outline {a['mask']} is")
                 return f"queued as request {r.id}, ahead of the dorsal stream's own work"
-            r = b.request(a["action"], int(a["id"]), a.get("note", ""), a.get("expect"), a.get("to"))
+            try:
+                expect = int(a["expect"]) if a.get("expect") not in (None, "") else None
+            except (TypeError, ValueError):
+                expect = None
+            r = b.request(a["action"], int(a["id"]), a.get("note", ""), expect, a.get("to"))
             say(f"→ dorsal: {a['action'].replace('_', ' ')} #{a['id']}" + (f", {a['note']}" if a.get("note") else "")
                 + (f" (I see {a['expect']})" if a.get("expect") else ""))
             return f"queued as request {r.id}, ahead of the dorsal stream's own work"
@@ -238,6 +243,7 @@ class Ventral(threading.Thread):
         ag = agree.compare(things, masks, cam, wh, self.table_px, arm=arm)
         with b.cond:
             b.masks, b.agreement = ag.masks, ag
+        viz.sync_time()
         agree.draw(ag, things, cam)
         counts = ag.case_counts()
         say(f"SAM ({', '.join(prompts)}): {len(ag.masks)} outlines; " + ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in counts.items()), "DEBUG")
