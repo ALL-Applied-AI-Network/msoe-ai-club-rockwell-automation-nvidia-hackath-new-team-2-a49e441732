@@ -254,10 +254,25 @@ def camera_frustum(path_: str, cam: dict, T: np.ndarray) -> None:
     rr.log(path_, rr.Pinhole(image_from_camera=K, resolution=list(cam["size"]), image_plane_distance=0.04))
 
 
+VIEW_W = 960  # pictures go to the viewer at most this wide: full-size 1080p frames (3 cameras, every step) fill Rerun's
+              # send buffer faster than a browser viewer drains it, and then every log call blocks (the app froze)
+
+
+def view_scale(width: int) -> float:
+    """The factor a picture this wide is shrunk by for the viewer (draw overlays on it with the same factor)."""
+    return min(1.0, VIEW_W / width)
+
+
 def images(obs: dict) -> None:
     for c, img in (obs.get("images") or {}).items():
+        f = view_scale(img.shape[1])
+        if f < 1:
+            img = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
         rr.log(f"cams/{c}/rgb", rr.Image(img).compress(jpeg_quality=85))
     for c, d in (obs.get("depth") or {}).items():
+        f = view_scale(d.shape[1])
+        if f < 1:
+            d = cv2.resize(d, None, fx=f, fy=f, interpolation=cv2.INTER_NEAREST)
         rr.log(f"cams/{c}/depth", rr.DepthImage(d, meter=1000.0))
 
 

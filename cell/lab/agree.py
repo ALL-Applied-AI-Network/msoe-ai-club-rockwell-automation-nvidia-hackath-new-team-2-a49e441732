@@ -200,11 +200,15 @@ CASE_COLOUR = {"agree": (60, 200, 90), "split": (240, 70, 60), "merged": (240, 1
 def draw(ag: Agreement, things: list, cam: dict, entity: str = "cams/table/rgb") -> None:
     """On the table camera's picture: each mask filled (its prompt as the label), each segment outlined in the colour
     of its case."""
+    from lab.viz import view_scale
     W, H = ag.image_wh
-    seg = np.zeros((H, W), np.uint16)
+    f = view_scale(W)  # the viewer shows the picture shrunk: the overlays shrink with it
+    w, h = int(round(W * f)), int(round(H * f))
+    seg = np.zeros((h, w), np.uint8)
     info = [rr.AnnotationInfo(id=0, label="", color=(0, 0, 0, 0))]
     for j, m in enumerate(ag.masks):
-        seg[m["mask"]] = j + 1
+        small = cv2.resize(m["mask"].astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+        seg[small] = min(j + 1, 255)
         col = CASE_COLOUR.get(m["case"], (200, 200, 200)) if m["case"] in ("no_segment", "merged") else (90, 140, 255)
         info.append(rr.AnnotationInfo(id=j + 1, label=f"m{j} {m['prompt']} ({m['case'].replace('_', ' ')})", color=(*col, 150)))
     rr.log(f"{entity}/sam", rr.AnnotationContext(info))
@@ -217,7 +221,7 @@ def draw(ag: Agreement, things: list, cam: dict, entity: str = "cams/table/rgb")
         s = silhouette(by_id[r.seg], cam, ag.image_wh).astype(np.uint8)
         cs, _ = cv2.findContours(s, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for k, c in enumerate(cs):
-            p = c[:, 0, :].astype(float)
+            p = c[:, 0, :].astype(float) * f
             strips.append(np.vstack([p, p[:1]]))
             cols.append(CASE_COLOUR[r.case])
             labels.append(f"#{r.seg} {r.case.replace('_', ' ')}" if k == 0 else "")
