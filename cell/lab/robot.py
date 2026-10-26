@@ -277,6 +277,10 @@ class Robot:
         pol.reset()
         if hasattr(pol, "board"):
             pol.board.real = self.mode == "real"
+        else:  # say why the ventral panel stays empty
+            import rerun as rr
+            rr.log("ventral", rr.TextLog(f"No ventral stream in this job: '{self.mind_name}' works from depth alone. "
+                                         "Think + sort runs the LLM + SAM beside it.", level="WARN"))
         self.cell.image_size = tuple(getattr(pol, "IMAGE_SIZE", self.cell.image_size))
         self.cell.instruction = self.full_instruction()
         self.policy, self.state = pol, "working"
