@@ -165,4 +165,6 @@ KINDS: dict[str, Kind] = {k.name: k for k in [
     Kind("bin", bin_box(), "yellow", notes="the cell's 50x50x55 mm bin", tags=["container"]),
     Kind("box_60", bin_box(60, 45, 10), "white", notes="a thick 3D-printed box: 10 mm walls, 40 mm well (sort into it)",
          tags=["container"]),
+    Kind("cup_55", bin_box(55, 45, 3), "blue", notes="the lab's coloured cups as seen in the Oct 24 video: ~55 mm square, "
+         "thin walls, height a guess (measure them)", tags=["container"]),
 ]}

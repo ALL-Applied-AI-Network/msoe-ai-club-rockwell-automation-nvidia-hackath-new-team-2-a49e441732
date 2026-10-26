@@ -25,6 +25,9 @@ from lab.streams import Board, Rule
 from lab.things import _inside
 
 
+COLOURS = ("red", "blue", "yellow", "green", "orange", "purple", "white", "black", "gray", "pink", "brown")
+
+
 def _in_box(t, box) -> bool:
     return _inside(t.xy, box, margin_mm=3)
 
@@ -64,6 +67,10 @@ Your job, in order of value:
    named exception); their rules win. Ids change when things move: put only current part ids in the rule.
 4. Then wait for news (wait). Don't re-check what hasn't changed.
 
+Colours on the board are measured by the dorsal stream from one camera (a small part can read "white" or the wrong
+colour): check them in the picture, and when colour matters, segment with colour words ("red cube", "blue cube") so
+each outline carries its colour, then name the parts by what you see. Never send a part to a cup of another colour
+just because its board colour is odd.
 Be brief: one or two sentences of thought per turn, then tools. Never invent ids; use the ones on the board."""
 
 TOOLS = [
@@ -237,6 +244,13 @@ class Ventral(threading.Thread):
                         f"{len(boxes)} groups (a second attribute, or a kind you merged), use it; if not, say why.")
             if boxes and any(g["to"].lower() == "table" for g in groups) and not user:
                 problems.append("there are boxes: every group goes in one")
+            with b.cond:
+                box_colour = {f"box #{t.id}": t.color for t in b.things.values() if t.kind == "box"}
+            for g in groups:  # "red cubes" -> the blue cup is a slip of the id, not a choice
+                said = [c for c in COLOURS if c in g["name"].lower().split()]
+                cup = box_colour.get(g["to"].lower())
+                if len(said) == 1 and cup in COLOURS and cup != said[0] and not user:
+                    problems.append(f"group '{g['name']}' goes to {g['to']}, which is the {cup} cup: check the box ids")
             if problems:
                 return "not set: " + "; ".join(problems)
             if missing:

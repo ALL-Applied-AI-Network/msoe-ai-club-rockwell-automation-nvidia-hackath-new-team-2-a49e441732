@@ -1,0 +1,23 @@
+# TwoStream v1, first real test (Oct 26): three colored cups, six 10 mm cubes dumped in a loose pile.
+# Positions in mm (x away from the robot, y to its left), as in placement.baseline.yaml.
+# The cubes have no fixed positions: drop all six together, roughly at the pile spot, and leave them where they land.
+# Only the instruction changes between rollouts.
+rollouts:
+  - objects:
+      blue cup: [250, 60]
+      yellow cup: [390, -120]
+      red cup: [390, 160]
+      cube pile (2 red, 2 blue, 2 yellow, dumped): [430, 0]
+    prompt: Sort these into the cups.
+  - objects:
+      blue cup: [250, 60]
+      yellow cup: [390, -120]
+      red cup: [390, 160]
+      cube pile (2 red, 2 blue, 2 yellow, dumped): [430, 0]
+    prompt: Sort the cubes by color.
+  - objects:
+      blue cup: [250, 60]
+      yellow cup: [390, -120]
+      red cup: [390, 160]
+      cube pile (2 red, 2 blue, 2 yellow, dumped): [430, 0]
+    prompt: Put each cube in the cup that matches it.

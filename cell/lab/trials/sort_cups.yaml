@@ -1,0 +1,14 @@
+# The lab as of Oct 24: three thin-walled coloured cups (sizes estimated from the table camera video; measure them)
+# and a dumped pile of six 10 mm cubes. Does the perception find the cups, and sort into them?
+instruction: Sort these into the cups.
+layout: dump
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+  - {kind: cube_10, color: blue, count: 2}
+fixtures:
+  - {kind: cup_55, color: blue, at: [0.25, 0.06]}
+  - {kind: cup_55, color: yellow, at: [0.39, -0.12]}
+  - {kind: cup_55, color: red, at: [0.39, 0.16]}
+expect: color

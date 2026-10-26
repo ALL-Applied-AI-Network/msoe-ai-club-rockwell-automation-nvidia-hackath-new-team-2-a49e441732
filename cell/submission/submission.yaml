@@ -2,10 +2,10 @@
 
 team: Her Majesty's Magical Severed Homunculus Arm
 contact: Joel Roberts, rober687@uwm.edu
-policy: TalkSort v1               # Give your policy a name (e.g., GraspV1)
+policy: TwoStream v1              # Give your policy a name (e.g., GraspV1)
 
 # Choose the closest model type. This does not affect scoring.
-model_type: TAMP + FMs   # VLMs decide what things are, the rule and the boxes; scripted grasp and rake moves execute
+model_type: TAMP + FMs   # an LLM + SAM 3.1 decide what things are and the sort rule; depth mapping, grasp and rake planning move the arm
 # VA          Images -> actions (ACT, Diffusion Policy)
 # VLA         Images + instructions -> actions (NVIDIA GR00T)
 # WAM         Predicts future states to guide robot actions
@@ -15,23 +15,23 @@ model_type: TAMP + FMs   # VLMs decide what things are, the rule and the boxes; 
 
 # --- Task ---
 task_id: sort-objects              # Short task name ending with your team letter (we don't know ours)
-task: Sort the objects on the table into the three colored boxes, following the operator's spoken instructions.
+task: Sort a dumped pile of small parts into the colored cups, working out what each part is and which cup it goes in.
                                   # Describe your task in one short sentence
 
 # --- Test Setup ---
 # Tell us how to prepare the workspace for each rollout.
 # Objects and layout can stay the same or change between rollouts.
 
-objects: same                     # six 10 mm cubes (2 red, 2 blue, 2 yellow), 2 screws, 1 hex key
+objects: same                     # six 10 mm cubes (2 red, 2 blue, 2 yellow) and the three colored cups (blue, yellow, red)
 # same: Use the same set of objects for every rollout.
 # different: May use different objects across rollouts.
 
-layout: same                      # dumped in a loose pile mid-table; the three boxes where they stand
+layout: different                 # cubes dumped in a loose pile mid-table (no fixed positions); cups anywhere reachable, apart
 # same: Place objects in the same positions for every rollout.
 # different: May change object positions across rollouts.
 
 # --- Evaluation ---
-rollouts: 3                       # Number of attempts in this test
+rollouts: 2                       # Number of attempts in this test
                                   # Each attempt is scored success or failure
 
 # --- Hardware ---

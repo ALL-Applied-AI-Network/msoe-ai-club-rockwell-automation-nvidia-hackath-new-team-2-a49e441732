@@ -32,7 +32,8 @@ from lab.things import _inside
 PUBLISH_EVERY = 4      # looks between updates of the board while mapping
 IDLE_ROWS = 20         # 2 s of standing still while the ventral stream thinks
 IDLE_MAX_S = 240.0     # nothing to do and no word from the ventral stream for this long (wall clock): stop
-STALE_M = 0.05         # after a pick or a rake, names and rule places this close to where the arm worked are dropped
+STALE_M = 0.05         # after a break-up or a rake, names and rule places this close to where the arm worked are dropped
+PICK_STALE_M = 0.015   # ... after a plain pick: only the spot it lifted from (5 cm emptied the whole rule in a pile)
 CLEAR_MM = 14.0        # a free spot: no evidence of anything within this of its centre
 GROUP_GAP_MM = 22.0    # things in one table group, centre to centre
 RAKE_ABOVE_MM = 3.0
@@ -114,6 +115,16 @@ class TwoStreamMind(SorterMind):
                 t, dest = job
                 obs = yield from self._put(t, dest, obs)
                 continue
+            unsure = [t for t in self.things.maybe if t.kind == "part" and self._dest_of(t.id) is not None
+                      and not self._is_placed(t) and not self._in_box(t) and not self._given_up(t)]
+            if unsure:  # the ventral stream gave it a cup, but depth hasn't confirmed it yet: two close looks
+                t = unsure[0]
+                self.misses.append(np.asarray(t.xy))  # so a part that never confirms doesn't loop forever
+                self._say(f"#{t.id} has a destination but isn't confirmed yet: looking closer.")
+                obs = yield from self._look_twice(t.xy, obs)
+                self._refresh()
+                self._publish(obs, "skill_done", f"looked closer at #{t.id}")
+                continue
             if self._finished():
                 self._say("Done: every thing the rule names is where it goes.")
                 self.board.post("done", "the rule is carried out")
@@ -122,6 +133,13 @@ class TwoStreamMind(SorterMind):
                 self.idle_since = time.time()
                 waiting = [t for t in self.things.known if t.kind == "part" and not self._is_placed(t) and not self._in_box(t)
                            and not self._given_up(t)]
+                ag = self.board.agreement
+                cases = {r.seg: r.case for r in ag.rows} if ag else {}
+                self._say(f"Waiting on the ventral stream: {len(waiting)} part(s) I can't move yet: "
+                          + "; ".join(f"#{t.id} dest={self._dest_of(t.id)} streams={cases.get(t.id)} "
+                                      f"vouched={t.id in self.board.vouched}" for t in waiting)
+                          + f". Rule ids: {[g['ids'] for g in self.board.rule.groups] if self.board.rule else None}; "
+                          f"boxes {sorted(self.boxes)}")
                 self.board.post("idle", f"{len(waiting)} part(s) on the table I can't move yet: "
                                 + ", ".join(f"#{t.id}" + (" (no destination in the rule)" if self._dest_of(t.id) is None else " (streams don't agree on it yet: segment again)")
                                             for t in waiting))
@@ -470,7 +488,7 @@ class TwoStreamMind(SorterMind):
         if box is None:
             obs = yield from self._look_twice(place, obs)
         self._refresh()
-        self.board.forget_near((g.x, g.y), STALE_M)
+        self.board.forget_near((g.x, g.y), PICK_STALE_M)  # a clean pick changes only the spot it lifted from
         # still there: a part where it was, standing as tall as it did (a touching neighbour is lower or elsewhere)
         still = [x for x in self.things.known if x.kind == "part" and np.linalg.norm(x.xy - t.xy) < 0.006
                  and x.top_mm >= 0.75 * t.top_mm]
