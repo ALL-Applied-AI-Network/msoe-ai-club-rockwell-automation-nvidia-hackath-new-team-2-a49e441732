@@ -485,6 +485,9 @@ class TwoStreamMind(SorterMind):
                 self._say(f"#{t.id}: still there after the pick.")
         else:
             self.picks["verified"] += 1
+            if box is not None:
+                with self.board.cond:
+                    self.board.contents.setdefault(box.id, []).append(label)
         self._publish(obs, "skill_done", f"put #{t.id} ({label}) in {where}" + (" (it didn't come up)" if still else ""))
         if request:
             self.board.finish(request, "done", f"put in {where}")

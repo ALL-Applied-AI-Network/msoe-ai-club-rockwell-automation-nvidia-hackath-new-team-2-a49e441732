@@ -48,7 +48,8 @@ class Board:
         self.masks: list = []
         self.agreement = None
         self.labels: dict = {}        # thing id -> what the ventral stream calls it
-        self.vouched: set = set()     # ids the ventral stream calls one thing by eye (SAM wouldn't outline them)
+        self.vouched: set = set()
+        self.contents: dict = {}      # box id -> what went in it (names), as the dorsal stream put them     # ids the ventral stream calls one thing by eye (SAM wouldn't outline them)
         self.rule: Rule | None = None
         self.user_rules: list[str] = []
         self.requests: list[Request] = []

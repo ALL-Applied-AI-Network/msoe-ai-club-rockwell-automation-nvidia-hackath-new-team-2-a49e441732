@@ -22,6 +22,11 @@ import rerun as rr
 
 from lab import agree, sam, viz, vlm
 from lab.streams import Board, Rule
+from lab.things import _inside
+
+
+def _in_box(t, box) -> bool:
+    return _inside(t.xy, box, margin_mm=3)
 
 MODEL = os.getenv("VENTRAL_MODEL") or os.getenv("CHAT_MODEL") or "openrouter/openai/gpt-6-luna"
 DORSAL_NEWS = ("started", "map_progress", "map_done", "skill_done", "request_done", "request_refused", "idle", "done",
@@ -50,9 +55,13 @@ Your job, in order of value:
    ("blocks together, bolts and pins together") and refine it as you learn; the dorsal stream only moves things that
    have agreed segments (one 3D segment, one outline, from your latest segment call) and a destination in the rule:
    after things move, call segment again so the moved and new pieces can agree. Destinations: a box by its id from the board's box
-   list ("box #7"), or "table" (a tidy group on the table, next to the rule's other table groups). When there are
-   boxes, use them: one kind per box; "table" only for kinds left over when the boxes run out. Follow what the person
-   asked; their rules win. Ids change when things move: put only current part ids in the rule.
+   list ("box #7"), or "table" (a tidy group on the table, next to the rule's other table groups).
+   THE BOXES DECIDE THE NUMBER OF GROUPS: make exactly as many groups as there are boxes (fewer only if there are
+   fewer parts than boxes), one group per box, and give every part on the table a box. More kinds than boxes: merge
+   the most alike kinds (say which and why). Fewer kinds than boxes: split a kind by colour or size. Decide the
+   groups once, for the whole table; what's already in a box is that box's group: send more of the same kind there. "table" only when
+   there are no boxes, or the person asks for it. The person's words decide what the groups are (colour, kind, a
+   named exception); their rules win. Ids change when things move: put only current part ids in the rule.
 4. Then wait for news (wait). Don't re-check what hasn't changed.
 
 Be brief: one or two sentences of thought per turn, then tools. Never invent ids; use the ones on the board."""
@@ -211,9 +220,33 @@ class Ventral(threading.Thread):
             unknown = sorted({i for g in groups for i in g["ids"]} - parts)
             if unknown:
                 return f"not set: no part with id {', '.join('#' + str(i) for i in unknown)} on the board (boxes can't be sorted)"
+            used = {g["to"].lower() for g in groups if g["to"].lower() != "table"}
+            with b.cond:
+                used |= {f"box #{i}" for i, c in b.contents.items() if c}  # a box with things in it is a group already
+            with b.cond:
+                on_table = {t.id for t in b.things.values() if t.kind != "box" and t.id in b.known_ids
+                            and not any(_in_box(t, x) for x in b.things.values() if x.kind == "box")}
+                user = list(b.user_rules)
+            missing = sorted(on_table - {i for g in groups for i in g["ids"]})
+            problems = []
+            # a partial rule is fine while parts are still unknown; a complete one must use every box
+            warn = ""
+            if boxes and not missing and len(used) < min(len(boxes), len(on_table)) and not user:
+                # a nudge, not a refusal: forcing a split made it carve one kind in two by size to fill a box
+                warn = (f" Note: {len(boxes)} boxes and the rule fills {len(used)}. If there's a natural way to make "
+                        f"{len(boxes)} groups (a second attribute, or a kind you merged), use it; if not, say why.")
+            if boxes and any(g["to"].lower() == "table" for g in groups) and not user:
+                problems.append("there are boxes: every group goes in one")
+            if problems:
+                return "not set: " + "; ".join(problems)
+            if missing:
+                note = (f" Parts with no destination yet: {', '.join('#' + str(i) for i in missing)} "
+                        f"(fine while they're unidentified or disagreeing; add them when you know them).")
+            else:
+                note = ""
             b.set_rule(Rule(a["text"], groups))
             say(f"Sort rule: {a['text']} — " + "; ".join(f"{g['name']} {['#' + str(i) for i in g['ids']]} → {g['to']}" for g in groups))
-            return "rule set"
+            return "rule set." + note + warn
         if name == "wait":
             say(f"(waiting: {a.get('why', '')})", "DEBUG")
             return "ok"
@@ -268,8 +301,12 @@ class Ventral(threading.Thread):
                         f"{t.size_mm[0]:.0f} x {t.size_mm[1]:.0f} mm, {t.top_mm:.0f} mm tall, at ({t.xy[0] * 1000:.0f}, {t.xy[1] * 1000:.0f}) mm"
                         + (f", named '{t.label}'" if getattr(t, "label", None) else "")
                         + (f", streams: {cases[t.id]}" if t.id in cases else ", streams: not compared since it last changed"))
+        with b.cond:
+            contents = {i: list(c) for i, c in b.contents.items()}
         out = ("Boxes (the only boxes; use exactly these ids): "
-               + (", ".join(f"box #{t.id} ({t.color}, at ({t.xy[0] * 1000:.0f}, {t.xy[1] * 1000:.0f}) mm)" for t in boxes) or "none found yet")
+               + (", ".join(f"box #{t.id} ({t.color}, at ({t.xy[0] * 1000:.0f}, {t.xy[1] * 1000:.0f}) mm)"
+                            + (f" already holds: {', '.join(contents[t.id])}" if contents.get(t.id) else " empty")
+                            for t in boxes) or "none found yet")
                + "\nParts on the board:\n" + ("\n".join(rows) or "(none yet: still mapping)"))
         out += f"\nSort rule: {rule.text if rule else 'none yet'}"
         if user:
