@@ -186,7 +186,7 @@ class TwoStreamMind(SorterMind):
             if t.kind != "part" or t.id in self.failed or self._is_placed(t) or self._in_box(t) or self._given_up(t):
                 continue
             dest = self._dest_of(t.id)
-            if dest is None or cases.get(t.id) != "agree":
+            if dest is None or (cases.get(t.id) != "agree" and t.id not in self.board.vouched):
                 continue  # no destination yet, or the streams don't (yet) agree it's one thing: wait
             return t, dest
         return None

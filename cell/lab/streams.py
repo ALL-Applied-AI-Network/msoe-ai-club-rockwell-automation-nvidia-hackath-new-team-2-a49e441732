@@ -48,6 +48,7 @@ class Board:
         self.masks: list = []
         self.agreement = None
         self.labels: dict = {}        # thing id -> what the ventral stream calls it
+        self.vouched: set = set()     # ids the ventral stream calls one thing by eye (SAM wouldn't outline them)
         self.rule: Rule | None = None
         self.user_rules: list[str] = []
         self.requests: list[Request] = []
@@ -103,6 +104,7 @@ class Board:
             ids = [i for i, t in self.things.items() if np.linalg.norm(np.asarray(t.xy) - np.asarray(xy)) < radius]
             for i in ids:
                 self.labels.pop(i, None)
+                self.vouched.discard(i)
                 if i in self.things:
                     self.things[i].label = None
             if self.rule is not None:

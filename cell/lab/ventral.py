@@ -37,6 +37,7 @@ a few words ("lego", "screw", "cube") and it outlines every match. Outlines are 
   agree: one outline on one segment          split: several outlines on one segment (it's several things)
   merged: one outline over two segments       no_mask: a segment nothing outlined
   no_segment: an outline with no 3D segment under it (too flat for depth so far, or not there)
+If SAM won't outline a part you can plainly see as one object after two or three prompts, vouch for it.
 SAM is literal about words: try a few short, plain, common words, singular; one prompt per kind of object. "lego"
 finds bricks where "lego brick" may not. Re-run segment after things move (old outlines go stale).
 
@@ -63,6 +64,8 @@ TOOLS = [
     {"type": "function", "function": {"name": "name", "description": "Say what a thing is (sticks to its id).",
      "parameters": {"type": "object", "properties": {"id": {"type": "integer"}, "name": {"type": "string", "description": "e.g. 'red cube', 'screw', 'yellow lego 1x2'"}},
                     "required": ["id", "name"]}}},
+    {"type": "function", "function": {"name": "vouch", "description": "When SAM won't outline a thing you can plainly see in the picture as ONE object (and the board has it as one confirmed part): say so, and the dorsal stream treats it as agreed.",
+     "parameters": {"type": "object", "properties": {"id": {"type": "integer"}, "why": {"type": "string"}}, "required": ["id", "why"]}}},
     {"type": "function", "function": {"name": "request", "description": "Ask the dorsal stream to do something about one thing; it goes ahead of its own work.",
      "parameters": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["break_up", "look_closer", "put_away"]},
@@ -169,6 +172,15 @@ class Ventral(threading.Thread):
             b.name(int(a["id"]), a["name"])
             say(f"#{a['id']} is a {a['name']}.", "DEBUG")
             return "named"
+        if name == "vouch":
+            tid = int(a["id"])
+            with b.cond:
+                if tid not in b.known_ids:
+                    return f"not vouched: #{tid} isn't a confirmed part on the board"
+                b.vouched.add(tid)
+            say(f"#{tid}: SAM won't outline it, but it's plainly one thing ({a.get('why', '')}).")
+            b.post("vouch", f"#{tid}")
+            return "vouched: the dorsal stream may move it"
         if name == "request":
             if a.get("mask"):
                 j = int(str(a["mask"]).lstrip("m"))
