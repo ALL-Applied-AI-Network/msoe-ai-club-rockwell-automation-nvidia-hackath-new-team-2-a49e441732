@@ -275,6 +275,8 @@ class Robot:
         self.parked = None
         pol = MINDS[self.mind_name](instruction=self.full_instruction())
         pol.reset()
+        if hasattr(pol, "board"):
+            pol.board.real = self.mode == "real"
         self.cell.image_size = tuple(getattr(pol, "IMAGE_SIZE", self.cell.image_size))
         self.cell.instruction = self.full_instruction()
         self.policy, self.state = pol, "working"

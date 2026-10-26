@@ -56,6 +56,7 @@ class Board:
         self._seq = itertools.count(1)
         self._rid = itertools.count(1)
         self.stopped = False
+        self.real = False             # the real cell: SAM stays off unless SAM_REAL=1 (lab images to Meta: the team's call)
 
     # ------------------------------------------------------------ news
 

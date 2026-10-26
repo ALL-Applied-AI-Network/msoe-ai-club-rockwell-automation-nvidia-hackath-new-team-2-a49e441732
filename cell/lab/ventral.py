@@ -222,6 +222,8 @@ class Ventral(threading.Thread):
             return "no picture yet"
         if not sam.configured():
             return "SAM isn't configured (no SAM3_API_KEY)"
+        if b.real and os.getenv("SAM_REAL") != "1":
+            return "SAM is off on the real cell (its pictures don't go to Meta unless the team turns it on): name and vouch by eye"
         cam = self.cams["table"]
         wh = (img.shape[1], img.shape[0])
         if self.table_px is None or self.table_px_wh != wh:
