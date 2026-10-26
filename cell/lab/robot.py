@@ -84,6 +84,9 @@ class Robot:
         with self.lock:
             self.rules.append(rule)
             pol = self.policy
+        if pol is not None and hasattr(pol, "board"):  # two streams: the ventral stream reads it and redoes the rule
+            pol.board.add_user_rule(rule)
+            return "rule passed to the ventral stream; it will redo the sort rule"
         if pol is not None and hasattr(pol, "director"):  # a mind with a planner replans with it before the next move
             pol.instruction = self.full_instruction()
             pol.director.instruction = pol.instruction
@@ -112,6 +115,9 @@ class Robot:
     def _stop_now(self) -> None:
         """Drop the job; wait until the robot thread has let go of the cell."""
         with self.lock:
+            for pol in (self.policy, self.parked):
+                if hasattr(pol, "stop"):  # a mind with a thread of its own (the ventral stream)
+                    pol.stop()
             self.policy, self.pending = None, None
         with self.cell_lock:
             pass
@@ -263,6 +269,9 @@ class Robot:
                 time.sleep(0.2)
 
     def _new_policy(self) -> None:
+        for pol in (self.policy, self.parked):
+            if hasattr(pol, "stop"):
+                pol.stop()
         self.parked = None
         pol = MINDS[self.mind_name](instruction=self.full_instruction())
         pol.reset()

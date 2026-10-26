@@ -40,10 +40,11 @@ def blueprint() -> rrb.Blueprint:
             rrb.Horizontal(
                 rrb.Spatial3DView(name="World (truth)", origin="truth"),
                 rrb.Spatial3DView(name="Robot's mind", origin="mind"),
-                rrb.Vertical(rrb.TextDocumentView(name="what you're looking at", origin="legend"),
-                             rrb.Tabs(rrb.TextDocumentView(name="objects", origin="roster"),
-                                      rrb.TextLogView(name="VLM thinking", origin="vlm")),
-                             rrb.TextLogView(name="narration", origin="narration"), row_shares=[3, 2, 2]),
+                rrb.Vertical(rrb.Tabs(rrb.TextDocumentView(name="what you're looking at", origin="legend"),
+                                      rrb.TextDocumentView(name="the board", origin="board"),
+                                      rrb.TextDocumentView(name="objects", origin="roster")),
+                             rrb.Horizontal(rrb.TextLogView(name="ventral (LLM + SAM)", origin="ventral"),
+                                            rrb.TextLogView(name="dorsal (depth + arm)", origin="narration")), row_shares=[2, 3]),
                 column_shares=[3, 3, 2],
             ),
             rrb.Horizontal(*raw),
@@ -70,12 +71,14 @@ def app_blueprint() -> rrb.Blueprint:
                 row_shares=[3, 2],
             ),
             rrb.Vertical(
-                rrb.TextDocumentView(name="what you're looking at", origin="legend"),
-                rrb.Tabs(rrb.TextLogView(name="log", origin="/", contents=["/vlm", "/narration"]),
+                rrb.Tabs(rrb.TextDocumentView(name="what you're looking at", origin="legend"),
+                         rrb.TextDocumentView(name="the board", origin="board"),
                          rrb.TextDocumentView(name="objects", origin="roster"), active_tab=0),
-                row_shares=[3, 2],
+                rrb.Horizontal(rrb.TextLogView(name="ventral: what things are (LLM + SAM)", origin="ventral"),
+                               rrb.TextLogView(name="dorsal: where, and moving (depth + arm)", origin="/", contents=["/vlm", "/narration"])),
+                row_shares=[2, 3],
             ),
-            column_shares=[3, 1],
+            column_shares=[3, 2],
         ),
         rrb.BlueprintPanel(state="expanded"),   # the layers, with eye icons
         rrb.SelectionPanel(state="collapsed"),  # opens on a click: a point's numbers
@@ -141,7 +144,7 @@ def clear_scene() -> None:
     rr.set_time("sim_time", duration=TIME_OFFSET)
     rr.set_time("step", sequence=STEP_OFFSET[0] + 1)
     STEP_OFFSET[0] += 1
-    for path in ("mind", "truth", "cams", "evidence_top", "heightmap", "vlm_crop", "narration", "vlm", "legend"):
+    for path in ("mind", "truth", "cams", "evidence_top", "heightmap", "vlm_crop", "narration", "vlm", "legend", "board", "ventral"):
         rr.log(path, rr.Clear(recursive=True))
 
 

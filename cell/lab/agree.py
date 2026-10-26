@@ -103,6 +103,21 @@ def focus(things: list, cam: dict, image_wh, margin_m: float = 0.03, target_px: 
     return (int(x0), int(y0), int(x1), int(y1)), float(np.clip(target_px / max(x1 - x0, y1 - y0, 1), 1, 6))
 
 
+def arm_mask(q, cam: dict, image_wh) -> np.ndarray:
+    """Where the arm is in the table camera's picture (its capsules, from the arm model): masks there are the arm."""
+    from lab import armcheck
+    W, H = image_wh
+    m = np.zeros((H, W), np.uint8)
+    T = np.linalg.inv(cam["T"])
+    for name, pts, r, _ in armcheck.shapes(q, 0.0):
+        uv = project(cam, pts) * [W / cam["size"][0], H / cam["size"][1]]
+        z = (pts @ T[:3, :3].T + T[:3, 3])[:, 2]
+        for (u, v), d in zip(uv, z):
+            if d > 0.05:
+                cv2.circle(m, (int(u), int(v)), max(2, int(1.2 * r * cam["fx"] * W / cam["size"][0] / d)), 1, -1)
+    return m.astype(bool)
+
+
 def silhouette(t, cam: dict, image_wh) -> np.ndarray:
     """Where segment t falls in the picture: its voxels projected, grown by a voxel's width, holes filled."""
     W, H = image_wh
@@ -116,9 +131,15 @@ def silhouette(t, cam: dict, image_wh) -> np.ndarray:
     return ndimage.binary_fill_holes(m)
 
 
-def compare(things: list, masks: list, cam: dict, image_wh, table_px: TablePixels | None = None) -> Agreement:
-    """things: lab.things.Thing (known and maybe); masks: lab.sam.segment results on the same picture (same size)."""
+def compare(things: list, masks: list, cam: dict, image_wh, table_px: TablePixels | None = None,
+            arm: np.ndarray | None = None) -> Agreement:
+    """things: lab.things.Thing (known and maybe); masks: lab.sam.segment results on the same picture (same size);
+    arm: where the arm is in the picture (arm_mask): masks mostly on it are dropped."""
+    if arm is not None:
+        masks = [m for m in masks if (m["mask"] & arm).sum() < 0.5 * max(m["mask"].sum(), 1)]
     masks = _dedupe(masks)
+    box_sil = [silhouette(t, cam, image_wh) for t in things if t.kind == "box"]
+    things = [t for t in things if t.kind != "box"]  # boxes are found by their size: what's in question is the parts
     sil = [silhouette(t, cam, image_wh) for t in things]
     areas = np.array([s.sum() for s in sil], float)
     rows = [Row(t.id, t.kind, t.name) for t in things]
@@ -130,6 +151,9 @@ def compare(things: list, masks: list, cam: dict, image_wh, table_px: TablePixel
         v, u = np.nonzero(m["mask"])
         m["xy"] = table_px(float(u.mean()), float(v.mean())) if len(u) else np.zeros(2)
         m["seg"], m["case"] = None, "no_segment"
+        if any((b & m["mask"]).sum() > OWN * a for b in box_sil):
+            m["case"] = "box"  # a box, or something already in one
+            continue
         if (cover > OWN).sum() >= 2:                      # covers most of two segments: SAM joined them
             m["case"] = "merged"
             for i in np.nonzero(cover > OWN)[0]:
@@ -188,6 +212,8 @@ def draw(ag: Agreement, things: list, cam: dict, entity: str = "cams/table/rgb")
     strips, cols, labels = [], [], []
     by_id = {t.id: t for t in things}
     for r in ag.rows:
+        if r.seg not in by_id:
+            continue
         s = silhouette(by_id[r.seg], cam, ag.image_wh).astype(np.uint8)
         cs, _ = cv2.findContours(s, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for k, c in enumerate(cs):

@@ -137,6 +137,7 @@ def run(name: str, seed: int | None = None, mind: str = "map", view: bool = True
     viz.start(f"{name} (seed {seed}, {mind})", save_to=rec.dir / "replay.rrd", spawn=view)
     m = MINDS[mind](instruction=trial.get("instruction", ""))
     m.reset()
+    max_steps = max(max_steps, getattr(m, "MAX_STEPS", 0))  # a mind that waits on another (the ventral stream) idles in steps
     cell.image_size = tuple(getattr(m, "IMAGE_SIZE", cell.image_size))
     viz.truth_setup(cell)
     anim = viz.Animator(cell)
@@ -154,6 +155,8 @@ def run(name: str, seed: int | None = None, mind: str = "map", view: bool = True
             break
         P.send(cell, chunk, on_frame=anim)
         obs = cell.observe()
+    if hasattr(m, "stop"):
+        m.stop()
     score = {"robot_s": round(cell.t), "wall_s": round(time.time() - t0)}
     if hasattr(m, "score"):
         score |= m.score(cell.object_meshes())

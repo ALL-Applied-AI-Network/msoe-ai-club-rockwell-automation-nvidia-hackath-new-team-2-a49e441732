@@ -159,6 +159,10 @@ def main() -> None:
                 msg = robot.start("sort the parts by colour into the boxes", mind="sort")
                 board.add("action", f"sort by colour: {msg}")
                 self._json({"msg": msg})
+            elif self.path == "/streams":
+                msg = robot.start("sort these", mind="streams")
+                board.add("action", f"think + sort (two streams): {msg}")
+                self._json({"msg": msg})
             elif self.path == "/stop":
                 msg = robot.pause()
                 board.add("action", f"stop: {msg}")

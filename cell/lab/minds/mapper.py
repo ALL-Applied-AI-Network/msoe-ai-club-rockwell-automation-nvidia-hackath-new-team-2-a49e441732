@@ -102,6 +102,7 @@ class MapperMind:
                 viz.narrate(f"That look should have seen {len(v['expected'])} gap voxels and {missed} are still unknown: "
                             f"marking them (twice missed = not reachable from here).", level="DEBUG")
             stall = stall + 1 if (gained < 200 and not nearby) else 0
+            obs = yield from self._between_looks(obs)  # a mind built on this one may have something more urgent
             if stall >= 3:
                 viz.narrate("Three looks in a row added almost nothing. Done looking.")
                 break
@@ -130,6 +131,11 @@ class MapperMind:
         self.version += 1
 
     JOB = "mapping"
+
+    def _between_looks(self, obs):
+        """Called after every look while mapping; a subclass may move in here (it returns the latest obs)."""
+        return obs
+        yield  # a generator, so `yield from` works
 
     def _draw(self) -> None:
         """The whole belief, layer by layer (lab.mindview), the legend, and the top view."""
