@@ -258,6 +258,9 @@ VIEW_W = 960  # pictures go to the viewer at most this wide: full-size 1080p fra
               # send buffer faster than a browser viewer drains it, and then every log call blocks (the app froze)
 
 
+DEPTH_VIEW_W = 480
+
+
 def view_scale(width: int) -> float:
     """The factor a picture this wide is shrunk by for the viewer (draw overlays on it with the same factor)."""
     return min(1.0, VIEW_W / width)
@@ -270,7 +273,7 @@ def images(obs: dict) -> None:
             img = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
         rr.log(f"cams/{c}/rgb", rr.Image(img).compress(jpeg_quality=85))
     for c, d in (obs.get("depth") or {}).items():
-        f = view_scale(d.shape[1])
+        f = min(1.0, DEPTH_VIEW_W / d.shape[1])  # raw 16-bit, uncompressed: the biggest thing sent, and only glanced at
         if f < 1:
             d = cv2.resize(d, None, fx=f, fy=f, interpolation=cv2.INTER_NEAREST)
         rr.log(f"cams/{c}/depth", rr.DepthImage(d, meter=1000.0))
