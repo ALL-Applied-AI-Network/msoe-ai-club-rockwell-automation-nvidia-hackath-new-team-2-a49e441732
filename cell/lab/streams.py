@@ -57,6 +57,9 @@ class Board:
         self._seq = itertools.count(1)
         self._rid = itertools.count(1)
         self.stopped = False
+        self.mode = "segments"        # "focus": things are measured objects; segment() finds regions to look at
+        self.regions = None           # focus: [{"xy", "prompt", "area_px"}] from the table picture
+        self.prompts = None           # focus: the SAM prompts the ventral stream chose
         self.real = False             # the real cell: SAM stays off unless SAM_REAL=1 (lab images to Meta: the team's call)
 
     # ------------------------------------------------------------ news

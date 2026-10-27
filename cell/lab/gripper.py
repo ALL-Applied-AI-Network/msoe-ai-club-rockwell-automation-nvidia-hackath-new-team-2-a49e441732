@@ -19,14 +19,14 @@ import numpy as np
 import trimesh
 
 LENGTH = 0.076          # FINGER_LENGTH
-DEPTH = 0.012           # FINGER_WIDTH: along the closing direction
+DEPTH = 0.010           # FINGER_WIDTH: along the closing direction (Joel, Oct 26: open fingers 40 mm across, 20 mm gap)
 THICK = 0.006           # FINGER_THICK: across
 SCALLOP_R = 0.00725     # AA recess radius
 SCALLOP_ABOVE_TIP = 0.00697
 TIP_BEVEL = 0.014
 TIP_WIDTH = 0.0075
 EDGE_BREAK = 0.0006
-STROKE = 0.006          # per jaw: flat faces 12 mm apart open, 0 closed
+STROKE = 0.010          # per jaw: 20 mm apart open (measured on the real gripper, Oct 26; was 12), 0 closed
 INNER_TIP = math.sqrt(SCALLOP_R ** 2 - SCALLOP_ABOVE_TIP ** 2)  # ~2.0 mm: how far the hook lip sits back from the face
 SOFT_TIP = 0.032        # soft tips on the last 32 mm
 FRICTION_SOFT = 1.5

@@ -41,7 +41,11 @@ class Robot:
     def __init__(self, trial: str = "chat_table", seed: int = 0):
         self.trial_name, self.seed = trial, seed
         self.mode = "sim"
-        self.cell = IsaacCell(build(load_trial(trial), seed))
+        try:
+            self.cell = IsaacCell(build(load_trial(trial), seed))
+        except SystemExit as e:  # no Isaac (away from the GPU box's network): MuJoCo stands in until the real cell
+            print(f"{e}; using the MuJoCo cell instead", flush=True)
+            self.cell = build(load_trial(trial), seed)
         self.cell.noise = True  # the simulator's depth made as bad as the real sensors'
         P.TRAVEL, P.APPROACH = SPEEDS["sim"]
         self.cell_lock = threading.Lock()  # held by the robot thread while it uses the cell: a switch waits for it

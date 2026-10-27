@@ -46,6 +46,8 @@ a few words ("lego", "screw", "cube") and it outlines every match. Outlines are 
   merged: one outline over two segments       no_mask: a segment nothing outlined
   no_segment: an outline with no 3D segment under it (too flat for depth so far, or not there)
 If SAM won't outline a part you can plainly see as one object after two or three prompts, vouch for it.
+Segments with no outline that you can't see as objects in the picture (flat, pale, on the table) are table texture:
+paper seams and wrinkles. Ignore them; don't ask to look closer at them.
 SAM is literal about words: try a few short, plain, common words, singular; one prompt per kind of object. "lego"
 finds bricks where "lego brick" may not. Re-run segment after things move (old outlines go stale).
 
@@ -103,6 +105,17 @@ TOOLS = [
 ]
 
 
+FOCUS = """
+THIS JOB WORKS DIFFERENTLY: the dorsal stream does NOT map the whole table. You point it.
+1. First, call segment on the table picture with one short prompt per kind of thing you see, always including the
+   containers ("cube", "cup", ...). Every outline becomes a region; the arm takes a close look only there.
+2. In each close look, SAM outlines things in the wrist picture and depth is pooled inside each outline: the board then
+   lists MEASURED objects (id, size, height, colour, the prompt that found them). A cup or box is anything over 40 mm.
+   Measured objects are already one thing each: no agreement step, no break-ups.
+3. If something you can see has no measured object, request look_closer at its outline (mask "mN") or near an object.
+4. Set the rule over measured part ids and measured cup ids ("box #N"). The arm looks again right before each pick."""
+
+
 def say(text: str, level: str = "INFO") -> None:
     viz.sync_time()
     rr.log("ventral", rr.TextLog(text, level=level))
@@ -153,7 +166,8 @@ class Ventral(threading.Thread):
         self._strip_old_images()
         self.history.append({"role": "user", "content": content})
         for _ in range(8):
-            msgs = [{"role": "system", "content": SYSTEM + (f"\n\nThe person asked: \"{self.instruction}\"" if self.instruction else "")}] + self.history[-24:]
+            sys_text = SYSTEM + (FOCUS if b.mode == "focus" else "")
+            msgs = [{"role": "system", "content": sys_text + (f"\n\nThe person asked: \"{self.instruction}\"" if self.instruction else "")}] + self.history[-24:]
             while msgs[1]["role"] == "tool":  # never start mid tool call
                 msgs.pop(1)
             r = self.client.chat.completions.create(model=self.model, messages=msgs, tools=TOOLS, max_tokens=3000,
@@ -198,11 +212,17 @@ class Ventral(threading.Thread):
             say(f"#{tid}: SAM won't outline it, but it's plainly one thing ({a.get('why', '')}).")
             b.post("vouch", f"#{tid}")
             return "vouched: the dorsal stream may move it"
+        if name == "request" and a.get("action") == "look_closer":
+            with b.cond:
+                n = sum(r.action == "look_closer" for r in b.requests)
+            if n >= 4:
+                return ("not queued: 4 close looks already this job. Unexplained segments with no outline are likely "
+                        "table texture (paper seams, wrinkles): ignore them and sort the parts you can see.")
         if name == "request":
             if a.get("mask") and str(a["mask"]).lstrip("m").isdigit():
                 j = int(str(a["mask"]).lstrip("m"))
                 with b.cond:
-                    xy = b.masks[j]["xy"]
+                    xy = b.regions[j]["xy"] if b.mode == "focus" else b.masks[j]["xy"]
                 r = b.request(a["action"], None, a.get("note", ""), xy=xy)
                 say(f"→ dorsal: {a['action'].replace('_', ' ')} where outline {a['mask']} is")
                 return f"queued as request {r.id}, ahead of the dorsal stream's own work"
@@ -225,8 +245,8 @@ class Ventral(threading.Thread):
                 return (f"not set: {', '.join(bad)} isn't a destination. Boxes on the board: "
                         + (", ".join(f"box #{i}" for i in sorted(boxes)) or "none") + "; or 'table'.")
             unknown = sorted({i for g in groups for i in g["ids"]} - parts)
-            if unknown:
-                return f"not set: no part with id {', '.join('#' + str(i) for i in unknown)} on the board (boxes can't be sorted)"
+            for g in groups:  # ids change as the map updates: keep the rule for the parts that still exist
+                g["ids"] = [i for i in g["ids"] if i in parts]
             used = {g["to"].lower() for g in groups if g["to"].lower() != "table"}
             with b.cond:
                 used |= {f"box #{i}" for i, c in b.contents.items() if c}  # a box with things in it is a group already
@@ -260,7 +280,8 @@ class Ventral(threading.Thread):
                 note = ""
             b.set_rule(Rule(a["text"], groups))
             say(f"Sort rule: {a['text']} — " + "; ".join(f"{g['name']} {['#' + str(i) for i in g['ids']]} → {g['to']}" for g in groups))
-            return "rule set." + note + warn
+            gone = (f" Dropped ids no longer on the board: {', '.join('#' + str(i) for i in unknown)}." if unknown else "")
+            return "rule set." + gone + note + warn
         if name == "wait":
             say(f"(waiting: {a.get('why', '')})", "DEBUG")
             return "ok"
@@ -280,6 +301,8 @@ class Ventral(threading.Thread):
         wh = (img.shape[1], img.shape[0])
         if self.table_px is None or self.table_px_wh != wh:
             self.table_px, self.table_px_wh = agree.TablePixels(cam, wh), wh
+        if b.mode == "focus":
+            return self._glance(img, prompts)
         crop, scale = agree.focus(things, cam, wh)
         masks, failed = [], []
         for p in prompts:
@@ -296,6 +319,49 @@ class Ventral(threading.Thread):
         say(f"SAM ({', '.join(prompts)}): {len(ag.masks)} outlines; " + ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in counts.items()), "DEBUG")
         return (f"{len(ag.masks)} outlines from {', '.join(prompts)}" + (f" (failed: {'; '.join(failed)})" if failed else "")
                 + "\n" + ag.text({t.id: t for t in things}))
+
+    def _glance(self, img, prompts: list[str]) -> str:
+        """Focus mode: outline on the table picture -> regions on the table for the arm's close looks."""
+        from lab import focus
+        b = self.board
+        x0y0 = self._work_crop(img)
+        masks, failed = [], []
+        for p in prompts:
+            try:
+                masks += sam.segment(img, p, crop=x0y0, scale=1.5)
+            except Exception as e:
+                failed.append(f"{p}: {e}")
+        regs = focus.regions(masks, self.table_px)
+        with b.cond:
+            b.masks, b.prompts = masks, list(prompts)
+            b.regions = regs if b.regions is None else b.regions + regs
+        self._draw_table_masks(masks, img)
+        say(f"SAM on the table picture ({', '.join(prompts)}): {len(regs)} outlines to look at closely.", "DEBUG")
+        return (f"{len(regs)} outlines" + (f" (failed: {'; '.join(failed)})" if failed else "") + ":\n"
+                + "\n".join(f"m{j} '{r['prompt']}' near ({r['xy'][0] * 1000:.0f}, {r['xy'][1] * 1000:.0f}) mm"
+                             for j, r in enumerate(regs)))
+
+    def _work_crop(self, img):
+        from calibration.geometry import SURFACE_Z, project
+        cam = self.cams["table"]
+        W, H = img.shape[1], img.shape[0]
+        c = np.array([[x, y, SURFACE_Z] for x in (0.15, 0.65) for y in (-0.45, 0.45)])
+        uv = project(cam, c) * [W / cam["size"][0], H / cam["size"][1]]
+        x0, y0 = np.clip(uv.min(0) - 30, 0, None).astype(int)
+        x1, y1 = np.minimum(uv.max(0) + 30, [W, H]).astype(int)
+        return int(x0), int(y0), int(x1), int(y1)
+
+    def _draw_table_masks(self, masks, img) -> None:
+        f = viz.view_scale(img.shape[1])
+        w, h = int(round(img.shape[1] * f)), int(round(img.shape[0] * f))
+        seg = np.zeros((h, w), np.uint8)
+        for j, m in enumerate(masks[:250]):
+            seg[cv2.resize(m["mask"].astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)] = j + 1
+        viz.sync_time()
+        rr.log("cams/table/rgb/sam", rr.AnnotationContext([rr.AnnotationInfo(id=0, label="", color=(0, 0, 0, 0))]
+                                                          + [rr.AnnotationInfo(id=j + 1, label=f"m{j} {m['prompt']}", color=(90, 140, 255, 150))
+                                                             for j, m in enumerate(masks[:250])]))
+        rr.log("cams/table/rgb/sam", rr.SegmentationImage(seg, opacity=0.45))
 
     # ------------------------------------------------------------ what it's shown
 
@@ -314,7 +380,7 @@ class Ventral(threading.Thread):
             rows.append(f"#{t.id} {t.kind}{'' if t.id in known else ' (maybe: not confirmed yet)'}, {t.color}, "
                         f"{t.size_mm[0]:.0f} x {t.size_mm[1]:.0f} mm, {t.top_mm:.0f} mm tall, at ({t.xy[0] * 1000:.0f}, {t.xy[1] * 1000:.0f}) mm"
                         + (f", named '{t.label}'" if getattr(t, "label", None) else "")
-                        + (f", streams: {cases[t.id]}" if t.id in cases else ", streams: not compared since it last changed"))
+                        + ("" if b.mode == "focus" else (f", streams: {cases[t.id]}" if t.id in cases else ", streams: not compared since it last changed")))
         with b.cond:
             contents = {i: list(c) for i, c in b.contents.items()}
         out = ("Boxes (the only boxes; use exactly these ids): "

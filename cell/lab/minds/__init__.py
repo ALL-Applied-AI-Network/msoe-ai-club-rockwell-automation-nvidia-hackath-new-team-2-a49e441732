@@ -3,5 +3,6 @@ score(truth meshes) for the simulators' truth check. v1's sort policy is archive
 from lab.minds.mapper import MapperMind
 from lab.minds.sorter import SorterMind
 from lab.minds.twostream import TwoStreamMind
+from lab.minds.focus import FocusMind
 
-MINDS = {"map": MapperMind, "sort": SorterMind, "streams": TwoStreamMind}
+MINDS = {"map": MapperMind, "sort": SorterMind, "streams": TwoStreamMind, "focus": FocusMind}

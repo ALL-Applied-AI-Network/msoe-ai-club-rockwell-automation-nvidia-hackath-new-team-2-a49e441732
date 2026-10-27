@@ -160,7 +160,7 @@ def main() -> None:
                 board.add("action", f"sort by colour: {msg}")
                 self._json({"msg": msg})
             elif self.path == "/streams":
-                msg = robot.start("sort these", mind="streams")
+                msg = robot.start("sort these", mind="focus")
                 board.add("action", f"think + sort (two streams): {msg}")
                 self._json({"msg": msg})
             elif self.path == "/stop":

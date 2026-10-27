@@ -25,10 +25,10 @@ from scipy import ndimage
 
 from calibration.geometry import SURFACE_Z
 
-GAP = 12          # mm between the open fingers' flat faces
-GAP_TIP = 16      # mm between the hooked tips: a part that sits entirely in the hook zone has this much room
+GAP = 20          # mm between the open fingers (measured Oct 26; was 12)
+GAP_TIP = 20      # mm between the tips (the measured gap; the hook recess adds a little more)
 HOOK_ZONE = 14    # mm above the fingertips where the recess (and so the wider opening) ends
-FINGER = 12       # mm finger depth along the closing direction
+FINGER = 10       # mm finger depth along the closing direction (40 mm across open - 20 mm gap, / 2)
 WIDTH = 6         # mm finger thickness across it
 MARGIN = 1        # mm clearance beside the material
 CROP = 0.07       # m around the target

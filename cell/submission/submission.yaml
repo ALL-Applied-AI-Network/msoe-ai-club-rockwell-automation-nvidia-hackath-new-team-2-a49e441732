@@ -31,7 +31,7 @@ layout: different                 # cubes dumped in a loose pile mid-table (no f
 # different: May change object positions across rollouts.
 
 # --- Evaluation ---
-rollouts: 2                       # Number of attempts in this test
+rollouts: 10                      # Number of attempts in this test
                                   # Each attempt is scored success or failure
 
 # --- Hardware ---

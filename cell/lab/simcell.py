@@ -28,7 +28,7 @@ from lab.sensor import realistic_depth
 from lab.synth import HOME, IMAGE_SIZE, TCP_OFFSET, Renderer
 
 from lab.primitives import TCP_BOX  # the cell's limits, mm in UF0
-OPEN_GAP = 2 * G.STROKE          # flat faces 12 mm apart when open (the hooked tips: 16 mm)
+OPEN_GAP = 2 * G.STROKE          # 20 mm apart when open
 SUBSTEPS = 50                     # physics steps per 0.1 s target (2 ms each)
 GRIP_N = float(os.getenv("SIM_GRIP_N", 20))  # finger force limit, N: the real MHZL2-16D grips with ~14 N; at 180 N parts squirted out at 1.7 m/s
 

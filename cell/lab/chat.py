@@ -151,7 +151,7 @@ class Chat:
         if name == "start_mapping":
             return self.robot.start(args.get("instruction", "") or "map the table", mind="map")
         if name == "start_sorting":
-            return self.robot.start(args.get("instruction") or "sort these", mind="streams")
+            return self.robot.start(args.get("instruction") or "sort these", mind="focus")
         if name == "add_rule":
             return self.robot.add_rule(args.get("rule", ""))
         if name == "table_changed":
