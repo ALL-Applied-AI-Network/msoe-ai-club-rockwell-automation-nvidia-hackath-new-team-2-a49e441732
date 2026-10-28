@@ -398,7 +398,7 @@ class Ventral(threading.Thread):
         out = ("Boxes (the only boxes; use exactly these ids): "
                + (", ".join(f"box #{t.id} ({t.color}, at ({t.xy[0] * 1000:.0f}, {t.xy[1] * 1000:.0f}) mm)"
                             + (f" already holds: {', '.join(contents[t.id])}" if contents.get(t.id) else " empty")
-                            for t in boxes) or "none found yet")
+                            for t in boxes) or self._no_boxes())
                + "\nParts on the board:\n" + ("\n".join(rows) or "(none yet: still mapping)"))
         with b.cond:
             unknown = list(b.unknown)
@@ -416,6 +416,15 @@ class Ventral(threading.Thread):
         out += f"\nRequests in the dorsal queue: {queue}"
         out += "\nThe picture: the table camera, cropped to the things (x away from the robot, y to its left)."
         return out
+
+    def _no_boxes(self) -> str:
+        b = self.board
+        with b.cond:
+            surveyed = b.mode == "focus" and any(k == "map_done" for _, _, k, _ in b.events)
+        if not surveyed:
+            return "none found yet"
+        return ("NONE: the close looks measured no cup or box. If you see one in the picture, request look_closer at "
+                "its outline (mask 'mN'); otherwise there is none for the arm, so set the rule with 'table' piles now")
 
     def _picture(self) -> str | None:
         b = self.board

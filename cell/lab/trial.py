@@ -121,6 +121,32 @@ def sort_check(truth: list[dict], expect: str | None) -> dict:
                          for k, o in enumerate(objs) if where[k] == "table"]}
 
 
+def pile_check(truth: list[dict], expect: str | None, touch_mm: float = 30.0) -> dict:
+    """No boxes: the piles on the table (objects within touch_mm of each other, chained), and whether each holds one
+    kind (by `expect`) and each kind is in one pile."""
+    objs = objects_only(truth)
+    xy = np.array([o["mesh"].centroid[:2] for o in objs])
+    pile = list(range(len(objs)))
+    def root(i):
+        while pile[i] != i:
+            i = pile[i]
+        return i
+    for i in range(len(objs)):
+        for j in range(i + 1, len(objs)):
+            if np.linalg.norm(xy[i] - xy[j]) * 1000 < touch_mm:
+                pile[root(i)] = root(j)
+    key = {"color": lambda o: o["color"], "kind": lambda o: o["kind"], "name": lambda o: o["name"]}.get(expect or "color")
+    groups: dict = {}
+    for i, o in enumerate(objs):
+        groups.setdefault(root(i), []).append(o)
+    piles = [{"at": [round(float(v) * 1000) for v in np.mean([o["mesh"].centroid[:2] for o in os_], 0)],
+              "holds": sorted(key(o) for o in os_)} for os_ in groups.values()]
+    mixed = [p_ for p_ in piles if len(set(p_["holds"])) > 1]
+    split = sorted(v for v in {key(o) for o in objs} if sum(v in p_["holds"] for p_ in piles) > 1)
+    return {"objects": len(objs), "piles": len(piles), "mixed_piles": mixed, "split": split,
+            "clean": not mixed and not split}
+
+
 def run(name: str, seed: int | None = None, mind: str = "map", view: bool = True, where: str = "mujoco",
         max_steps: int = 400, noise: bool = True) -> Path:
     """Two timelines in the viewer: "step" (one per decision / observation) and "sim_time" (the motion, every 0.1 s)."""
@@ -162,6 +188,8 @@ def run(name: str, seed: int | None = None, mind: str = "map", view: bool = True
         score |= m.score(cell.object_meshes())
     if trial.get("fixtures"):
         score["sort"] = sort_check(cell.object_meshes(), trial.get("expect"))
+    elif trial.get("expect"):
+        score["piles"] = pile_check(cell.object_meshes(), trial.get("expect"))
     viz.narrate(f"done: {cell.t:.0f} s of robot time, {time.time() - t0:.0f} s on this computer. {score}")
     (rec.dir / "summary.json").write_text(json.dumps({"trial": name, "seed": seed, "mind": mind, "score": score}))
     print(f"recorded {rec.dir}\n{score}")

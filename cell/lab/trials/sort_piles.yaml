@@ -1,0 +1,9 @@
+# No cups: a dumped pile of nine 10 mm cubes, three colours. Sorting means piles on the table, one per colour.
+instruction: Sort these by colour.
+layout: dump
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 3}
+  - {kind: cube_10, color: yellow, count: 3}
+  - {kind: cube_10, color: blue, count: 3}
+expect: color

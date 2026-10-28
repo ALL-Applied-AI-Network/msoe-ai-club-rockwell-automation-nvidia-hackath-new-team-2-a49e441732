@@ -35,6 +35,7 @@ RELOOKS = 2                       # second looks at one spot where the streams d
 MAX_PROMPTS = 6                   # SAM words per look (each is a call)
 DROP_ABOVE_RIM_MM = 4.0
 GRIP_SHARE = 0.45                 # fingertips close at most this far up the part
+PILE_GAP = 0.07                   # m between parts of different piles on the table (the piles never touch)
 SIZE_TOL_MM = 4.0                 # measured this much wider than the person said: say so when the grip fails
 
 
@@ -160,7 +161,9 @@ class FocusMind(TwoStreamMind):
                 left = [o for o in self.objects.parts() if not self._done_with(o)]
                 self._say(f"Waiting on the ventral stream: {len(left)} part(s) without a cup in the rule.")
                 self.board.post("idle", f"{len(left)} measured part(s) have no cup in the rule: "
-                                + ", ".join(f"#{o.id}" for o in left))
+                                + ", ".join(f"#{o.id}" for o in left)
+                                + ("" if self.objects.boxes() else ". No cup or box is measured: set the rule with "
+                                   "'table' piles, or request look_closer at a cup's outline if you see one"))
             elif time.time() - max(self.idle_since, self._last_ventral()) > 240:
                 self._say("Nothing to do and no word from the ventral stream for a while: stopping.")
                 self.board.post("done", "idle too long")
@@ -401,6 +404,99 @@ class FocusMind(TwoStreamMind):
         self.board.finish(r, "done", f"'{word}': " + " | ".join(said))
         return obs
 
+    def _pile_of(self, o) -> str:
+        """Its group's pile. The ventral stream renames groups as it goes ("red", "red parts", "red bricks"): a colour
+        in the name keeps one pile per colour, whatever it's called this time."""
+        from lab.ventral import COLOURS
+        name = self._group_of(o.id).lower()
+        said = [c for c in COLOURS if c in name.split()]
+        return said[0] if len(said) == 1 else name
+
+    def _pile_spot(self, group: str):
+        """The next spot in this group's pile: a tight cluster round the pile's first spot; a new pile goes on free
+        table at least PILE_GAP from every other pile (so piles never touch), toward the robot's left first."""
+        occ = self._occupied()
+        mine = self.table_slots.get(group, [])
+        others = [q for g, qs in self.table_slots.items() if g != group for q in qs]
+        def ok(q, clear_mm):
+            return (self._free(q, occ, clear_mm=clear_mm) and all(np.linalg.norm(q - m) > 0.019 for m in mine)
+                    and all(np.linalg.norm(q - m) > PILE_GAP for m in others))
+        if mine:
+            c = mine[0]
+            for r in (0.022, 0.038):
+                for a in np.radians(np.arange(0, 360, 30)):
+                    q = c + r * np.array([np.cos(a), np.sin(a)])
+                    if ok(q, 12):
+                        return q
+            return None
+        for x in np.arange(0.30, 0.54, 0.02):
+            for y in np.arange(0.32, -0.33, -0.02):
+                q = np.array([x, y])
+                if ok(q, 30):
+                    return q
+        return None
+
+    def _put_on_table(self, o, obs, request=None):
+        """No cups (or the person asked for piles): its group's pile on free table, a row of spots per group."""
+        group = self._pile_of(o)
+        self.boxes = {b.id: b for b in self.objects.boxes()}  # _table_spot keeps clear of these
+        spot = self._pile_spot(group)
+        if spot is None:
+            self.failed.add(o.id)
+            self._say(f"#{o.id}: no free table for the '{group}' pile; leaving it.")
+            self.board.post("gave_up", f"#{o.id}: no free table for the '{group}' pile")
+            if request:
+                self.board.finish(request, "refused", "no free table")
+            return obs
+        old = o.xy.copy()
+        obs = yield from self._close_look(old, obs, label=f" (before picking #{o.id})")
+        fresh = [x for x in self.objects.parts() if np.linalg.norm(x.xy - old) < 0.015]
+        if not fresh:
+            self.board.post("gave_up", f"#{o.id} not found on the close look before the pick")
+            return obs
+        o = min(fresh, key=lambda x: np.linalg.norm(x.xy - old))
+        g = self._grip_for(o)
+        if g is None:
+            self.misses.append(np.asarray(o.xy))
+            self.board.post("gave_up", f"#{o.id}: neighbours too close for the fingers (ask to break it up)")
+            return obs
+        under = self._heights()
+        safe = max(P.SAFE_MM, max(under(o.xy, 0.03), under(spot, 0.03)) + 15.0 + g.height_mm)
+        a = self._approach((g.x, g.y), g.yaw, safe, obs)
+        if a is None:
+            self.failed.add(o.id)
+            self._say(f"#{o.id}: no safe way above it.")
+            return obs
+        approach, q_over = a
+        rows, _ = P.pick_and_place(tcp_uf0(q_over), (g.x, g.y), g.height_mm, g.yaw, tuple(spot), drop_mm=None, safe_mm=safe)
+        rep = armcheck.check(rows, q_over)
+        if not rep.ok:
+            self.failed.add(o.id)
+            self._say(f"#{o.id}: the move failed the arm check ({rep.problem}).")
+            return obs
+        self._draw_grip(g)
+        label = o.label or o.what
+        self._say(f"Put #{o.id} ({label}) on the table with the '{group}' pile at ({spot[0] * 1000:.0f}, "
+                  f"{spot[1] * 1000:.0f}) mm: grip at ({g.x * 1000:.0f}, {g.y * 1000:.0f}) mm, jaws at {g.yaw:.0f} deg.")
+        obs = yield approach
+        obs = yield rows
+        self.map.forget((g.x, g.y), 0.012)
+        obs = yield from self._close_look(np.array([g.x, g.y]), obs, label=" (checking the pick)")
+        still = [x for x in self.objects.parts() if np.linalg.norm(x.xy - [g.x, g.y]) < 0.006]
+        if still:
+            self.misses.append(np.array([g.x, g.y]))
+            self.picks["failed"] += 1
+            self._say(f"#{o.id}: still there after the pick.")
+        else:
+            self.picks["verified"] += 1
+            self.placed.append((np.asarray(spot), "table"))
+            self.table_slots.setdefault(group, []).append(np.asarray(spot))
+        self._publish(obs, "skill_done", f"put #{o.id} ({label}) in the '{group}' pile on the table"
+                      + (" (it didn't come up)" if still else ""))
+        if request:
+            self.board.finish(request, "done", "put on the table")
+        return obs
+
     # ------------------------------------------------------------ what the person told it
 
     def _told_words(self) -> list[str]:
@@ -530,9 +626,12 @@ class FocusMind(TwoStreamMind):
         rr.log("mind/plan/grip", rr.LineStrips3D(strips, colors=[[60, 220, 90]], radii=0.0006))
 
     def _put(self, o, dest: str, obs, request=None):
-        """Look closely right above o, grip it at its fresh position, drop it in the cup, look to check."""
+        """Look closely right above o, grip it at its fresh position, drop it in the cup (or set it down in its group's
+        pile on the table), look to check."""
         self.idle_since = None
         box = None
+        if dest.strip().lower() == "table":
+            return (yield from self._put_on_table(o, obs, request))
         if dest.strip().lower().startswith("box"):
             try:
                 box = self.objects.all.get(int(dest.split("#")[-1]))
