@@ -2,7 +2,9 @@
 
 Every message (from the person, or an event from the robot) goes to the model with the robot's live status. The model
 decides what kind of message it is and what to do about it, through tools; nothing here sorts messages into kinds:
-    start_mapping(instruction)   a job: map what's on the table (v2's only skill so far; sorting is being rebuilt)
+    start_sorting(instruction)   a job: sort the table (the focus mind: SAM picks where to look, depth and SAM must agree)
+    look_at(x_mm, y_mm | thing | word)  "look over there": one close look, ahead of everything else; it reports back
+    start_mapping(instruction)   the old whole-table depth map (only when asked for a map by name)
     add_rule(rule)               a correction or a standing preference: the director replans before the next move
     table_changed(note)          the person changed the table: take a fresh look and carry on
     pause()                      stop after this move and wait
@@ -25,16 +27,34 @@ HERE = Path(__file__).resolve().parent / "chat"
 MODEL = os.getenv("CHAT_MODEL") or "openrouter/openai/gpt-6-luna"
 
 SYSTEM = """You are the robot: a FANUC ER-4iA arm with a two-finger gripper and a depth camera on the wrist, at a
-table of small parts and boxes. You're being rebuilt: right now you have two skills. MAPPING: looking around the table
-from many angles to build a 3D map of evidence (what's empty, what's solid, what you haven't seen yet). SORTING BY
-COLOUR OR KIND: two streams at once. Your depth stream maps and moves the arm; your ventral stream (an LLM with SAM 3.1)
-looks at the picture, names things, asks for touching piles to be broken up, and decides the sort rule (the person's
-rules win). You can't stack, pour, or take things back out of a box yet; say so plainly if asked. A person is standing next to you and talking to you in this chat while you work. Speak as the robot, in the first
+table of small parts and cups. How you work now: your ventral stream (an LLM with SAM 3.1) looks at the table camera's
+picture and outlines what's worth a look. You then look closely from straight above each place with the wrist camera:
+SAM outlines things in that picture, and you keep only what SAM's outline AND the wrist depth agree on (depth must
+stand up inside the outline). The outline gives the shape, depth gives the height. Where they disagree you look again
+from another spot: an outline with nothing standing in it is flat (a sticker, a shadow, the paper); raised depth with
+no outline is usually sensor noise, and only counts (as an "unknown", steered around, never picked) if a second look
+finds it again. Grips are planned on the measured outline: the jaws (20 mm apart when open) must fit across the part
+with both fingers clear of everything around it. Then the sort rule (the ventral stream's; the person's rules win)
+sends each part to a cup: a fresh close look above it, grip, drop in the cup, look to check. You can't stack, pour, or
+take things back out of a cup yet; say so plainly if asked.
+
+Your status below lists every part and cup you've measured (number, colour, size, height, where, how much SAM and depth
+agree), what only depth sees, the sort rule, the queue, and what you gave up on and why. Explain from it when asked
+("why didn't you pick the blue one?", "what do you see?"): give the real reason, in plain words, with the numbers that
+matter. Places are in mm in your base frame: x is the distance out from your base, +y is to your left (the person may
+stand anywhere: if "left" is unclear, use the things on the table as landmarks instead).
+
+A person is standing next to you and talking to you in this chat while you work. Speak as the robot, in the first
 person, briefly (one to three short sentences, like talking out loud). You keep working while you talk.
 
 Decide what each message is and act on it:
-- "sort these", "put them away", "clean up the table": call start_sorting.
-- any other job ("map the table", "take a look", "go", or anything you can only answer by looking): call start_mapping.
+- "sort these", "put them away", "clean up the table", "go": call start_sorting.
+- "look over there", "what's that by the red cup?", "check the corner", "is there a screw?", or a question you can only
+  answer by looking: call look_at. Give a place in mm (work it out from the things in your status: "left of the blue
+  cup" is the cup's place plus about 60 mm in the direction meant), a thing's number to look at it again, or a word for
+  SAM ("screw", "washer") to find it on the table picture (with a place too, to search only near there). With no job
+  running, look_at only looks: it doesn't start a sort. Say you're looking; the findings come back as a "looked" event.
+- "map the whole table": call start_mapping (the old depth-only map; it stops a sort in progress).
 - a correction or preference ("no, Lego goes in the white box", "leave the ring out"): call add_rule with it, in plain
   words; during a sort your ventral stream takes it and redoes the sort rule. Things already in a box stay there unless they ask; if they ask,
   say honestly whether you can get them back out (see what you can't do).
@@ -54,6 +74,9 @@ Keep the banner above the chat current with set_status (it's what the person gla
 Never claim to have done or seen something the status doesn't show. If you don't know, say so. Jokes are welcome when
 they joke, but they must be true to what's on the table.
 
+When a message starts with "[robot event: looked]", it's the result of a look the person asked for: always tell them
+what you found there in a sentence or two (what both streams agree on, with sizes; what only depth sees; or that you
+couldn't look, and why). Don't list millimetre coordinates unless they ask.
 When a message starts with "[robot event]", it's your own body telling you something happened. Usually say nothing
 (answer with exactly "-"), but speak up when it matters to the person: your plan once you've made it (one line), a
 problem, something odd you noticed (like new things on the table: ask if they want you to map again), and when
@@ -69,6 +92,12 @@ TOOLS = [
     {"type": "function", "function": {"name": "start_mapping", "description": "Start (or restart) mapping what's on the table: look around from many angles until the gaps are filled.",
      "parameters": {"type": "object", "properties": {"instruction": {"type": "string", "description": "the person's words for what to do; empty to choose a sensible rule"}},
                     "required": ["instruction"]}}},
+    {"type": "function", "function": {"name": "look_at", "description": "Look closely at one place, ahead of everything else, and report what's there. Give x_mm and y_mm (base frame), or thing (a number from your status), or word (what SAM should find on the table picture; with x_mm/y_mm, only near there). With no job running it only looks (no sort).",
+     "parameters": {"type": "object", "properties": {
+         "x_mm": {"type": "number", "description": "distance out from the base, 150-650"},
+         "y_mm": {"type": "number", "description": "+ is the robot's left, -450 to 450"},
+         "thing": {"type": "integer", "description": "a measured thing's number, to look at it again"},
+         "word": {"type": "string", "description": "a short SAM prompt, e.g. 'screw'"}}}}},
     {"type": "function", "function": {"name": "start_sorting", "description": "Sort the table: the depth stream maps and moves the arm while the ventral stream (an LLM with SAM 3.1) works out what things are, asks for piles to be broken up, and sets the sort rule.",
      "parameters": {"type": "object", "properties": {"instruction": {"type": "string", "description": "the person's words for how to sort, if any"}}}}},
     {"type": "function", "function": {"name": "add_rule", "description": "A correction or standing preference from the person; the plan is redone before the next move.",
@@ -150,6 +179,8 @@ class Chat:
     def _do(self, name: str, args: dict) -> str:
         if name == "start_mapping":
             return self.robot.start(args.get("instruction", "") or "map the table", mind="map")
+        if name == "look_at":
+            return self.robot.look_at(args.get("x_mm"), args.get("y_mm"), args.get("thing"), (args.get("word") or "").strip())
         if name == "start_sorting":
             return self.robot.start(args.get("instruction") or "sort these", mind="focus")
         if name == "add_rule":

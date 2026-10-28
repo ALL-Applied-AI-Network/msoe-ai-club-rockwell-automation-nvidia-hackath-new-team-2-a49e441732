@@ -14,13 +14,13 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-ACTIONS = ("break_up", "look_closer", "put_away")
+ACTIONS = ("break_up", "look_closer", "put_away", "look_for")
 
 
 @dataclass
 class Request:
     id: int
-    action: str                   # break_up | look_closer | put_away
+    action: str                   # break_up | look_closer | put_away | look_for (a SAM word on the table picture, in note)
     target: int                   # a thing id
     note: str = ""                # "keep the pieces close", "4 bolts in there"
     expect: int | None = None     # how many things the ventral stream thinks are in it (break_up)
@@ -28,6 +28,8 @@ class Request:
     xy: tuple | None = None       # look_closer at a place instead of a thing (m, base frame)
     status: str = "queued"        # queued | doing | done | refused
     result: str = ""
+    who: str = "ventral"          # "ventral", or "person" (from the chat: the only ones done while a job holds)
+    on_done: object = None        # called with the request when it's done or refused
 
 
 @dataclass
@@ -121,9 +123,9 @@ class Board:
                 self.agreement.rows = [r for r in self.agreement.rows if r.seg not in ids]
         return ids
 
-    def take_request(self) -> Request | None:
+    def take_request(self, who: str | None = None) -> Request | None:
         with self.cond:
-            r = next((r for r in self.requests if r.status == "queued"), None)
+            r = next((r for r in self.requests if r.status == "queued" and who in (None, r.who)), None)
             if r is not None:
                 r.status = "doing"
             return r
@@ -131,21 +133,24 @@ class Board:
     def finish(self, r: Request, status: str, result: str) -> None:
         r.status, r.result = status, result
         self.post(f"request_{status}", f"request {r.id} ({r.action} #{r.target}): {result}")
+        if r.on_done is not None:
+            r.on_done(r)
 
     # ------------------------------------------------------------ the ventral stream's side
 
     def request(self, action: str, target: int | None, note: str = "", expect: int | None = None, to: str | None = None,
-                xy=None) -> Request:
+                xy=None, who: str = "ventral", on_done=None) -> Request:
         if action not in ACTIONS:
             raise ValueError(f"no such action {action}: one of {', '.join(ACTIONS)}")
         with self.cond:
-            if xy is None and target not in self.things:
+            if xy is None and action != "look_for" and target not in self.things:
                 raise ValueError(f"there is no thing #{target} on the board")
             r = Request(next(self._rid), action, -1 if target is None else int(target), note, expect, to,
-                        None if xy is None else (float(xy[0]), float(xy[1])))
+                        None if xy is None else (float(xy[0]), float(xy[1])), who=who, on_done=on_done)
             self.requests.append(r)
         what = f"#{target}" if xy is None else f"({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm"
-        self.post("request", f"request {r.id}: {action} {what}" + (f" ({note})" if note else ""))
+        what = f"'{note}' " + (what if xy is not None else "on the table") if action == "look_for" else what
+        self.post("request", f"request {r.id}: {action} {what}" + (f" ({note})" if note and action != "look_for" else ""))
         return r
 
     def name(self, tid: int, name: str) -> None:

@@ -69,6 +69,7 @@ class Robot:
         self.baseline = None              # the table depth when it last finished: changes are measured from it
         self.step = 0
         self.done_log: list[str] = []      # what it has done, in order: "carried #7 into box #2", "raked #4"
+        self.looks: list[dict] = []        # the person's looks asked for before a mind was running (look_at)
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -76,6 +77,15 @@ class Robot:
 
     def start(self, instruction: str | None = None, mind: str | None = None) -> str:
         with self.lock:
+            pol = self.policy or self.parked
+            if getattr(pol, "hold", False) and mind in (None, "focus"):  # it was only looking: now the sort, same map
+                pol.hold = False
+                if instruction and instruction != "sort these":
+                    self.instruction = instruction
+                    pol.board.add_user_rule(instruction)
+                if self.policy is None:
+                    self.policy, self.parked, self.state = pol, None, "working"
+                return "sorting now, from what I've already measured"
             if self.policy is not None and self.pending is None:  # already on it: a second "go" must not wipe the work
                 return "already working on it"
             if instruction is not None:
@@ -98,6 +108,41 @@ class Robot:
             pol.director.again()
             return "rule added; replanning"
         return "rule added; it applies to the next sort"
+
+    def look_at(self, x_mm: float | None = None, y_mm: float | None = None, thing: int | None = None,
+                word: str = "") -> str:
+        """The person's "look over there": a close look at a place (mm, base frame), at a thing on the board, or at what
+        SAM finds for a word on the table picture (near the place, if one is given). It skips the queue; with no job
+        running it starts the focus mind holding (looks only, no sort until asked). The findings come back as a
+        "looked" event."""
+        xy = None if x_mm is None or y_mm is None else (x_mm / 1000.0, y_mm / 1000.0)
+        with self.lock:
+            pol = self.policy or self.parked
+        if thing is not None:
+            objs = getattr(pol, "objects", None)
+            if objs is None or int(thing) not in objs.all:
+                return f"not done: there's no #{thing} measured"
+            xy = tuple(objs.all[int(thing)].xy)
+        if xy is None and not word:
+            return "not done: give a place (x_mm, y_mm), a thing's number, or a word for SAM"
+        if xy is not None and not (0.15 <= xy[0] <= 0.65 and -0.45 <= xy[1] <= 0.45):
+            return f"not done: ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm is off the table (x 150-650, y -450-450)"
+        ask = {"action": "look_for" if word else "look_closer", "note": word, "xy": xy}
+        what = (f"'{word}'" if word else "a close look") + (f" at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm" if xy else "")
+        if pol is None:
+            with self.lock:
+                self.looks.append(ask)
+                self.mind_name, self.instruction, self.pending = "focus", "", "start"
+            return f"looking: {what} (only looking; no sort until asked)"
+        if not hasattr(pol, "objects"):
+            return f"not done: the '{self.mind_name}' job can't look at one place; stop it or ask for a sort first"
+        self._ask(pol, ask)
+        return f"looking: {what}, before anything else" + ("" if self.policy is not None else " (when you say carry on)")
+
+    def _ask(self, pol, ask: dict) -> None:
+        def done(r):
+            self._emit("looked", f"{r.status}: {r.result}")
+        pol.board.request(ask["action"], None, ask["note"], xy=ask["xy"], who="person", on_done=done)
 
     def pause(self) -> str:
         with self.lock:
@@ -280,6 +325,12 @@ class Robot:
         self.parked = None
         pol = MINDS[self.mind_name](instruction=self.full_instruction())
         pol.reset()
+        with self.lock:
+            looks, self.looks = self.looks, []
+        if looks and hasattr(pol, "objects"):  # started by look_at: look where asked, sort only when asked
+            pol.hold = True
+            for ask in looks:
+                self._ask(pol, ask)
         if hasattr(pol, "board"):
             pol.board.real = self.mode == "real"
         else:  # say why the ventral panel stays empty

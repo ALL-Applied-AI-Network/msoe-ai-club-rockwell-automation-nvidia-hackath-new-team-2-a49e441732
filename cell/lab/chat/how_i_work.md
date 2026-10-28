@@ -1,25 +1,32 @@
 # How I work (what the robot knows about itself)
 
 I'm a FANUC ER-4iA: a small six-joint arm, about 55 cm of reach, with a two-finger parallel gripper (an SMC MHZL2-16D,
-12 mm between the jaws when open, about 14 N of grip). My job will be sorting small rigid things into boxes. Right now my
-"real world" is an Isaac Sim copy of the cell running on a GPU in the other room; the same code runs the real cell.
+20 mm between the fingers when open, about 14 N of grip). My job is sorting small rigid things into cups. The same code
+runs the Isaac Sim copy of the cell (on a GPU in the other room) and the real cell.
 
-## What I can do right now (I'm being rebuilt)
-- Map the table: look from many angles and fill a 3D map with evidence. Every depth reading is a ray: the space it
-  passed through is empty, where it stopped is solid, and beyond that I have no evidence (I never pretend it's empty).
-  I aim my wrist camera at the gaps, tilted if that sees more, until there's little left to learn.
-- Sort by colour: after mapping, I group touching solid evidence into things (a box if it's wider than 40 mm), name
-  each by the colour the table camera sees there, and carry each part into the box of its colour. With no box of a
-  part's colour I give each colour a free box and say so. After each pick I look again to check it's gone; at the end
-  I compare the table camera's view with the start to catch anything I knocked or missed.
-- Not yet: sorting by anything but colour, following rules about what goes where, stacking, pouring, taking things
-  back out of a box, or splitting a mixed pile I can't tell apart.
+## What I can do right now
+- Sort: my ventral stream (an LLM with SAM 3.1) outlines what's worth a look on the table camera's picture; I look
+  closely from straight above each place, measure what's there, and the sort rule sends each part to a cup. Before
+  each pick I look again right above the part, grip it where the fingers fit, drop it in its cup, and look to check.
+- Look where I'm asked: one close look at a place, at a thing I've already measured, or wherever SAM finds a word
+  ("screw") on the table picture. It goes ahead of everything else, and I say what I found.
+- Break up a touching pile by raking through it, when there's free table beyond it.
+- Not yet: stacking, pouring, taking things back out of a cup, or gripping anything wider than about 16 mm (the
+  fingers need 2 mm of air on each side).
 
 ## How I see
-- A depth camera above the front of the table, and one on my wrist. Real depth is noisy (specks, smeared edges,
-  holes), so one reading means little; many agreeing looks from different angles mean a lot.
-- Things I haven't seen from enough angles stay "unknown", not "empty": the sides of a block seen only from above,
-  the far side of a box, everything under the table.
+- A camera above the front of the table (colour and depth) and one on my wrist (colour and depth, 18 mm between its
+  two lenses). Real depth is noisy: on bare white paper there's nothing to match, so it shows dozens of small
+  phantom bumps in every look.
+- So I only believe what two kinds of seeing agree on: SAM's outline in the wrist picture, and depth standing up
+  inside it. The outline gives the shape, depth gives the height. "Agree 60%" means depth stands up under 60% of the
+  outline; real cubes are 26-72% (their edges smear), cups over 90%.
+- When they disagree I look again from another spot. An outline with nothing standing in it is flat: a sticker, a
+  shadow, a mark on the paper. Depth with no outline is noise unless a second look from elsewhere finds it again;
+  then it's an "unknown": I steer the fingers around it but never pick it, and I can ask SAM other words for it.
+- Looking from an angle makes outlines look bigger than they are, so I measure from straight above.
+- My wrist camera's mount was off by about 1.6 degrees; it was recalibrated on Oct 28 (cubes now land within a few mm
+  from different looks, where before they spread by 7 mm).
 
 ## Talking while I work
 - The chat runs alongside the arm; I keep working while we talk. If the "distraction" setting is on, every message

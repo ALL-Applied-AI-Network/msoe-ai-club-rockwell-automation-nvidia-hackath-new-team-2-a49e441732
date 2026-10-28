@@ -51,6 +51,8 @@ class FocusMind(TwoStreamMind):
         self.relooks: dict = {}               # spot (1 cm grid) -> second looks spent there
         self.to_look: list = []               # (xy, why, extra SAM words): disagreements to look at again
         self._stale_told = None               # the rule we last said was made before a cup was found
+        self.hold = False                     # only the person's looks until a sort is asked for (lab.robot.look_at)
+        self._look_ok = True                  # the last close look could be made
 
     # ------------------------------------------------------------ the board, with measured objects
 
@@ -90,6 +92,9 @@ class FocusMind(TwoStreamMind):
         self.map.integrate(obs["depth"]["table"], self.cams["table_depth"])  # what stands where: clearance only
         self._draw()
         self._publish(obs, "started", "the table camera's picture is on the board: choose SAM prompts (segment)")
+        while self.hold and not self.board.stopped:  # asked to look, not to sort: only the person's looks
+            r = self.board.take_request(who="person")
+            obs = (yield from self._do_request(r, obs)) if r is not None else (yield self._still(obs, IDLE_ROWS))
         # 1. the ventral stream's prompts and regions (it segments the table picture)
         t0 = time.time()
         while self.board.regions is None and time.time() - t0 < PROMPT_WAIT_S and not self.board.stopped:
@@ -199,6 +204,7 @@ class FocusMind(TwoStreamMind):
     def _close_look(self, xy, obs, label: str = "", extra: tuple = ()):
         """Look straight down at xy; keep what SAM and depth agree on; queue another look where they don't."""
         rows = self._close_rows(xy, obs)
+        self._look_ok = rows is not None
         if rows is None:
             self._say(f"No safe close look at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm.")
             return obs
@@ -329,6 +335,8 @@ class FocusMind(TwoStreamMind):
 
     def _do_request(self, r, obs):
         self.idle_since = None
+        if r.action == "look_for":
+            return (yield from self._look_for(r, obs))
         xy = r.xy if r.xy is not None else (self.objects.all[r.target].xy if r.target in self.objects.all else None)
         if xy is None:
             self.board.finish(r, "refused", f"#{r.target} isn't on the board any more")
@@ -351,10 +359,91 @@ class FocusMind(TwoStreamMind):
             return obs
         if r.action == "put_away" and r.target in self.objects.all:
             return (yield from self._put(self.objects.all[r.target], r.to or self._dest_of(r.target) or "", obs, request=r))
-        self._say(f"Request {r.id} from the ventral stream: close look at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm. It goes first.")
+        self._say(f"Request {r.id} from the {'person' if r.who == 'person' else 'ventral stream'}: close look at "
+                  f"({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm. It goes first.")
         obs = yield from self._close_look(np.asarray(xy), obs)
-        self.board.finish(r, "done", f"close look: {len(self.objects.parts())} parts measured so far")
+        if not self._look_ok:
+            self.board.finish(r, "refused", f"no safe close look at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm "
+                                            "(out of reach, or the fingers would hit something)")
+        elif r.who == "person":
+            self.board.finish(r, "done", self._near_text(xy))
+        else:
+            self.board.finish(r, "done", f"close look: {len(self.objects.parts())} parts measured so far")
         return obs
+
+    def _look_for(self, r, obs):
+        """The person's "look at the screw": SAM finds the word on the table picture (near xy if given), close looks there."""
+        word = r.note or "object"
+        obs = yield from self._park(obs)  # out of the table camera's way
+        regs = self._glance(obs, [word])
+        if r.xy is not None:
+            regs = [g for g in regs if np.linalg.norm(np.asarray(g["xy"]) - r.xy) < 0.08]
+        spots = focus.spots(regs)[:3]
+        if not spots:
+            self.board.finish(r, "refused", f"SAM finds no '{word}' on the table camera's picture"
+                                            + (" near there" if r.xy is not None else ""))
+            return obs
+        self._say(f"Looking for '{word}': {len(regs)} outline(s) on the table picture -> {len(spots)} close look(s).")
+        said = []
+        for xy in spots:
+            obs = yield from self._close_look(xy, obs, label=f" (looking for '{word}')", extra=(word,))
+            said.append(self._near_text(xy) if self._look_ok else
+                        f"no safe close look at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm")
+        self.board.finish(r, "done", f"'{word}': " + " | ".join(said))
+        return obs
+
+    def _near_text(self, xy, r: float = LOOK_R) -> str:
+        """What the board holds around xy after a look, for the person: what both streams agree on, what only depth sees."""
+        near = sorted((o for o in self.objects.all.values() if np.linalg.norm(o.xy - xy) < r),
+                      key=lambda o: np.linalg.norm(o.xy - xy))
+        seen = [f"{o.describe()}, SAM and depth agree {o.agree:.0%}" for o in near if o.kind != "unknown"]
+        only = [o.describe() for o in near if o.kind == "unknown"]
+        queued = sum(np.linalg.norm(q - xy) < r for q, _, _ in self.to_look)
+        return (f"looked at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm: " + ("; ".join(seen) or "nothing both streams agree on")
+                + (f". Only depth sees: {'; '.join(only)}" if only else "")
+                + (f". {queued} spot(s) there where they disagree, queued for another look" if queued else ""))
+
+    # ------------------------------------------------------------ what it knows, for the chat
+
+    def status(self) -> str:
+        b = self.board
+        lines = ["Mind: focus (the table picture with SAM picks where to look; close looks keep only what SAM's outline "
+                 "and the wrist depth agree on). Coordinates: mm in the robot's base frame, x out from the base, "
+                 "+y to the robot's left."]
+        if self.hold:
+            lines.append("Holding: only looking where the person asks; not sorting until asked.")
+        with b.cond:
+            labels, rule, contents = dict(b.labels), b.rule, {k: list(v) for k, v in b.contents.items()}
+            events = list(b.events)
+        parts = [o for o in self.objects.parts()]
+        boxes = self.objects.boxes()
+        unknown = [o for o in self.objects.all.values() if o.kind == "unknown"]
+        def where(o):
+            if o.id in self.failed or self._given_up(o):
+                return "gave up on it"
+            if self._done_with(o):
+                return "put away"
+            return f"for {self._dest_of(o.id)}" if self._dest_of(o.id) else "no cup in the rule yet"
+        lines.append(f"Parts measured ({len(parts)}):" + "".join(
+            f"\n  {o.describe()}" + (f", called '{labels[o.id]}'" if o.id in labels else "")
+            + f", SAM and depth agree {o.agree:.0%}, {where(o)}" for o in parts))
+        lines.append(f"Cups and boxes ({len(boxes)}):" + "".join(
+            f"\n  {o.describe()}" + (f", holds: {', '.join(contents[o.id])}" if contents.get(o.id) else "") for o in boxes))
+        if unknown:
+            lines.append("Only depth sees these (found again from a second look, no SAM outline; steered around, never "
+                         "picked):" + "".join(f"\n  {o.describe()}" for o in unknown))
+        if rule is not None:
+            lines.append(f"Sort rule ({rule.source}): {rule.text}" + "".join(
+                f"\n  {g['name']}: {', '.join('#' + str(i) for i in g['ids'])} -> {g['to']}" for g in rule.groups))
+        else:
+            lines.append("Sort rule: none yet.")
+        lines.append(f"Requests: {b.queue_text()}. Second looks queued: {len(self.to_look)}"
+                     + "".join(f"\n  ({q[0] * 1000:.0f}, {q[1] * 1000:.0f}) mm: {why}" for q, why, _ in self.to_look[:5]))
+        trouble = [f"{k}: {t}" for _, _, k, t in events if k in ("gave_up", "request_refused")][-6:]
+        if trouble:
+            lines.append("Gave up or refused lately (oldest first):\n  " + "\n  ".join(trouble))
+        lines.append(f"Put away so far: {len(self.placed)}.")
+        return "\n".join(lines)
 
     def _grip_for(self, o):
         """Jaws placed from o's outline (any shape): narrow enough between them, both fingers clear of o and of every

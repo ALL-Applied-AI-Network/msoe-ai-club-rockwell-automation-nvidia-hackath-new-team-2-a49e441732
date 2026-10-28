@@ -79,7 +79,7 @@ def main() -> None:
         elif kind != "done":
             board.add("log", text if kind != "move" else f"→ {text}")
         routine = text.startswith(("Sorted:", "Lost ", "(sim check"))  # its own bookkeeping: the log, not the chat
-        if kind in ("plan", "done", "check") or (kind == "note" and not routine):  # (a table change: logged, not acted on)
+        if kind in ("plan", "done", "check", "looked") or (kind == "note" and not routine):  # (a table change: logged, not acted on)
             threading.Thread(target=chat.event, args=(kind, text), daemon=True).start()
 
     robot.listeners.append(on_event)
