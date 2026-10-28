@@ -119,17 +119,18 @@ class FocusMind(TwoStreamMind):
         for xy in spots:
             obs = yield from self._requests_first(obs)
             obs = yield from self._close_look(xy, obs)
-        obs = yield from self._look_again(obs)
+        if self._next_job() is None:  # second looks only while there's nothing to pick yet
+            obs = yield from self._look_again(obs)
         self.boxes = {o.id: o for o in self.objects.boxes()}
         self._publish(obs, "map_done", f"measured {len(self.objects.parts())} parts and {len(self.boxes)} cups "
                                        f"in {len(spots)} close looks")
         # 3. the rule's work, requests first
         while True:
-            r = self.board.take_request()
+            job = self._next_job()  # a job first: act on the best measurement, and a miss is the check
+            r = self.board.take_request(looks=job is None)  # the ventral stream's "look closer" waits for the picks
             if r is not None:
                 obs = yield from self._do_request(r, obs)
                 continue
-            job = self._next_job()  # a job first: act on the best measurement, and a miss is the check
             if job is not None:
                 obs = yield from self._put(*job, obs)
                 continue

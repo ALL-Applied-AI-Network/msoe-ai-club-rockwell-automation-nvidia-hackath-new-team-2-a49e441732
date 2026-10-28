@@ -124,9 +124,11 @@ class Board:
                 self.agreement.rows = [r for r in self.agreement.rows if r.seg not in ids]
         return ids
 
-    def take_request(self, who: str | None = None) -> Request | None:
+    def take_request(self, who: str | None = None, looks: bool = True) -> Request | None:
+        """The next queued request (from `who`, if given); looks=False leaves the ventral stream's look_closer queued."""
         with self.cond:
-            r = next((r for r in self.requests if r.status == "queued" and who in (None, r.who)), None)
+            r = next((r for r in self.requests if r.status == "queued" and who in (None, r.who)
+                      and (looks or r.who == "person" or r.action != "look_closer")), None)
             if r is not None:
                 r.status = "doing"
             return r
