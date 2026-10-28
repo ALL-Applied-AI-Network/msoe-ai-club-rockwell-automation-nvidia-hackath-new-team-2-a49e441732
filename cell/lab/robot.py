@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import requests
 
 from lab import armcheck, primitives as P, viz
 from lab.isaaccell import IsaacCell
@@ -43,7 +44,7 @@ class Robot:
         self.mode = "sim"
         try:
             self.cell = IsaacCell(build(load_trial(trial), seed))
-        except SystemExit as e:  # no Isaac (away from the GPU box's network): MuJoCo stands in until the real cell
+        except (SystemExit, OSError, requests.RequestException) as e:  # no Isaac (unreachable, or reset): MuJoCo stands in
             print(f"{e}; using the MuJoCo cell instead", flush=True)
             self.cell = build(load_trial(trial), seed)
         self.cell.noise = True  # the simulator's depth made as bad as the real sensors'
