@@ -36,6 +36,7 @@ MAX_PROMPTS = 6                   # SAM words per look (each is a call)
 DROP_ABOVE_RIM_MM = 4.0
 GRIP_SHARE = 0.45                 # fingertips close at most this far up the part
 PILE_GAP = 0.07                   # m between parts of different piles on the table (the piles never touch)
+UNSEEN_CAP_MM = 90.0              # space no depth has seen counts as solid up to this high, for the fingertips
 BOX_WORDS = ("cup", "box", "container", "bin", "tray", "bowl", "basket", "bucket")
 BOX_ASSUME_MM = 90.0              # an unmeasured cup or box near a close look: the fingertips stay above this
 SIZE_TOL_MM = 4.0                 # measured this much wider than the person said: say so when the grip fails
@@ -300,8 +301,13 @@ class FocusMind(TwoStreamMind):
         """height_under(xy, r): the tallest thing (mm) the map or the measured objects put within r of xy."""
         m = self.map
         occ = (m.solid() | m.leaning()) & m.clear_of_table()
-        idx = np.nonzero(occ)
-        pts = m.centers(*idx)
+        pts = m.centers(*np.nonzero(occ))
+        # never seen is not empty: unseen space near the table may hold something (capped so the highest look stays
+        # possible); seen-empty and seen-solid are what the depth said
+        unseen = m.unknown() & m.above_table()
+        unseen[:, :, m.k_table + int(UNSEEN_CAP_MM / 1000 / m.v):] = False
+        if unseen.any():
+            pts = np.vstack([pts, m.centers(*np.nonzero(unseen))])
         objs = list(self.objects.all.values())
 
         def under(xy, r):
