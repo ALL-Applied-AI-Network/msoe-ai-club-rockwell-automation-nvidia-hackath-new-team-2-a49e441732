@@ -94,18 +94,26 @@ def depth_to_base(cam: dict, depth_mm, stride: int = 1, with_pixels: bool = Fals
     return (pts, np.stack([u[m], v[m]], -1)) if with_pixels else pts
 
 
-def pixel_to_base(cam: dict, uv, z: float = SURFACE_Z) -> np.ndarray:
-    """A pixel of a fixed camera (table, side) -> the base-frame point where its ray meets the plane z (m)."""
+def pixel_to_base(cam: dict, uv, z: float = SURFACE_Z, joints=None) -> np.ndarray:
+    """A colour camera's pixel (u, v), or (N, 2) pixels, in the calibration's size -> the base-frame point(s) where the
+    ray meets the plane z (m). The wrist camera moves with the arm: pass joints=obs["joints"]."""
     if cam.get("depth"):
         raise ValueError("for the depth stream use depth_to_base")
-    if cam["frame"] != "base":
-        raise ValueError("pixel_to_base needs a fixed camera; for the wrist compose T_flange_cam with the joints' FK")
+    T = cam["T"]
+    if cam["frame"] == "flange":
+        if joints is None:
+            raise ValueError("the wrist camera moves with the arm: pass joints=obs['joints']")
+        T = flange_pose(joints) @ T
+    uv = np.asarray(uv, float)
+    one = uv.ndim == 1
+    uv = uv.reshape(-1, 2)
     w, h = cam["size"]
-    xd, yd = (uv[0] - w / 2) / cam["fx"], (uv[1] - h / 2) / cam["fx"]
+    xd, yd = (uv[:, 0] - w / 2) / cam["fx"], (uv[:, 1] - h / 2) / cam["fx"]
     x, y = xd, yd
     for _ in range(10):
         d = 1 + cam["k1"] * (x * x + y * y)
         x, y = xd / d, yd / d
-    ray = cam["T"][:3, :3] @ np.array([x, y, 1.0])
-    o = cam["T"][:3, 3]
-    return o + ray * (z - o[2]) / ray[2]
+    ray = np.stack([x, y, np.ones_like(x)], -1) @ T[:3, :3].T
+    o = T[:3, 3]
+    p = o + ray * ((z - o[2]) / ray[:, 2])[:, None]
+    return p[0] if one else p

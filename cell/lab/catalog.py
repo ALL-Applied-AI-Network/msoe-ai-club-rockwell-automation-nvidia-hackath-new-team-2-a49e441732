@@ -147,6 +147,8 @@ def bin_box(w: float = 50, h: float = 55, wall: float = 2) -> list[Part]:
 
 KINDS: dict[str, Kind] = {k.name: k for k in [
     Kind("cube_10", cube(10), "red", notes="the cell's small cube; fits the 12 mm gripper", tags=["cube", "grippable"]),
+    Kind("cube_15", cube(15), "red", notes="the real cell's cubes as the wrist camera measures them (Oct 28, unconfirmed): "
+         "2.5 mm per side in the 20 mm gap, so the jaws must be within ~4 deg of square", tags=["cube", "grippable"]),
     Kind("cube_16", cube(16), "blue", notes="too wide to grip face-to-face: push it", tags=["cube"]),
     Kind("screw_m6x30", screw_m6x30(), "steel", "steel", tags=["fastener", "grippable"]),
     Kind("jack", jack(), "gold", "steel", notes="thin legs: grippable", tags=["toy", "grippable"]),

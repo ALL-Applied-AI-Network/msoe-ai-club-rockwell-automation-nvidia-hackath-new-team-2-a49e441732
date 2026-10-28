@@ -31,9 +31,10 @@ TIP_CLEAR_MM = 12.0               # the fingertips stay this far above anything 
 PROMPT_WAIT_S = 60.0              # wall time to wait for the ventral stream's prompts before using the defaults
 DEFAULT_PROMPTS = ["cube", "cup", "small object"]
 LOOK_R = 0.035                    # a close look covers this well around its centre (objects there not found = gone)
+RELOOKS = 2                       # second looks at one spot where the streams disagree, then it's dropped
+MAX_PROMPTS = 6                   # SAM words per look (each is a call)
 DROP_ABOVE_RIM_MM = 4.0
 GRIP_SHARE = 0.45                 # fingertips close at most this far up the part
-NEIGHBOUR_MM = 2.0                # a finger keeps this much air from any other object
 
 
 class FocusMind(TwoStreamMind):
@@ -46,13 +47,19 @@ class FocusMind(TwoStreamMind):
         self.prompts: list[str] | None = None
         self.T_ct = _cam_in_tool(self.cams["wrist_depth"])
         self.final_checks = 0
+        self.depth_only = focus.DepthOnly()   # raised depth no outline covers, until a second look finds it again
+        self.relooks: dict = {}               # spot (1 cm grid) -> second looks spent there
+        self.to_look: list = []               # (xy, why, extra SAM words): disagreements to look at again
+        self._stale_told = None               # the rule we last said was made before a cup was found
 
     # ------------------------------------------------------------ the board, with measured objects
 
     def _publish(self, obs, kind: str, text: str = "") -> None:
         img = obs["images"]["table"]
         arm = agree.arm_mask(np.asarray(obs["joints"][:6], float), self.cams["table"], (img.shape[1], img.shape[0]))
-        self.board.set_things(list(self.objects.all.values()), [], img, arm)
+        self.board.set_things([o for o in self.objects.all.values() if o.kind != "unknown"], [], img, arm)
+        with self.board.cond:
+            self.board.unknown = [o.describe() for o in self.objects.all.values() if o.kind == "unknown"]
         self._draw_objects()
         self._draw_board()
         self.board.post(kind, text)
@@ -65,6 +72,10 @@ class FocusMind(TwoStreamMind):
                 centers=[[*o.xy, SURFACE_Z + h / 2]], half_sizes=[[o.size_mm[0] / 2000, o.size_mm[1] / 2000, h / 2]],
                 rotation_axis_angles=[rr.RotationAxisAngle([0, 0, 1], degrees=o.angle)], colors=[list(o.rgb)],
                 labels=[f"#{o.id} {o.label or o.what} · {o.size_mm[0]:.0f}×{o.size_mm[1]:.0f}×{o.top_mm:.0f} mm"]))
+            if o.outline is not None:  # the outline the grip is planned on, at the height of its top
+                ring = np.column_stack([o.outline, np.full(len(o.outline), SURFACE_Z + h)])
+                rr.log(f"mind/7_things/o{o.id}/outline", rr.LineStrips3D([np.vstack([ring, ring[:1]])],
+                                                                         colors=[[255, 255, 255]], radii=0.0003))
 
     # ------------------------------------------------------------ the loop
 
@@ -94,6 +105,7 @@ class FocusMind(TwoStreamMind):
         for xy in spots:
             obs = yield from self._requests_first(obs)
             obs = yield from self._close_look(xy, obs)
+        obs = yield from self._look_again(obs)
         self.boxes = {o.id: o for o in self.objects.boxes()}
         self._publish(obs, "map_done", f"measured {len(self.objects.parts())} parts and {len(self.boxes)} cups "
                                        f"in {len(spots)} close looks")
@@ -102,6 +114,9 @@ class FocusMind(TwoStreamMind):
             r = self.board.take_request()
             if r is not None:
                 obs = yield from self._do_request(r, obs)
+                continue
+            if self.to_look:
+                obs = yield from self._look_again(obs)
                 continue
             job = self._next_job()
             if job is not None:
@@ -181,7 +196,8 @@ class FocusMind(TwoStreamMind):
 
     # ------------------------------------------------------------ a close look
 
-    def _close_look(self, xy, obs, label: str = ""):
+    def _close_look(self, xy, obs, label: str = "", extra: tuple = ()):
+        """Look straight down at xy; keep what SAM and depth agree on; queue another look where they don't."""
         rows = self._close_rows(xy, obs)
         if rows is None:
             self._say(f"No safe close look at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm.")
@@ -189,12 +205,41 @@ class FocusMind(TwoStreamMind):
         obs = yield rows
         obs = yield self._still(obs, 12)  # the arm settles: the picture and the joints agree
         self._fuse_wrist(obs)
-        found, masks = focus.measure(obs, self.cams, self.prompts or DEFAULT_PROMPTS)
-        self.objects.merge(found, seen_xy=xy, seen_r=LOOK_R)
+        prompts = list(dict.fromkeys(list(self.prompts or DEFAULT_PROMPTS) + list(self.board.prompts or []) + list(extra)))
+        found, masks, issues = focus.measure(obs, self.cams, prompts[:MAX_PROMPTS])
+        depth_only = [o for o in found if o.kind == "unknown"]
+        agreed = [o for o in found if o.kind != "unknown"]
+        confirmed = self.depth_only.update(depth_only, xy, xy, LOOK_R)  # the camera is straight above xy
+        self.objects.merge(agreed + confirmed, seen_xy=xy, seen_r=LOOK_R)
         self._draw_wrist_masks(masks, obs)
-        self._say(f"Close look at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm{label}: {len(masks)} outlines, "
-                  f"{len(found)} standing up: " + ("; ".join(o.describe() for o in found) or "nothing"))
-        self._publish(obs, "skill_done", f"close look: {len(found)} objects measured")
+        for i in issues:
+            if i.kind in ("flat", "partial", "no_depth"):
+                self._queue_look(i.xy, i.text)
+        for o in confirmed:
+            self._queue_look(o.xy, f"depth sees {o.describe()} from two looks, and no outline covers it", ("object",))
+        noise = next((i.text for i in issues if i.kind == "noise"), "")
+        told = [i.text for i in issues if i.kind in ("flat", "partial", "no_depth")]
+        self._say(f"Close look at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm{label}: {len(masks)} outlines; "
+                  f"{len(agreed)} where SAM and depth agree: " + ("; ".join(f"{o.describe()} ({o.agree:.0%} agree)" for o in agreed) or "none")
+                  + (f". They disagree: {'; '.join(told)}" if told else "")
+                  + f". Depth only: {len(depth_only)} patch(es), {len(confirmed)} found again from another look"
+                  + (f"; {noise}" if noise else "") + ".")
+        self._publish(obs, "skill_done", f"close look: {len(agreed)} objects both streams agree on"
+                      + (f", {len(confirmed)} things only depth sees (try another word?)" if confirmed else ""))
+        return obs
+
+    def _queue_look(self, xy, why: str, extra: tuple = ()) -> None:
+        key = tuple(np.round(np.asarray(xy) / 0.01).astype(int))
+        if self.relooks.get(key, 0) >= RELOOKS or any(np.linalg.norm(np.asarray(q) - xy) < 0.01 for q, _, _ in self.to_look):
+            return
+        self.relooks[key] = self.relooks.get(key, 0) + 1
+        self.to_look.append((np.asarray(xy, float), why, tuple(extra)))
+
+    def _look_again(self, obs):
+        """The disagreements, looked at again from straight above each: they agree, or it's dropped."""
+        while self.to_look:
+            xy, why, extra = self.to_look.pop(0)
+            obs = yield from self._close_look(xy, obs, label=f" (again: {why})", extra=extra)
         return obs
 
     def _close_rows(self, xy, obs):
@@ -260,6 +305,15 @@ class FocusMind(TwoStreamMind):
             np.linalg.norm(o.xy - b.xy) * 1000 < max(b.size_mm) / 2 + 3 for b in self.objects.boxes())
 
     def _next_job(self):
+        rule = self.board.rule
+        new = {b.id for b in self.objects.boxes()} - set(rule.boxes) if rule is not None and rule.source == "ventral" else set()
+        if new:  # a cup found after the rule was made: it may have merged groups for want of it (seed 2: blue cubes -> red cup)
+            if self._stale_told is not rule:
+                self._stale_told = rule
+                self._say(f"The rule was made before cup(s) {', '.join(f'#{i}' for i in sorted(new))} were found: waiting for a new one.")
+                self.board.post("skill_done", f"new cup(s) on the board since the sort rule was set: "
+                                              f"{', '.join(f'box #{i}' for i in sorted(new))}. Set the rule again with every cup.")
+            return None
         for o in sorted(self.objects.parts(), key=lambda o: o.xy[1]):
             if self._done_with(o) or o.id in self.failed:
                 continue
@@ -303,34 +357,25 @@ class FocusMind(TwoStreamMind):
         return obs
 
     def _grip_for(self, o):
-        """Jaws centred on o, closing across its narrow side (or the other way), clear of every other object."""
-        others = [x for x in self.objects.all.values() if x.id != o.id]
+        """Jaws placed from o's outline (any shape): narrow enough between them, both fingers clear of o and of every
+        other object taller than the fingertips' height (lab.grasp.from_outline)."""
         h = max(2.5, min(GRIP_SHARE * o.top_mm, o.top_mm - 3.0))
-        long_, short = o.size_mm
-        a = np.radians(o.angle)
-        along = np.array([np.cos(a), np.sin(a)])
-        centres = [o.xy]
-        if long_ > grasp.GAP - 2:  # longer than the jaws open: likely touching things (one outline): take an end
-            off = (long_ - short) / 2000
-            centres = [o.xy + along * off, o.xy - along * off]
-        fits_any = np.hypot(long_, short) < grasp.GAP - 2  # its diagonal fits: any jaw angle grips it
-        if fits_any:
-            yaws = sorted(np.arange(0, 180, 15.0), key=lambda y: min(abs((y - o.angle) % 90), 90 - abs((y - o.angle) % 90)))
-        else:
-            yaws = [(o.angle + 90) % 180] + ([o.angle] if long_ <= grasp.GAP - 2 else [])
-        for c0 in centres:
-            for yaw in yaws:
-                d = np.array([np.cos(np.radians(yaw)), np.sin(np.radians(yaw))])
-                ok = True
-                for side in (-1, 1):
-                    c = c0 + side * d * (grasp.GAP / 2 + grasp.FINGER / 2) / 1000
-                    for x in others:
-                        reach = (np.hypot(*x.size_mm) / 2 + np.hypot(grasp.FINGER, grasp.WIDTH) / 2 + NEIGHBOUR_MM) / 1000
-                        if np.linalg.norm(c - x.xy) < reach and x.top_mm > h:
-                            ok = False
-                if ok:
-                    return grasp.Grip(float(c0[0]), float(c0[1]), float(h), float(yaw), 0, 1.0)
-        return None
+        others = [x.footprint() for x in self.objects.all.values() if x.id != o.id and x.top_mm > h]
+        grips = grasp.from_outline(o.footprint(), others, h)
+        return grips[0] if grips else None
+
+    def _draw_grip(self, g) -> None:
+        """Where the two fingers come down (their footprints), at the fingertips' height."""
+        a = np.radians(g.yaw)
+        d, e = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
+        z = SURFACE_Z + g.height_mm / 1000
+        strips = []
+        for side in (-1, 1):
+            near, far = side * grasp.GAP / 2000, side * (grasp.GAP / 2 + grasp.FINGER) / 2000
+            c = [np.array([g.x, g.y]) + s0 * d + s1 * e * grasp.WIDTH / 2000 for s0, s1 in
+                 ((near, -1), (far, -1), (far, 1), (near, 1), (near, -1))]
+            strips.append([[*p, z] for p in c])
+        rr.log("mind/plan/grip", rr.LineStrips3D(strips, colors=[[60, 220, 90]], radii=0.0006))
 
     def _put(self, o, dest: str, obs, request=None):
         """Look closely right above o, grip it at its fresh position, drop it in the cup, look to check."""

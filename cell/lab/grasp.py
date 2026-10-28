@@ -144,3 +144,61 @@ def find(scene_pts: np.ndarray, target_pts: np.ndarray, top_k: int = 8, max_heig
         if len(out) >= top_k:
             break
     return out, rejected[:12]
+
+
+CLEAR = 2.0        # mm: each finger lands at least this far from the part (room for a small position error)
+NEIGHBOUR = 2.0    # mm: and this far from anything else
+OUTLINE_YAWS = np.arange(0.0, 180.0, 2.5)  # fine: a 15 mm cube only fits the 20 mm gap within ~4 deg of square
+
+
+def from_outline(target: np.ndarray, obstacles: list[np.ndarray], height_mm: float) -> list[Grip]:
+    """Grips from outlines seen from above, any shape: target is the part's outline on the table, obstacles the outlines
+    of everything else the fingertips could hit at height_mm ((N, 2) base metres each). At every jaw angle and every
+    position along the part, the fingers' strip across it must hold the part within GAP - 2 CLEAR (calipers), and both
+    finger footprints must be clear of the part and of every obstacle. Ranked by how much air each finger has, how close
+    to the middle of the part the jaws close, and how parallel the two faces they meet are (a squeezed part doesn't turn)."""
+    c = np.asarray(target, float).mean(0)
+    n = int(CROP * 2000)  # 1 mm cells
+    half = (WIDTH + 1) // 2 + MARGIN
+    out = []
+    for yaw in OUTLINE_YAWS:
+        a = np.radians(yaw)
+        d, e = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
+
+        def fill(polys):  # outlines in this angle's frame: columns along the closing direction, rows across it
+            im = np.zeros((n, n), np.uint8)
+            for p in polys:
+                q = (np.asarray(p, float) - c) * 1000
+                cv2.fillPoly(im, [np.round(np.column_stack([q @ d, q @ e]) + n / 2).astype(np.int32)], 1)
+            return im.astype(bool)
+
+        own = fill([target])
+        block = cv2.dilate(fill(obstacles).astype(np.uint8), np.ones((2 * int(NEIGHBOUR) + 1,) * 2, np.uint8)).astype(bool)
+        rows = np.nonzero(own.any(1))[0]
+        if not len(rows):
+            continue
+        mid_row = np.average(np.nonzero(own)[0])
+        best = None
+        for r in range(rows[0] + half, rows[-1] - half + 1):
+            band = own[r - half:r + half + 1]
+            if not band[half - WIDTH // 2:half + WIDTH // 2].any(1).all():
+                continue  # the part doesn't fill the fingers' width here (a tip or a gap): no flat grip
+            cols = np.nonzero(band.any(0))[0]
+            w = cols[-1] - cols[0] + 1
+            if w > GAP - 2 * CLEAR:
+                continue
+            mid = (cols[0] + cols[-1]) / 2
+            left = slice(int(np.floor(mid - GAP / 2 - FINGER - MARGIN)), int(np.ceil(mid - GAP / 2)))
+            right = slice(int(np.floor(mid + GAP / 2)) + 1, int(np.ceil(mid + GAP / 2 + FINGER + MARGIN)) + 1)
+            if block[r - half:r + half + 1, left].any() or block[r - half:r + half + 1, right].any():
+                continue
+            edges = [np.nonzero(row)[0] for row in band if row.any()]
+            twist = np.std([x[0] for x in edges]) + np.std([x[-1] for x in edges])
+            score = (GAP - w) / 2 - 0.5 * abs(r - mid_row) - twist
+            if best is None or score > best[0]:
+                best = (score, r, mid, int(band.sum()))
+        if best:
+            score, r, mid, cells = best
+            xy = c + ((mid - n / 2) * d + (r - n / 2) * e) / 1000
+            out.append(Grip(float(xy[0]), float(xy[1]), float(height_mm), float(yaw), cells, float(score)))
+    return sorted(out, key=lambda g: -g.score)

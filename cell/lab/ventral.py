@@ -26,6 +26,7 @@ from lab.things import _inside
 
 
 COLOURS = ("red", "blue", "yellow", "green", "orange", "purple", "white", "black", "gray", "pink", "brown")
+HUES = ("red", "blue", "yellow", "green", "orange", "purple", "pink")
 
 
 def _in_box(t, box) -> bool:
@@ -269,8 +270,18 @@ class Ventral(threading.Thread):
             for g in groups:  # "red cubes" -> the blue cup is a slip of the id, not a choice
                 said = [c for c in COLOURS if c in g["name"].lower().split()]
                 cup = box_colour.get(g["to"].lower())
-                if len(said) == 1 and cup in COLOURS and cup != said[0] and not user:
+                # only for coloured cups, and only when a cup of the group's colour exists: plain white, gray or
+                # black boxes say nothing about what goes in them
+                if (len(said) == 1 and cup in HUES and cup != said[0] and said[0] in box_colour.values()
+                        and not user):
                     problems.append(f"group '{g['name']}' goes to {g['to']}, which is the {cup} cup: check the box ids")
+            with b.cond:
+                cup_hues = {t.color for t in b.things.values() if t.kind == "box" and t.color in HUES}
+                part_hues = {t.color for t in b.things.values() if t.kind != "box" and t.color in HUES}
+            if (len(cup_hues) >= 2 and len(used) < len(boxes) and len(part_hues) >= 2 and part_hues <= cup_hues
+                    and not user):  # seed 2: "all cubes in the only cup" with three cups matching three cube colours
+                problems.append(f"the cups are {', '.join(sorted(cup_hues))} and the parts are {', '.join(sorted(part_hues))}: "
+                                f"every cup is on the board above; use each one")
             if problems:
                 return "not set: " + "; ".join(problems)
             if missing:
@@ -388,6 +399,12 @@ class Ventral(threading.Thread):
                             + (f" already holds: {', '.join(contents[t.id])}" if contents.get(t.id) else " empty")
                             for t in boxes) or "none found yet")
                + "\nParts on the board:\n" + ("\n".join(rows) or "(none yet: still mapping)"))
+        with b.cond:
+            unknown = list(b.unknown)
+        if unknown:
+            out += ("\nOnly depth sees these (no SAM outline agrees, so they aren't parts and won't be picked; the arm "
+                    "steers around them). If the picture shows what they are, segment with a word that fits:\n"
+                    + "\n".join(unknown))
         out += f"\nSort rule: {rule.text if rule else 'none yet'}"
         if user:
             out += "\nThe person's rules (these win): " + "; ".join(user)

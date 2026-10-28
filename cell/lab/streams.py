@@ -35,6 +35,7 @@ class Rule:
     text: str                     # in words, as the ventral stream (or the person) said it
     groups: list = field(default_factory=list)  # [{"name": "red cubes", "ids": [3, 7], "to": "box #2" | "table"}]
     source: str = "ventral"
+    boxes: frozenset = frozenset()  # the box ids on the board when it was set (a cup found later makes it stale)
 
 
 class Board:
@@ -60,6 +61,7 @@ class Board:
         self.mode = "segments"        # "focus": things are measured objects; segment() finds regions to look at
         self.regions = None           # focus: [{"xy", "prompt", "area_px"}] from the table picture
         self.prompts = None           # focus: the SAM prompts the ventral stream chose
+        self.unknown: list[str] = []  # focus: things only depth sees, found again from a second look (no outline yet)
         self.real = False             # the real cell: SAM stays off unless SAM_REAL=1 (lab images to Meta: the team's call)
 
     # ------------------------------------------------------------ news
@@ -154,6 +156,7 @@ class Board:
 
     def set_rule(self, rule: Rule) -> None:
         with self.cond:
+            rule.boxes = frozenset(t.id for t in self.things.values() if t.kind == "box")
             self.rule = rule
         self.post("rule", rule.text)
 

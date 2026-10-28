@@ -77,6 +77,41 @@
  "wrist": {
   "T_flange_cam": [
    [
+    0.0009598078497476542,
+    -0.01924969010549481,
+    0.9998142468477506,
+    0.16333580033379694
+   ],
+   [
+    -0.9997394999011722,
+    -0.022818008363743588,
+    0.0005204148985892172,
+    0.01059204367783703
+   ],
+   [
+    0.02280375202123795,
+    -0.9995542946359416,
+    -0.019266576462863033,
+    0.09640143491636058
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "fx": 619.6399636921526,
+  "k1": -0.019600611286561938,
+  "size": [
+   1280,
+   720
+  ],
+  "solved": "2026-10-07",
+  "rms_px": 0.9037254770073838,
+  "transform": "T_flange_cam: camera -> flange, the twin's J6_link frame (wrist centre, tool along +x); compose with the FK of the joints",
+  "T_flange_cam_before_oct28": [
+   [
     0.02815589822486686,
     -0.019838546616531838,
     0.9994066627070759,
@@ -101,15 +136,7 @@
     1.0
    ]
   ],
-  "fx": 619.6399636921526,
-  "k1": -0.019600611286561938,
-  "size": [
-   1280,
-   720
-  ],
-  "solved": "2026-10-07",
-  "rms_px": 0.9037254770073838,
-  "transform": "T_flange_cam: camera -> flange, the twin's J6_link frame (wrist centre, tool along +x); compose with the FK of the joints"
+  "mount_fix": "Oct 28: mount tilted 1.56 deg (about the camera's y axis) and shifted ~2 mm sideways, fitted so 96 real wrist views of 16 cubes (run 20261026-164036) agree: 11.0 -> 0.7 px. Not yet checked against the gripper."
  },
  "table_depth": {
   "model": "pinhole, no distortion (rectified by the camera): u = fx X/Z + cx, v = fy Y/Z + cy",
@@ -168,6 +195,42 @@
   "rms_plane_mm": 3.0,
   "T_flange_cam": [
    [
+    -0.046210539457698416,
+    -0.034011983160404845,
+    0.998352802467675,
+    0.1756828928832508
+   ],
+   [
+    -0.9988284478460007,
+    -0.012813324984675923,
+    -0.04666909907246755,
+    0.027513891984653076
+   ],
+   [
+    0.014379836771586772,
+    -0.9993392099174,
+    -0.03338033646780775,
+    0.10152485291819413
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "transform": "T_flange_cam: depth camera -> flange (the twin's J6_link frame); compose with the FK of the joints the depth came with (camera: +z forward, +x right, +y down)",
+  "solved_at_joints": [
+   -0.007,
+   3.291,
+   -11.897,
+   -0.001,
+   -74.822,
+   -0.029
+  ],
+  "notes": "Factory intrinsics and depth-to-colour extrinsics on the wrist colour camera's flange pose, then tilted and shifted onto the work surface at solved_at_joints. Depth: mm along the optical axis; 0 = none.",
+  "T_flange_cam_before_oct28": [
+   [
     -0.019032,
     -0.034867,
     0.999211,
@@ -192,15 +255,6 @@
     1.0
    ]
   ],
-  "transform": "T_flange_cam: depth camera -> flange (the twin's J6_link frame); compose with the FK of the joints the depth came with (camera: +z forward, +x right, +y down)",
-  "solved_at_joints": [
-   -0.007,
-   3.291,
-   -11.897,
-   -0.001,
-   -74.822,
-   -0.029
-  ],
-  "notes": "Factory intrinsics and depth-to-colour extrinsics on the wrist colour camera's flange pose, then tilted and shifted onto the work surface at solved_at_joints. Depth: mm along the optical axis; 0 = none."
+  "mount_fix": "Oct 28: mount tilted 1.56 deg (about the camera's y axis) and shifted ~2 mm sideways, fitted so 96 real wrist views of 16 cubes (run 20261026-164036) agree: 11.0 -> 0.7 px. Not yet checked against the gripper."
  }
 }
