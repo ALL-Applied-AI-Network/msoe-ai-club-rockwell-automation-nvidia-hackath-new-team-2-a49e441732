@@ -465,8 +465,11 @@ class Robot:
 
     def objects(self) -> list[dict]:
         out = []
+        poses = getattr(self.cell, "poses", None)  # the Isaac cell's truth; the MuJoCo stand-in has none
+        if poses is None:
+            return out
         for i in self.cell.instances:
-            p = self.cell.poses.get(i.id)
+            p = poses.get(i.id)
             if p is None:
                 continue
             out.append({"id": i.id, "name": i.name, "kind": i.kind, "color": i.color, "box": i.kind.startswith("box"),
