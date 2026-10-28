@@ -35,6 +35,7 @@ RELOOKS = 2                       # second looks at one spot where the streams d
 MAX_PROMPTS = 6                   # SAM words per look (each is a call)
 DROP_ABOVE_RIM_MM = 4.0
 GRIP_SHARE = 0.45                 # fingertips close at most this far up the part
+SIZE_TOL_MM = 4.0                 # measured this much wider than the person said: say so when the grip fails
 
 
 class FocusMind(TwoStreamMind):
@@ -53,6 +54,7 @@ class FocusMind(TwoStreamMind):
         self._stale_told = None               # the rule we last said was made before a cup was found
         self.hold = False                     # only the person's looks until a sort is asked for (lab.robot.look_at)
         self._look_ok = True                  # the last close look could be made
+        self._count_search = False            # one more search with the person's words when the count is short
 
     # ------------------------------------------------------------ the board, with measured objects
 
@@ -144,8 +146,14 @@ class FocusMind(TwoStreamMind):
                 self.board.post("skill_done", f"final check: {len(spots)} looks")
                 continue
             if self._finished():
-                self._say("Done: every part the rule names is in its cup.")
-                self.board.post("done", "the rule is carried out")
+                short = self._short()
+                if short and not self._count_search:  # fewer than the person said: one more search, their words
+                    self._count_search = True
+                    obs = yield from self._search(obs, [w for w, _, _ in short])
+                    continue
+                gap = "; ".join(f"I found {n} {w}{'' if n == 1 or w.endswith('s') else 's'}, you said {c}" for w, n, c in short)
+                self._say("Done: every part the rule names is in its cup." + (f" But {gap}." if gap else ""))
+                self.board.post("done", "the rule is carried out" + (f"; short: {gap}" if gap else ""))
                 break
             if self.idle_since is None:
                 self.idle_since = time.time()
@@ -211,7 +219,8 @@ class FocusMind(TwoStreamMind):
         obs = yield rows
         obs = yield self._still(obs, 12)  # the arm settles: the picture and the joints agree
         self._fuse_wrist(obs)
-        prompts = list(dict.fromkeys(list(self.prompts or DEFAULT_PROMPTS) + list(self.board.prompts or []) + list(extra)))
+        prompts = list(dict.fromkeys(list(extra) + self._told_words() + list(self.prompts or DEFAULT_PROMPTS)
+                                     + list(self.board.prompts or [])))  # the person's words first: they know
         found, masks, issues = focus.measure(obs, self.cams, prompts[:MAX_PROMPTS])
         depth_only = [o for o in found if o.kind == "unknown"]
         agreed = [o for o in found if o.kind != "unknown"]
@@ -392,6 +401,52 @@ class FocusMind(TwoStreamMind):
         self.board.finish(r, "done", f"'{word}': " + " | ".join(said))
         return obs
 
+    # ------------------------------------------------------------ what the person told it
+
+    def _told_words(self) -> list[str]:
+        return list(self.board.told())
+
+    @staticmethod
+    def _matches(word: str, text: str) -> bool:
+        """'red cube' matches 'red cube #3' and 'cubes'; every word of it, plural or not."""
+        have = {t.rstrip("s") for t in text.lower().replace("#", " ").replace("_", " ").split()}
+        return all(t.rstrip("s") in have for t in word.lower().split())
+
+    def _told_size(self, o) -> float | None:
+        for w, d in self.board.told().items():
+            if d["size_mm"] and self._matches(w, f"{o.color} {o.what} {o.label or ''}"):
+                return float(d["size_mm"])
+        return None
+
+    def _short(self) -> list[tuple[str, int, int]]:
+        """(word, found, said) for each count the person gave that the table and the cups don't reach."""
+        with self.board.cond:
+            put = [n for c in self.board.contents.values() for n in c]
+        out = []
+        for w, d in self.board.told().items():
+            if not d["count"]:
+                continue
+            n = sum(self._matches(w, f"{o.color} {o.what} {o.label or ''}") for o in self.objects.parts()
+                    if not any(np.linalg.norm(o.xy - b.xy) * 1000 < max(b.size_mm) / 2 + 3 for b in self.objects.boxes()))
+            n += sum(self._matches(w, name) for name in put)
+            if n < int(d["count"]):
+                out.append((w, n, int(d["count"])))
+        return out
+
+    def _search(self, obs, words):
+        """The table picture with the person's words; a close look at every outline nothing measured covers."""
+        obs = yield from self._park(obs)
+        regs = self._glance(obs, words)
+        cups = self.objects.boxes()
+        left = [r for r in regs if not any(np.linalg.norm(np.asarray(r["xy"]) - b.xy) < 0.045 for b in cups)
+                and not any(np.linalg.norm(np.asarray(r["xy"]) - o.xy) < 0.012 for o in self.objects.all.values())]
+        spots = focus.spots(left)
+        self._say(f"Fewer {', '.join(w if w.endswith('s') else w + 's' for w in words)} than you said: searching the table picture for them; "
+                  f"{len(left)} new outline(s) -> {len(spots)} close look(s).")
+        for xy in spots:
+            obs = yield from self._close_look(xy, obs, label=" (searching with your words)", extra=tuple(words))
+        return obs
+
     def _near_text(self, xy, r: float = LOOK_R) -> str:
         """What the board holds around xy after a look, for the person: what both streams agree on, what only depth sees."""
         near = sorted((o for o in self.objects.all.values() if np.linalg.norm(o.xy - xy) < r),
@@ -442,6 +497,14 @@ class FocusMind(TwoStreamMind):
         trouble = [f"{k}: {t}" for _, _, k, t in events if k in ("gave_up", "request_refused")][-6:]
         if trouble:
             lines.append("Gave up or refused lately (oldest first):\n  " + "\n  ".join(trouble))
+        told = self.board.told()
+        if told:
+            lines.append("What the person told me is on the table: " + "; ".join(
+                f"{w}" + (f" x{d['count']}" if d["count"] else "") + (f", {d['size_mm']} mm" if d["size_mm"] else "")
+                for w, d in told.items()))
+            short = self._short()
+            if short:
+                lines.append("Fewer than they said, so far: " + "; ".join(f"{w}: {n} of {c}" for w, n, c in short))
         lines.append(f"Put away so far: {len(self.placed)}.")
         return "\n".join(lines)
 
@@ -491,6 +554,14 @@ class FocusMind(TwoStreamMind):
             return obs
         o = min(fresh, key=lambda x: np.linalg.norm(x.xy - old))
         g = self._grip_for(o)
+        said = self._told_size(o)
+        if g is None and said and max(o.size_mm) > said + SIZE_TOL_MM:
+            self.failed.add(o.id)
+            viz.narrate(f"#{o.id} measures {o.size_mm[0]:.0f} x {o.size_mm[1]:.0f} mm and you said {said:.0f} mm: my "
+                        f"outline is too big for the fingers, so I'm not gripping it blind. Can you nudge it, or check it?",
+                        level="WARN")
+            self.board.post("gave_up", f"#{o.id}: measures {max(o.size_mm):.0f} mm, the person said {said:.0f}: too wide to grip")
+            return obs
         if g is None:
             self._say(f"#{o.id}: no grip with both fingers clear of its neighbours; the others first.")
             self.misses.append(np.asarray(o.xy))  # tried again later (after neighbours leave), twice at most
@@ -527,7 +598,7 @@ class FocusMind(TwoStreamMind):
             self.picks["verified"] += 1
             self.placed.append((np.array(box.xy), dest))
             with self.board.cond:
-                self.board.contents.setdefault(box.id, []).append(label)
+                self.board.contents.setdefault(box.id, []).append(label if o.color in label else f"{o.color} {label}")
         self._publish(obs, "skill_done", f"put #{o.id} ({label}) in the {box.color} cup" + (" (it didn't come up)" if still else ""))
         if request:
             self.board.finish(request, "done", "put away")

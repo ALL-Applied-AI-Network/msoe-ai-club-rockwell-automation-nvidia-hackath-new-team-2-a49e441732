@@ -54,11 +54,16 @@ Decide what each message is and act on it:
   cup" is the cup's place plus about 60 mm in the direction meant), a thing's number to look at it again, or a word for
   SAM ("screw", "washer") to find it on the table picture (with a place too, to search only near there). With no job
   running, look_at only looks: it doesn't start a sort. Say you're looking; the findings come back as a "looked" event.
+- what's on the table, from the person ("that pile is 4 screws and 2 washers", "there are 6 cubes", "the cubes are
+  15 mm"): call tell, with each kind as a short word SAM can find ("screw", "washer", "red cube") and the count and
+  size if they gave them. It's not a rule and not a change to the table. You use their words to search, check your
+  counts against theirs before you say you're done, and say so when what you measure disagrees with what they said
+  (their word helps you look; it never replaces measuring).
 - "map the whole table": call start_mapping (the old depth-only map; it stops a sort in progress).
 - a correction or preference ("no, Lego goes in the white box", "leave the ring out"): call add_rule with it, in plain
   words; during a sort your ventral stream takes it and redoes the sort rule. Things already in a box stay there unless they ask; if they ask,
   say honestly whether you can get them back out (see what you can't do).
-- news about the table from the person ("I just dumped more on", "I took the ring"): call table_changed. Never for
+- news that the person CHANGED the table ("I just dumped more on", "I took the ring"): call table_changed. Never for
   your own plan or moves: something you can't identify yet is not a change to the table.
 - "hold on", "wait", "stop for a sec": call pause. (The real emergency stop is a red button, not you.)
 - "keep going", "try again", "carry on", "continue": call resume. Never turn these into rules: a rule is a lasting
@@ -98,6 +103,14 @@ TOOLS = [
          "y_mm": {"type": "number", "description": "+ is the robot's left, -450 to 450"},
          "thing": {"type": "integer", "description": "a measured thing's number, to look at it again"},
          "word": {"type": "string", "description": "a short SAM prompt, e.g. 'screw'"}}}}},
+    {"type": "function", "function": {"name": "tell", "description": "What the person says is on the table (kinds, counts, sizes). Used to search with their words, to check counts before finishing, and to explain a measurement that disagrees.",
+     "parameters": {"type": "object", "properties": {
+         "text": {"type": "string", "description": "their words"},
+         "items": {"type": "array", "items": {"type": "object", "properties": {
+             "word": {"type": "string", "description": "a short SAM word for one kind, singular: 'screw', 'red cube'"},
+             "count": {"type": "integer", "description": "how many, if they said"},
+             "size_mm": {"type": "number", "description": "its width in mm, if they said"}}, "required": ["word"]}}},
+         "required": ["text", "items"]}}},
     {"type": "function", "function": {"name": "start_sorting", "description": "Sort the table: the depth stream maps and moves the arm while the ventral stream (an LLM with SAM 3.1) works out what things are, asks for piles to be broken up, and sets the sort rule.",
      "parameters": {"type": "object", "properties": {"instruction": {"type": "string", "description": "the person's words for how to sort, if any"}}}}},
     {"type": "function", "function": {"name": "add_rule", "description": "A correction or standing preference from the person; the plan is redone before the next move.",
@@ -181,6 +194,8 @@ class Chat:
             return self.robot.start(args.get("instruction", "") or "map the table", mind="map")
         if name == "look_at":
             return self.robot.look_at(args.get("x_mm"), args.get("y_mm"), args.get("thing"), (args.get("word") or "").strip())
+        if name == "tell":
+            return self.robot.tell(args.get("text", ""), args.get("items") or [])
         if name == "start_sorting":
             return self.robot.start(args.get("instruction") or "sort these", mind="focus")
         if name == "add_rule":

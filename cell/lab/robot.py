@@ -70,6 +70,7 @@ class Robot:
         self.step = 0
         self.done_log: list[str] = []      # what it has done, in order: "carried #7 into box #2", "raked #4"
         self.looks: list[dict] = []        # the person's looks asked for before a mind was running (look_at)
+        self.facts: list[tuple] = []       # (text, items): what the person says is on the table, for every job
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -144,6 +145,21 @@ class Robot:
             self._emit("looked", f"{r.status}: {r.result}")
         pol.board.request(ask["action"], None, ask["note"], xy=ask["xy"], who="person", on_done=done)
 
+    def tell(self, text: str, items: list[dict]) -> str:
+        """What the person says is on the table ("4 screws and 2 washers", "the cubes are 15 mm"): SAM searches with
+        their words first, a count it can't reach makes it search again before it says done (and then it says what's
+        missing), a size explains a grip it won't make. It never stands in for a measurement."""
+        items = [{"word": str(i.get("word", "")).strip(), "count": i.get("count"), "size_mm": i.get("size_mm")}
+                 for i in items or [] if str(i.get("word", "")).strip()]
+        with self.lock:
+            self.facts.append((text, items))
+            pol = self.policy or self.parked
+        if pol is not None and hasattr(pol, "board"):
+            pol.board.add_fact(text, items)
+        what = ", ".join(i["word"] + (f" x{i['count']}" if i["count"] else "") + (f" ({i['size_mm']} mm)" if i["size_mm"] else "")
+                         for i in items) or "noted as text"
+        return f"noted: {what}" + ("" if pol is not None else "; it applies when a job starts")
+
     def pause(self) -> str:
         with self.lock:
             self.pending = "pause"
@@ -181,6 +197,7 @@ class Robot:
             viz.clear_scene()
             self.step = viz.STEP_OFFSET[0] + 1
             self.parked, self.instruction, self.rules, self.done_log, self.baseline = None, "", [], [], None
+            self.facts, self.looks = [], []
             self.state = "connected"
             self._emit("state", "reset")
             return "cleared: no job, no rules, nothing remembered (still connected to the real cell)"
@@ -193,6 +210,7 @@ class Robot:
             self.anim = viz.Animator(self.cell)
             viz.truth_setup(self.cell)
         self.instruction, self.rules, self.done_log, self.baseline, self.state, self.parked = "", [], [], None, "idle", None
+        self.facts, self.looks = [], []
         self.events.clear()
         self._emit("state", "reset")
         return "the simulator is back to the starting table"
@@ -327,6 +345,9 @@ class Robot:
         pol.reset()
         with self.lock:
             looks, self.looks = self.looks, []
+        if hasattr(pol, "board"):
+            for text, items in list(self.facts):
+                pol.board.add_fact(text, items)
         if looks and hasattr(pol, "objects"):  # started by look_at: look where asked, sort only when asked
             pol.hold = True
             for ask in looks:

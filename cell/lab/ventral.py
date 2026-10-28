@@ -34,7 +34,7 @@ def _in_box(t, box) -> bool:
 
 MODEL = os.getenv("VENTRAL_MODEL") or os.getenv("CHAT_MODEL") or "openrouter/openai/gpt-6-luna"
 DORSAL_NEWS = ("started", "map_progress", "map_done", "skill_done", "request_done", "request_refused", "idle", "done",
-               "user_rule", "gave_up")
+               "user_rule", "user_fact", "gave_up")
 
 SYSTEM = """You are the ventral stream of a robot at a sorting table: the part that recognises what things are. A
 separate dorsal stream maps the table in 3D from depth and moves the arm. You share a board with it.
@@ -114,7 +114,8 @@ THIS JOB WORKS DIFFERENTLY: the dorsal stream does NOT map the whole table. You 
    lists MEASURED objects (id, size, height, colour, the prompt that found them). A cup or box is anything over 40 mm.
    Measured objects are already one thing each: no agreement step, no break-ups.
 3. If something you can see has no measured object, request look_closer at its outline (mask "mN") or near an object.
-4. Set the rule over measured part ids and measured cup ids ("box #N"). The arm looks again right before each pick."""
+4. Set the rule over measured part ids and measured cup ids ("box #N"). The arm looks again right before each pick.
+If the person told you what's on the table, segment with their words first (and name parts by them): they know."""
 
 
 def say(text: str, level: str = "INFO") -> None:
@@ -408,6 +409,10 @@ class Ventral(threading.Thread):
         out += f"\nSort rule: {rule.text if rule else 'none yet'}"
         if user:
             out += "\nThe person's rules (these win): " + "; ".join(user)
+        with b.cond:
+            facts = [f["text"] for f in b.facts]
+        if facts:
+            out += "\nWhat the person told you is on the table: " + "; ".join(facts)
         out += f"\nRequests in the dorsal queue: {queue}"
         out += "\nThe picture: the table camera, cropped to the things (x away from the robot, y to its left)."
         return out

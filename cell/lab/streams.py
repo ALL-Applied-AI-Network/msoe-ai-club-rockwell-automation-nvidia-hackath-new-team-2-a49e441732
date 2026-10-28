@@ -55,6 +55,7 @@ class Board:
         self.contents: dict = {}      # box id -> what went in it (names), as the dorsal stream put them     # ids the ventral stream calls one thing by eye (SAM wouldn't outline them)
         self.rule: Rule | None = None
         self.user_rules: list[str] = []
+        self.facts: list[dict] = []   # what the person says is on the table: {"text", "items": [{"word", "count", "size_mm"}]}
         self.requests: list[Request] = []
         self.events: list[tuple] = []  # (seq, t, kind, text)
         self._seq = itertools.count(1)
@@ -164,6 +165,23 @@ class Board:
             rule.boxes = frozenset(t.id for t in self.things.values() if t.kind == "box")
             self.rule = rule
         self.post("rule", rule.text)
+
+    def add_fact(self, text: str, items: list[dict]) -> None:
+        with self.cond:
+            self.facts.append({"text": text, "items": list(items)})
+        self.post("user_fact", text)
+
+    def told(self) -> dict:
+        """The person's words for what's on the table -> {"count": n or None, "size_mm": s or None}; later facts win."""
+        out: dict = {}
+        with self.cond:
+            for f in self.facts:
+                for it in f["items"]:
+                    w = (it.get("word") or "").strip().lower()
+                    if w:
+                        d = out.setdefault(w, {"count": None, "size_mm": None})
+                        d.update({k: it[k] for k in ("count", "size_mm") if it.get(k) not in (None, "", 0)})
+        return out
 
     def add_user_rule(self, text: str) -> None:
         with self.cond:

@@ -10,6 +10,10 @@ runs the Isaac Sim copy of the cell (on a GPU in the other room) and the real ce
   each pick I look again right above the part, grip it where the fingers fit, drop it in its cup, and look to check.
 - Look where I'm asked: one close look at a place, at a thing I've already measured, or wherever SAM finds a word
   ("screw") on the table picture. It goes ahead of everything else, and I say what I found.
+- Use what the person tells me about the table ("4 screws and 2 washers", "the cubes are 15 mm"): I search with
+  their words first, and before I say I'm done I check my count against theirs (one more search if I'm short, then
+  I tell them what I found). If a part measures wider than they said and I can't grip it, I say so instead of
+  guessing. Their words help me look; they never replace measuring.
 - Break up a touching pile by raking through it, when there's free table beyond it.
 - Not yet: stacking, pouring, taking things back out of a cup, or gripping anything wider than about 16 mm (the
   fingers need 2 mm of air on each side).
