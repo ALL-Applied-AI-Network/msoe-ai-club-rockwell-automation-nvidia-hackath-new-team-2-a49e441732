@@ -31,6 +31,7 @@ TIP_CLEAR_MM = 12.0               # the fingertips stay this far above anything 
 PROMPT_WAIT_S = 60.0              # wall time to wait for the ventral stream's prompts before using the defaults
 DEFAULT_PROMPTS = ["cube", "cup", "small object"]
 LOOK_R = 0.035                    # a close look covers this well around its centre (objects there not found = gone)
+MAX_RELOOKS = 6                   # second looks in a whole job: after that it acts on what it has
 RELOOKS = 2                       # second looks at one spot where the streams disagree, then it's dropped
 MAX_PROMPTS = 6                   # SAM words per look (each is a call)
 DROP_ABOVE_RIM_MM = 4.0
@@ -128,12 +129,12 @@ class FocusMind(TwoStreamMind):
             if r is not None:
                 obs = yield from self._do_request(r, obs)
                 continue
-            if self.to_look:
-                obs = yield from self._look_again(obs)
-                continue
-            job = self._next_job()
+            job = self._next_job()  # a job first: act on the best measurement, and a miss is the check
             if job is not None:
                 obs = yield from self._put(*job, obs)
+                continue
+            if self.to_look:
+                obs = yield from self._look_again(obs)
                 continue
             if self._finished() and self.final_checks < 2:
                 # anything left the looks never covered (pushed by a rake, dropped)? the table picture says
@@ -239,7 +240,7 @@ class FocusMind(TwoStreamMind):
             if i.kind in ("flat", "partial", "no_depth"):
                 self._queue_look(i.xy, i.text)
         for o in confirmed:
-            if max(o.size_mm) >= SPECK_MM:  # smaller: a speck of sensor noise found twice by chance, not worth a look
+            if max(o.size_mm) >= SPECK_MM and self.board.rule is None:  # specks, and anything once there's work to do
                 self._queue_look(o.xy, f"depth sees {o.describe()} from two looks, and no outline covers it", ("object",))
         noise = next((i.text for i in issues if i.kind == "noise"), "")
         told = [i.text for i in issues if i.kind in ("flat", "partial", "no_depth")]
@@ -254,6 +255,8 @@ class FocusMind(TwoStreamMind):
 
     def _queue_look(self, xy, why: str, extra: tuple = ()) -> None:
         key = tuple(np.round(np.asarray(xy) / 0.01).astype(int))
+        if sum(self.relooks.values()) >= MAX_RELOOKS:  # real depth never runs out of doubts: stop asking
+            return
         if self.relooks.get(key, 0) >= RELOOKS or any(np.linalg.norm(np.asarray(q) - xy) < 0.01 for q, _, _ in self.to_look):
             return
         self.relooks[key] = self.relooks.get(key, 0) + 1
