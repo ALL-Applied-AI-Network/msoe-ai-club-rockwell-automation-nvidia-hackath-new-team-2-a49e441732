@@ -26,7 +26,7 @@ from lab import agree, armcheck, focus, grasp, primitives as P, viz
 from lab.minds.twostream import IDLE_ROWS, TwoStreamMind
 from lab.views import _cam_in_tool, _look_at
 
-CAM_HEIGHTS = (0.14, 0.17, 0.21)  # camera above the table for a close look, lowest first (fingertips 118 mm lower)
+CAM_HEIGHTS = (0.14, 0.17, 0.21, 0.24)  # camera above the table for a close look, lowest first (fingertips 118 mm lower)
 TIP_CLEAR_MM = 12.0               # the fingertips stay this far above anything the map knows under them
 PROMPT_WAIT_S = 60.0              # wall time to wait for the ventral stream's prompts before using the defaults
 DEFAULT_PROMPTS = ["cube", "cup", "small object"]
@@ -36,6 +36,8 @@ MAX_PROMPTS = 6                   # SAM words per look (each is a call)
 DROP_ABOVE_RIM_MM = 4.0
 GRIP_SHARE = 0.45                 # fingertips close at most this far up the part
 PILE_GAP = 0.07                   # m between parts of different piles on the table (the piles never touch)
+BOX_WORDS = ("cup", "box", "container", "bin", "tray", "bowl", "basket", "bucket")
+BOX_ASSUME_MM = 90.0              # an unmeasured cup or box near a close look: the fingertips stay above this
 SIZE_TOL_MM = 4.0                 # measured this much wider than the person said: say so when the grip fails
 
 
@@ -271,7 +273,7 @@ class FocusMind(TwoStreamMind):
                 tip, wpr = Tt[:3, 3], wpr_of(Tt[:3, :3])
                 if not P.reachable(*tip[:2], margin_mm=15):
                     continue
-                under = heights(tip[:2], 0.06)  # the hand is wider than the fingers: real boxes stand close
+                under = max(heights(tip[:2], 0.06), self._boxy(tip[:2]), self._boxy(xy))  # the hand is wider than the fingers
                 if (tip[2] - SURFACE_Z) * 1000 < under + TIP_CLEAR_MM:
                     continue  # the fingers would come down on something
                 try:
@@ -282,6 +284,17 @@ class FocusMind(TwoStreamMind):
                 if rows is not None and armcheck.check_joints(np.asarray(rows)[:, :6], 0.0).ok:
                     return rows
         return None
+
+    def _boxy(self, xy) -> float:
+        """A cup or box SAM outlined on the table picture near xy and not measured yet: assume it's tall (the table
+        camera's depth misses thin walls and sees the floor through the opening, so the map calls it low; the fingers
+        went into a cup on the real cell)."""
+        regs = self.board.regions or []
+        for r in regs:
+            if any(w in str(r.get("prompt", "")).lower() for w in BOX_WORDS) and np.linalg.norm(np.asarray(r["xy"]) - xy) < 0.09:
+                if not any(np.linalg.norm(b.xy - np.asarray(r["xy"])) < 0.03 for b in self.objects.boxes()):
+                    return BOX_ASSUME_MM
+        return max([b.top_mm + 10 for b in self.objects.boxes() if np.linalg.norm(b.xy - xy) < 0.09], default=0.0)
 
     def _heights(self):
         """height_under(xy, r): the tallest thing (mm) the map or the measured objects put within r of xy."""
