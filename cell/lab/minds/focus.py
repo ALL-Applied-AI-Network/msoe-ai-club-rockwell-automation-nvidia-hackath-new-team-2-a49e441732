@@ -36,6 +36,8 @@ MAX_PROMPTS = 6                   # SAM words per look (each is a call)
 DROP_ABOVE_RIM_MM = 4.0
 GRIP_SHARE = 0.45                 # fingertips close at most this far up the part
 PILE_GAP = 0.07                   # m between parts of different piles on the table (the piles never touch)
+SPECK_MM = 10.0                   # depth-only things smaller than this get no second look
+REAL_PART_MM = 15.0               # the real cubes (measured through the Oct 28 calibration)
 UNSEEN_CAP_MM = 90.0              # space no depth has seen counts as solid up to this high, for the fingertips
 BOX_WORDS = ("cup", "box", "container", "bin", "tray", "bowl", "basket", "bucket")
 BOX_ASSUME_MM = 90.0              # an unmeasured cup or box near a close look: the fingertips stay above this
@@ -237,7 +239,8 @@ class FocusMind(TwoStreamMind):
             if i.kind in ("flat", "partial", "no_depth"):
                 self._queue_look(i.xy, i.text)
         for o in confirmed:
-            self._queue_look(o.xy, f"depth sees {o.describe()} from two looks, and no outline covers it", ("object",))
+            if max(o.size_mm) >= SPECK_MM:  # smaller: a speck of sensor noise found twice by chance, not worth a look
+                self._queue_look(o.xy, f"depth sees {o.describe()} from two looks, and no outline covers it", ("object",))
         noise = next((i.text for i in issues if i.kind == "noise"), "")
         told = [i.text for i in issues if i.kind in ("flat", "partial", "no_depth")]
         self._say(f"Close look at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm{label}: {len(masks)} outlines; "
@@ -629,6 +632,17 @@ class FocusMind(TwoStreamMind):
         h = max(2.5, min(GRIP_SHARE * o.top_mm, o.top_mm - 3.0))
         others = [x.footprint() for x in self.objects.all.values() if x.id != o.id and x.top_mm > h]
         grips = grasp.from_outline(o.footprint(), others, h)
+        if not grips and o.kind == "part":
+            # real outlines come out 20-27 mm for ~15 mm cubes (smeared edges): try the outline shrunk to the part's
+            # real size round its centre (the person's size if they said one)
+            fp = o.footprint()
+            c = fp.mean(0)
+            span = np.ptp(fp, 0).max() * 1000
+            real = self._told_size(o) or REAL_PART_MM
+            if span > real:
+                grips = grasp.from_outline(c + (fp - c) * (real / span), others, h)
+                if grips:
+                    self._say(f"#{o.id}: its outline is {span:.0f} mm across; gripping it as {real:.0f} mm round its centre.")
         return grips[0] if grips else None
 
     def _draw_grip(self, g) -> None:

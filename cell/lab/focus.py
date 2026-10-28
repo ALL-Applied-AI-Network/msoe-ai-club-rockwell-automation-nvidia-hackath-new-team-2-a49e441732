@@ -250,6 +250,8 @@ def _same_look(a: Obj, b: Obj) -> bool:
     closer than SAME_MM: matched by position alone, a yellow cube took over a blue one's id and went in the blue cup)."""
     if (a.kind == "box") != (b.kind == "box"):
         return False
+    if a.kind == "box":  # cups are big and never touch: one place is one cup, whatever SAM called it ("orange cube")
+        return True
     plain = ("white", "gray", "black", "?")
     return a.color == b.color or a.color in plain or b.color in plain
 
@@ -267,7 +269,8 @@ class Objects:
         matched = set()
         for o in found:
             near = [k for k in self.all.values() if k.id not in matched and np.linalg.norm(k.xy - o.xy) * 1000 <
-                    max(SAME_MM, 0.4 * min(min(k.size_mm), min(o.size_mm)))  # a 60 mm box's centre wanders more
+                    max(SAME_MM, (0.6 if k.kind == o.kind == "box" else 0.4) * min(min(k.size_mm), min(o.size_mm)))
+                    # a 60 mm box's centre wanders more (seen from higher near cups: a duplicate cup made a bad rule)
                     and _same_look(k, o)]
             if near:
                 k = min(near, key=lambda k: np.linalg.norm(k.xy - o.xy))
