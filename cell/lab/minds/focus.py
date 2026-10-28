@@ -271,7 +271,7 @@ class FocusMind(TwoStreamMind):
                 tip, wpr = Tt[:3, 3], wpr_of(Tt[:3, :3])
                 if not P.reachable(*tip[:2], margin_mm=15):
                     continue
-                under = heights(tip[:2], 0.03)
+                under = heights(tip[:2], 0.06)  # the hand is wider than the fingers: real boxes stand close
                 if (tip[2] - SURFACE_Z) * 1000 < under + TIP_CLEAR_MM:
                     continue  # the fingers would come down on something
                 try:

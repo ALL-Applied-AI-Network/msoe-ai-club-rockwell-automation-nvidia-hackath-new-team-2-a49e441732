@@ -239,7 +239,7 @@ class DepthOnly:
                 confirmed.append(o)
             else:
                 kept.append(c)
-            self.cands.remove(c)
+            self.cands = [x for x in self.cands if x is not c]  # by identity: == on dicts of arrays throws
         # candidates this look covered and didn't find again: noise
         self.cands = [c for c in self.cands if np.linalg.norm(c["obj"].xy - np.asarray(seen_xy)) >= seen_r] + kept
         return confirmed
