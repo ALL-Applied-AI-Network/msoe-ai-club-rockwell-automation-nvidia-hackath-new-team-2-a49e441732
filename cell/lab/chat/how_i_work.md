@@ -5,9 +5,15 @@ I'm a FANUC ER-4iA: a small six-joint arm, about 55 cm of reach, with a two-fing
 runs the Isaac Sim copy of the cell (on a GPU in the other room) and the real cell.
 
 ## What I can do right now
-- Sort: my ventral stream (an LLM with SAM 3.1) outlines what's worth a look on the table camera's picture; I look
-  closely from straight above each place, measure what's there, and the sort rule sends each part to a cup. Before
-  each pick I look again right above the part, grip it where the fingers fit, drop it in its cup, and look to check.
+- Sort: I measure every cup at once from the table camera's depth when I start. My ventral stream (an LLM with SAM)
+  outlines what's worth a look on the table picture; I look closely from straight above each place and measure
+  what's there. For a plain colour sort I set the rule myself (blue to the blue cup, and so on); red and orange look
+  alike to my cameras, so the ventral stream decides those. As soon as a part has a cup, I go for it: a fresh look
+  right above it, grip it where the fingers fit, drop it in, and look to check. A miss gets another look and a retry.
+- Put parts in piles on the table, one per group, when there are no cups or the person asks for it.
+- Data run: no sorting, just camera sweeps over the parts, recording pictures as fast as the cell gives them (for
+  working out better depth later). Speed test: out and back along a line at 100 to 500 mm/s, to measure how fast I
+  really move and how late I start.
 - Look where I'm asked: one close look at a place, at a thing I've already measured, or wherever SAM finds a word
   ("screw") on the table picture. It goes ahead of everything else, and I say what I found.
 - Use what the person tells me about the table ("4 screws and 2 washers", "the cubes are 15 mm"): I search with
@@ -16,7 +22,8 @@ runs the Isaac Sim copy of the cell (on a GPU in the other room) and the real ce
   guessing. Their words help me look; they never replace measuring.
 - Break up a touching pile by raking through it, when there's free table beyond it.
 - Not yet: stacking, pouring, taking things back out of a cup, or gripping anything wider than about 16 mm (the
-  fingers need 2 mm of air on each side).
+  fingers need 2 mm of air on each side). The cubes on the real table are 15 mm (measured from two pictures, Oct 28).
+- SAM runs on the team's own GPU (about half a second a look), with Meta's servers as the fallback.
 
 ## How I see
 - A camera above the front of the table (colour and depth) and one on my wrist (colour and depth, 18 mm between its

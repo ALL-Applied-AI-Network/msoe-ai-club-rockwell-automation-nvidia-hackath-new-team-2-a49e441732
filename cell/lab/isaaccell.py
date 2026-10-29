@@ -164,8 +164,9 @@ class IsaacCell:
 
     # ------------------------------------------------------------ what the policy uses
 
-    def observe(self, rng_noise: bool = True) -> dict:
-        obs = self.client.observe(["table", "side", "wrist"], self.image_size, "jpeg", depth=["table", "wrist"])  # jpeg: ~10x smaller, as the real cell allows
+    def observe(self, rng_noise: bool = True, cams=("table", "side", "wrist")) -> dict:
+        """cams: the pictures to ask for (each with its depth, where it has one); fewer is faster."""
+        obs = self.client.observe(list(cams), self.image_size, "jpeg", depth=[c for c in ("table", "wrist") if c in cams])  # jpeg: ~10x smaller, as the real cell allows
         if getattr(self, "noise", False):  # as bad as the real sensors
             from lab.sensor import realistic_depth
             self.rng = getattr(self, "rng", None) or np.random.default_rng(0)

@@ -86,8 +86,10 @@ class RealCell:
 
     # ------------------------------------------------------------ what the robot uses
 
-    def observe(self, rng_noise: bool = True) -> dict:
-        obs = self.client.observe(["table", "side", "wrist"], self.image_size, "jpeg", depth=["table", "wrist"])
+    def observe(self, rng_noise: bool = True, cams=("table", "side", "wrist")) -> dict:
+        """cams: the pictures to ask for (each with its depth, where it has one). All three and both depths took
+        368 ms (spikes of 2.3 s) on Oct 28; the wrist alone with its depth, 247 ms."""
+        obs = self.client.observe(list(cams), self.image_size, "jpeg", depth=[c for c in ("table", "wrist") if c in cams])
         self._take(obs)
         obs["trial"] = {"status": "running", "instruction": self.instruction or (obs.get("trial") or {}).get("instruction", "")}
         return obs

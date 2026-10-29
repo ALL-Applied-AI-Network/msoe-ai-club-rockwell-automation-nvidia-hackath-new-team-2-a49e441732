@@ -4,7 +4,6 @@ Every message (from the person, or an event from the robot) goes to the model wi
 decides what kind of message it is and what to do about it, through tools; nothing here sorts messages into kinds:
     start_sorting(instruction)   a job: sort the table (the focus mind: SAM picks where to look, depth and SAM must agree)
     look_at(x_mm, y_mm | thing | word)  "look over there": one close look, ahead of everything else; it reports back
-    start_mapping(instruction)   the old whole-table depth map (only when asked for a map by name)
     add_rule(rule)               a correction or a standing preference: the director replans before the next move
     table_changed(note)          the person changed the table: take a fresh look and carry on
     pause()                      stop after this move and wait
@@ -29,14 +28,18 @@ MODEL = os.getenv("CHAT_MODEL") or "openrouter/openai/gpt-6-luna"
 SYSTEM = """You are the robot: a FANUC ER-4iA arm with a two-finger gripper and a depth camera on the wrist, at a
 table of small parts and cups. How you work now: your ventral stream (an LLM with SAM 3.1) looks at the table camera's
 picture and outlines what's worth a look. You then look closely from straight above each place with the wrist camera:
-SAM outlines things in that picture, and you keep only what SAM's outline AND the wrist depth agree on (depth must
+Every cup is measured once at the start from the table camera's depth (its colour from the table picture), so you
+know all the cups before the first look. SAM outlines things in the wrist picture, and you keep only what SAM's outline AND the wrist depth agree on (depth must
 stand up inside the outline). The outline gives the shape, depth gives the height. Where they disagree you look again
 from another spot: an outline with nothing standing in it is flat (a sticker, a shadow, the paper); raised depth with
 no outline is usually sensor noise, and only counts (as an "unknown", steered around, never picked) if a second look
 finds it again. Grips are planned on the measured outline: the jaws (20 mm apart when open) must fit across the part
 with both fingers clear of everything around it. Then the sort rule (the ventral stream's; the person's rules win)
-sends each part to a cup: a fresh close look above it, grip, drop in the cup, look to check. You can't stack, pour, or
-take things back out of a cup yet; say so plainly if asked.
+sends each part to a cup: a fresh close look above it, grip, drop in the cup, look to check. For a plain colour sort
+you set the rule yourself (each part to the one cup of its colour) for blue, green, yellow and purple; red and orange
+look alike to your cameras, so the ventral stream decides those. With no cups, or when the person asks, you put parts
+in tidy piles on the table instead, one pile per group (you CAN put a part on the table: say so if asked). Picks come
+before more looking. You can't stack, pour, or take things back out of a cup yet; say so plainly if asked.
 
 Your status below lists every part and cup you've measured (number, colour, size, height, where, how much SAM and depth
 agree), what only depth sees, the sort rule, the queue, and what you gave up on and why. Explain from it when asked
@@ -61,7 +64,6 @@ Decide what each message is and act on it:
   (their word helps you look; it never replaces measuring).
 - "do a data run", "gather data", "record a sweep": call data_run (no sorting: camera sweeps, everything recorded);
   "how fast can you move?", "speed test": call data_run with kind "speed". Not while a sort is running.
-- "map the whole table": call start_mapping (the old depth-only map; it stops a sort in progress).
 - a correction or preference ("no, Lego goes in the white box", "leave the ring out"): call add_rule with it, in plain
   words; during a sort your ventral stream takes it and redoes the sort rule. Things already in a box stay there unless they ask; if they ask,
   say honestly whether you can get them back out (see what you can't do).
@@ -96,9 +98,6 @@ What you know about yourself:
 {script}"""
 
 TOOLS = [
-    {"type": "function", "function": {"name": "start_mapping", "description": "Start (or restart) mapping what's on the table: look around from many angles until the gaps are filled.",
-     "parameters": {"type": "object", "properties": {"instruction": {"type": "string", "description": "the person's words for what to do; empty to choose a sensible rule"}},
-                    "required": ["instruction"]}}},
     {"type": "function", "function": {"name": "look_at", "description": "Look closely at one place, ahead of everything else, and report what's there. Give x_mm and y_mm (base frame), or thing (a number from your status), or word (what SAM should find on the table picture; with x_mm/y_mm, only near there). With no job running it only looks (no sort).",
      "parameters": {"type": "object", "properties": {
          "x_mm": {"type": "number", "description": "distance out from the base, 150-650"},
@@ -197,8 +196,6 @@ class Chat:
         self.history = h
 
     def _do(self, name: str, args: dict) -> str:
-        if name == "start_mapping":
-            return self.robot.start(args.get("instruction", "") or "map the table", mind="map")
         if name == "look_at":
             return self.robot.look_at(args.get("x_mm"), args.get("y_mm"), args.get("thing"), (args.get("word") or "").strip())
         if name == "data_run":

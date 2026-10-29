@@ -82,9 +82,7 @@
       <span class="state" id="state">…</span>
     </div>
     <div class="big"><button id="reset" title="everything from scratch: the table, the robot's map, the viewer, the chat">Reset</button>
-      <button id="map" title="look around the table until the gaps are filled">Map</button>
-      <button id="sort" title="map, then put each part in the box of its colour (or one box per colour), checking each pick">Sort</button>
-      <button id="streams" title="two streams: depth maps and moves the arm; an LLM with SAM 3.1 names things, asks for break-ups, and sets the sort rule">Think + sort</button></div>
+      <button id="sort" title="sort the parts into the cups by colour: cups from the table camera, a close look at each part (SAM and depth must agree), then picks">Sort</button></div>
     <div class="big"><button id="datarun" title="no sorting: camera sweeps over the parts, recording wrist pictures at full rate and a full set at every stop (about 2-3 min)">Data run</button>
       <button id="speedtest" title="out and back along a line, 150 mm above the table, at 100 to 500 mm/s: how fast the arm really goes, how late it starts, how long it settles">Speed test</button></div>
   </div>
@@ -170,9 +168,7 @@ fetch("/config").then(r => r.json()).then(c => { $("viewer").src = c.viewer; set
 $("m-sim").onclick = () => { if (mode !== "sim") post("/mode", {mode: "sim"}).then(() => setMode("sim")); };
 $("m-real").onclick = () => setMode("real");
 $("reset").onclick = () => post("/reset").then(refresh);
-$("map").onclick = () => post("/map");
-$("sort").onclick = () => post("/sort");
-$("streams").onclick = () => post("/streams");
+$("sort").onclick = () => post("/streams");
 $("datarun").onclick = () => post("/datarun");
 $("speedtest").onclick = () => post("/speedtest");
 $("check").onclick = () => {

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from calibration.geometry import SURFACE_Z, depth_to_base, pixel_to_base
+from calibration.geometry import SURFACE_Z, depth_to_base, pixel_to_base, project
 from lab import sam
 from lab.things import colour_name
 from lab.viz import project_to_image
@@ -198,6 +198,49 @@ def measure(obs: dict, cams: dict, prompts: list[str], masks: list | None = None
     if noise:
         issues.append(Issue("noise", np.zeros(2), f"{noise} small raised patches dropped as noise"))
     return out, masks, issues
+
+
+CUP_MIN_MM, CUP_MAX_MM = 40.0, 160.0  # a cup or box from the table camera: this wide on both sides
+CUP_TALL_MM = 25.0                     # and its walls this tall
+
+
+def cups_from_table(depth_mm, img, cams) -> list[Obj]:
+    """Every cup and box the table camera's depth shows, measured at once (a 50 mm cup is ~16 px across in it): walls
+    taller than CUP_TALL_MM, grouped on a 2 mm grid, a footprint CUP_MIN_MM-CUP_MAX_MM on both sides. Its colour is
+    the table picture's at its walls. The wrist would find them one look at a time, the far ones late (Oct 28: the
+    orange cup at 4 min, and the sort rule was redone 8 times as cups turned up)."""
+    from lab.things import colour_name
+    pts = depth_to_base(cams["table_depth"], depth_mm, stride=1)
+    h = (pts[:, 2] - SURFACE_Z) * 1000
+    keep = (h > CUP_TALL_MM) & (h < 160) & (pts[:, 0] > 0.18) & (pts[:, 0] < 0.66) & (np.abs(pts[:, 1]) < 0.45)
+    pts, h = pts[keep], h[keep]
+    if len(pts) < 50:
+        return []
+    G = 0.002
+    ij = np.floor((pts[:, :2] - [0.15, -0.46]) / G).astype(int)
+    grid = np.zeros((int(0.52 / G) + 1, int(0.92 / G) + 1), np.uint8)
+    grid[ij[:, 0], ij[:, 1]] = 1
+    grid = cv2.morphologyEx(grid, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))  # join a wall's speckles
+    n, lab = cv2.connectedComponents(grid)
+    which = lab[ij[:, 0], ij[:, 1]]
+    H, W = img.shape[:2]
+    out = []
+    for k in range(1, n):
+        m = which == k
+        if m.sum() < 40:
+            continue
+        cells = np.argwhere(lab == k).astype(np.float32) * G * 1000 + np.array([150, -460], np.float32)
+        (cx, cy), (w, l), ang = cv2.minAreaRect(cells)
+        if not (CUP_MIN_MM <= min(w, l) and max(w, l) <= CUP_MAX_MM):
+            continue
+        uv = project(cams["table"], pts[m]) * [W / cams["table"]["size"][0], H / cams["table"]["size"][1]]
+        ok = (uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H)
+        rgb = np.median(img[uv[ok, 1].astype(int), uv[ok, 0].astype(int)], 0) if ok.any() else np.array([128, 128, 128])
+        box = cv2.boxPoints(((cx, cy), (w, l), ang)) / 1000
+        out.append(Obj(0, np.array([cx, cy]) / 1000, (float(w), float(l)), float(ang), float(np.percentile(h[m], 95)),
+                       kind="box", color=colour_name(rgb), rgb=tuple(int(v) for v in rgb), what="cup (table camera)",
+                       pixels=int(m.sum()), outline=box.astype(float), agree=1.0))
+    return out
 
 
 def _colours(img, pts3, obs, cams):

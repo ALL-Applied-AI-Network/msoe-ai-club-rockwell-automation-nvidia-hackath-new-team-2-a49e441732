@@ -36,8 +36,9 @@ RELOOKS = 2                       # second looks at one spot where the streams d
 MAX_PROMPTS = 6                   # SAM words per look (each is a call)
 DROP_ABOVE_RIM_MM = 4.0
 GRIP_SHARE = 0.45                 # fingertips close at most this far up the part
+COLOUR_SURE = ("yellow", "green", "blue", "purple")  # hues the cameras keep apart (not red and orange)
+TABLE_EVERY = 8                   # ask for the table camera at least every this many observations (else wrist only)
 PILE_GAP = 0.07                   # m between parts of different piles on the table (the piles never touch)
-SPECK_MM = 10.0                   # depth-only things smaller than this get no second look
 REAL_PART_MM = 15.0               # the real cubes (measured through the Oct 28 calibration)
 UNSEEN_CAP_MM = 90.0              # space no depth has seen counts as solid up to this high, for the fingertips
 BOX_WORDS = ("cup", "box", "container", "bin", "tray", "bowl", "basket", "bucket")
@@ -47,6 +48,25 @@ SIZE_TOL_MM = 4.0                 # measured this much wider than the person sai
 
 class FocusMind(TwoStreamMind):
     JOB = "focus"
+
+    def act(self, obs):
+        """Fill in the table camera's picture and depth when this observation left them out (cams_next): the last ones."""
+        if "table" in (obs.get("images") or {}):
+            self._table_obs = (obs["images"]["table"], (obs.get("depth") or {}).get("table"))
+            self._need_table, self._since_table = False, 0
+        elif getattr(self, "_table_obs", None) is not None:
+            obs["images"] = {**obs["images"], "table": self._table_obs[0]}
+            if self._table_obs[1] is not None:
+                obs["depth"] = {**(obs.get("depth") or {}), "table": self._table_obs[1]}
+            self._since_table = getattr(self, "_since_table", 0) + 1
+        return super().act(obs)
+
+    def cams_next(self) -> tuple:
+        """The pictures to ask for next: the wrist alone, except when the table camera is needed (a glance from home,
+        the final check) or hasn't been asked for in TABLE_EVERY observations (the ventral stream's view of the table)."""
+        if getattr(self, "_need_table", True) or getattr(self, "_since_table", 0) >= TABLE_EVERY:
+            return ("table", "side", "wrist")
+        return ("wrist",)
 
     def reset(self) -> None:
         super().reset()
@@ -58,7 +78,6 @@ class FocusMind(TwoStreamMind):
         self.depth_only = focus.DepthOnly()   # raised depth no outline covers, until a second look finds it again
         self.relooks: dict = {}               # spot (1 cm grid) -> second looks spent there
         self.to_look: list = []               # (xy, why, extra SAM words): disagreements to look at again
-        self._stale_told = None               # the rule we last said was made before a cup was found
         self.hold = False                     # only the person's looks until a sort is asked for (lab.robot.look_at)
         self._look_ok = True                  # the last close look could be made
         self._count_search = False            # one more search with the person's words when the count is short
@@ -99,6 +118,10 @@ class FocusMind(TwoStreamMind):
             self.ventral.start()
         self._started = True  # (the two-stream mind would announce itself on the first fused look)
         self.map.integrate(obs["depth"]["table"], self.cams["table_depth"])  # what stands where: clearance only
+        cups = focus.cups_from_table(obs["depth"]["table"], obs["images"]["table"], self.cams)  # every cup, at once
+        self.objects.merge(cups)
+        if cups:
+            self._say(f"The table camera's depth shows {len(cups)} cup(s): " + "; ".join(o.describe() for o in self.objects.boxes()) + ".")
         self._draw()
         self._publish(obs, "started", "the table camera's picture is on the board: choose SAM prompts (segment)")
         while self.hold and not self.board.stopped:  # asked to look, not to sort: only the person's looks
@@ -113,8 +136,10 @@ class FocusMind(TwoStreamMind):
             self._say("No regions from the ventral stream: looking where SAM finds anything with default prompts.")
             regs = self._glance(obs, DEFAULT_PROMPTS)
         self.prompts = self.board.prompts or DEFAULT_PROMPTS
+        cups = self.objects.boxes()  # measured already: no close look needed at a cup
+        regs = [r for r in regs if not any(np.linalg.norm(np.asarray(r["xy"]) - b.xy) * 1000 < max(b.size_mm) / 2 + 8 for b in cups)]
         spots = focus.spots(regs)
-        self._say(f"{len(regs)} outlines on the table picture -> {len(spots)} close looks.")
+        self._say(f"{len(regs)} outlines on the table picture outside the cups -> {len(spots)} close looks.")
         # 2. close looks only there
         for xy in spots:
             obs = yield from self._requests_first(obs)
@@ -180,7 +205,8 @@ class FocusMind(TwoStreamMind):
         self.obs = obs
 
     def _park(self, obs):
-        """Back to where the arm started, out of the table camera's view of the table."""
+        """Back to where the arm started, out of the table camera's view of the table (and ask for its picture)."""
+        self._need_table = True
         q_now = np.asarray(obs["joints"][:6], float)
         T_now, T_home = tool_pose(q_now), tool_pose(self.q_home)
         rows = P.joint_move(q_now, T_now[:3, 3], wpr_of(T_now[:3, :3]), self.q_home, T_home[:3, 3], wpr_of(T_home[:3, :3]))
@@ -239,9 +265,6 @@ class FocusMind(TwoStreamMind):
         for i in issues:
             if i.kind in ("flat", "partial", "no_depth"):
                 self._queue_look(i.xy, i.text)
-        for o in confirmed:
-            if max(o.size_mm) >= SPECK_MM and self.board.rule is None:  # specks, and anything once there's work to do
-                self._queue_look(o.xy, f"depth sees {o.describe()} from two looks, and no outline covers it", ("object",))
         noise = next((i.text for i in issues if i.kind == "noise"), "")
         told = [i.text for i in issues if i.kind in ("flat", "partial", "no_depth")]
         self._say(f"Close look at ({xy[0] * 1000:.0f}, {xy[1] * 1000:.0f}) mm{label}: {len(masks)} outlines; "
@@ -347,16 +370,40 @@ class FocusMind(TwoStreamMind):
         return self._is_placed(o) or self._given_up(o) or any(
             np.linalg.norm(o.xy - b.xy) * 1000 < max(b.size_mm) / 2 + 3 for b in self.objects.boxes())
 
-    def _next_job(self):
+    def _colour_rule(self) -> None:
+        """A plain colour sort ("sort these into the cups", "by colour") needs no deliberation: each part goes to the one
+        cup of its colour. Set it, or keep it up to date, while the rule is the arm's own; the ventral stream's rule (or
+        the person's words) replace it. Red and orange are left to the ventral stream: on the real cameras an orange cup
+        reads hue 4-7 and a red cube hue 2."""
+        import re
+        from lab.streams import Rule
         rule = self.board.rule
-        new = {b.id for b in self.objects.boxes()} - set(rule.boxes) if rule is not None and rule.source == "ventral" else set()
-        if new:  # a cup found after the rule was made: it may have merged groups for want of it (seed 2: blue cubes -> red cup)
-            if self._stale_told is not rule:
-                self._stale_told = rule
-                self._say(f"The rule was made before cup(s) {', '.join(f'#{i}' for i in sorted(new))} were found: waiting for a new one.")
-                self.board.post("skill_done", f"new cup(s) on the board since the sort rule was set: "
-                                              f"{', '.join(f'box #{i}' for i in sorted(new))}. Set the rule again with every cup.")
-            return None
+        if rule is not None and rule.source != "dorsal":
+            return
+        words = (self.instruction or "").lower()
+        if self.board.user_rules or not re.search(r"colou?r|cups?|boxes", words):
+            return
+        said = re.findall(r"\b(red|orange|yellow|green|blue|purple|pink)\b[^.;,]*?\bin(?:to)? the (red|orange|yellow|green|blue|purple|pink)\b", words)
+        if any(a != b for a, b in said):
+            return  # "red in the yellow cup": the person's mapping, for the ventral stream to carry out
+        cups: dict = {}
+        for b in self.objects.boxes():
+            cups.setdefault(b.color, []).append(b)
+        groups = []
+        for c, bs in cups.items():
+            if c in COLOUR_SURE and len(bs) == 1:
+                ids = sorted(o.id for o in self.objects.parts() if o.color == c and not self._done_with(o))
+                if ids:
+                    groups.append({"name": f"{c} parts", "ids": ids, "to": f"box #{bs[0].id}"})
+        if not groups or (rule is not None and rule.groups == groups):
+            return
+        self.board.set_rule(Rule("each part into the one cup of its colour (the arm's own rule: "
+                                 + ", ".join(f"{g['name']} -> {g['to']}" for g in groups) + ")", groups, source="dorsal"))
+        self._say("Sort rule (mine, by colour): " + "; ".join(f"{g['name']} {g['ids']} -> {g['to']}" for g in groups) + ".")
+
+    def _next_job(self):
+        self._colour_rule()
+        rule = self.board.rule
         for o in sorted(self.objects.parts(), key=lambda o: o.xy[1]):
             if self._done_with(o) or o.id in self.failed:
                 continue

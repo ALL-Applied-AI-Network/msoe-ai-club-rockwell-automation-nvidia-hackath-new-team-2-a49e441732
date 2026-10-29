@@ -115,7 +115,10 @@ THIS JOB WORKS DIFFERENTLY: the dorsal stream does NOT map the whole table. You 
    Measured objects are already one thing each: no agreement step, no break-ups.
 3. If something you can see has no measured object, request look_closer at its outline (mask "mN") or near an object.
 4. Set the rule over measured part ids and measured cup ids ("box #N"). The arm looks again right before each pick.
-If the person told you what's on the table, segment with their words first (and name parts by them): they know."""
+If the person told you what's on the table, segment with their words first (and name parts by them): they know.
+Every cup is measured from the table camera's depth at the start. For a plain colour sort the arm sets the rule itself
+(source "dorsal") for the colours it can tell apart; leave that rule alone unless it is wrong for what you see, and
+give the other parts (red and orange especially: the cameras can't tell those apart) their cups."""
 
 
 def say(text: str, level: str = "INFO") -> None:
@@ -404,7 +407,7 @@ class Ventral(threading.Thread):
             out += ("\nOnly depth sees these (no SAM outline agrees, so they aren't parts and won't be picked; the arm "
                     "steers around them). If the picture shows what they are, segment with a word that fits:\n"
                     + "\n".join(unknown))
-        out += f"\nSort rule: {rule.text if rule else 'none yet'}"
+        out += f"\nSort rule ({rule.source if rule else ''}): {rule.text if rule else 'none yet'}"
         if user:
             out += "\nThe person's rules (these win): " + "; ".join(user)
         with b.cond:

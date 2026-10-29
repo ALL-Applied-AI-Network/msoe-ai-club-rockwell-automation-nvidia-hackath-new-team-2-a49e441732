@@ -164,6 +164,14 @@ class Board:
 
     def set_rule(self, rule: Rule) -> None:
         with self.cond:
+            old = self.rule
+            if old is not None and old.source == "dorsal" and rule.source != "dorsal":
+                # the arm's colour groups stay for the parts the new rule doesn't mention
+                named = {i for g in rule.groups for i in g["ids"]}
+                for g in old.groups:
+                    ids = [i for i in g["ids"] if i not in named]
+                    if ids:
+                        rule.groups.append({**g, "ids": ids})
             rule.boxes = frozenset(t.id for t in self.things.values() if t.kind == "box")
             self.rule = rule
         self.post("rule", rule.text)

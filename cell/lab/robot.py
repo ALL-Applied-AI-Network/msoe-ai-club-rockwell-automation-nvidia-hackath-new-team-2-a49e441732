@@ -62,7 +62,7 @@ class Robot:
         self.instruction, self.rules = "", []
         self.policy = None  # the mind running the current job (lab/minds)
         self.parked = None  # a job paused or stopped by an error: resume() picks it up again
-        self.mind_name = "map"
+        self.mind_name = "focus"  # the current robot (lab/minds/focus.py); the old minds are in lab/minds too
         self.pending: str | None = None   # "start" | "pause": picked up by the robot thread between moves
         self.state = "idle"
         self.distract_s = 0.0             # hold still this long before the next move (talking to it slows it down)
@@ -429,7 +429,14 @@ class Robot:
         self._emit("motion", self._describe(P.tcp_rows(chunk) if isinstance(chunk, P.JointRows) else chunk, obs))
         P.send(self.cell, chunk, on_frame=self.anim)
         fresh = getattr(pol, "wants_obs", True)
-        return (self.cell.observe() if fresh else obs), fresh
+        return (self._observe(pol) if fresh else obs), fresh
+
+    def _observe(self, pol=None):
+        """Only the pictures the mind needs next (pol.cams()), where the cell can leave the rest out."""
+        import inspect
+        if pol is not None and hasattr(pol, "cams_next") and "cams" in inspect.signature(self.cell.observe).parameters:
+            return self.cell.observe(cams=pol.cams_next())
+        return self.cell.observe()
 
     def _record(self, obs) -> None:
         """What the robot was given: the raw images and depth to Rerun (the sensor strip), and on the real cell also to
