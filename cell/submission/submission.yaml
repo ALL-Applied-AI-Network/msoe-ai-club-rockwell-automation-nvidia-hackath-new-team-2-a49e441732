@@ -2,7 +2,7 @@
 
 team: Her Majesty's Magical Severed Homunculus Arm
 contact: Joel Roberts, rober687@uwm.edu
-policy: TwoStream v1              # Give your policy a name (e.g., GraspV1)
+policy: Focus v2                  # Give your policy a name (e.g., GraspV1)
 
 # Choose the closest model type. This does not affect scoring.
 model_type: TAMP + FMs   # an LLM + SAM 3.1 decide what things are and the sort rule; depth mapping, grasp and rake planning move the arm
@@ -22,7 +22,7 @@ task: Sort a dumped pile of small parts into the colored cups, working out what 
 # Tell us how to prepare the workspace for each rollout.
 # Objects and layout can stay the same or change between rollouts.
 
-objects: same                     # six 10 mm cubes (2 red, 2 blue, 2 yellow) and the three colored cups (blue, yellow, red)
+objects: same                     # small 15 mm cubes (red and blue, as on Oct 28) and the three colored cups (orange, blue, green)
 # same: Use the same set of objects for every rollout.
 # different: May use different objects across rollouts.
 
