@@ -4,19 +4,20 @@ From the app (the Data run and Speed test buttons, or the chat: "do a data run",
 cell it's connected to; or alone:
     uv run python -m lab.datarun --sim [--speed]        the Isaac cell (no booking)
     uv run python -m lab.datarun --real [--speed]       the real cell: our approved request, its next ready trial
+    uv run python -m lab.datarun --check [--kind cross] no arm: the plan, fingertip heights, reach, time
 
-Data run. The camera stays CAM_MM above the table (fingertips ~CAM_MM - 118 mm, over any cup) and nothing is picked.
-While it moves, a second thread asks for wrist pictures as fast as the cell gives them (wrist only, native size, no
-depth: ~13 a second on the real cell); at every stop it also takes one full set (three cameras, both depths). Each
-picture is saved with the joints, the fingertip pose and the cell's clock from the same answer, and when we asked and
-got it back. The plan, around the centre (where the parts are):
-    1. home: one full set
-    2. cross: stop-and-go, 11 spots 10 mm apart along x, then 10 along y (the edge sweep's input)
-    3. glides: the same lines without stopping, at 50 and then 100 mm/s (do the pictures and the joints agree while it
-       moves? the timing test)
-    4. orbit: 8 views tilted 20 deg from 300 mm, all aimed at the centre (side walls; wide angles for structure from
-       motion; the ones out of reach are skipped)
-    5. home: one full set (did anything move?)
+Data run. Nothing is picked. While the arm moves, a second thread asks for wrist pictures as fast as the cell gives
+them (wrist only, native size, no depth: ~9-13 a second on the real cell); at every stop it also takes one full set
+(three cameras, both depths). Each picture is saved with the joints, the fingertip pose and the cell's clock from the
+same answer, and when we asked and got it back. Two plans, around the centre (where the parts are):
+    scan (the default; plan_scan): for structure from motion (lab/fog3d.py). Long straight glides at SCAN_MM_S
+        (~6 px between pictures, so points can be followed), the camera SCAN_CAM_MM up (fingertips 99 mm: the
+        lowest MIN_TIP_MM allows; depth error grows with distance squared): 3 lines along y, 3 along x (an edge
+        along the motion has no parallax, so both ways), then 4 with the camera tilted SCAN_TILT_DEG across the
+        line (side walls). A full set at each line's start, where the arm stops anyway. ~93 s of gliding.
+        Check it without the arm: uv run python -m lab.datarun --check
+    cross (plan; Oct 28's): home, stop-and-go 11 + 10 spots 10 mm apart, glides at 50 and 100 mm/s, 8 views tilted
+        20 deg from ORBIT_MM, home.
 
 Speed test. Out and back along a 240 mm line across the table, fingertips SPEED_TIP_MM up, commanded at each of
 SPEEDS_MM_S; a poller records the fingertip as fast as the cell answers. For each speed: the peak speed it really
@@ -53,6 +54,13 @@ ORBIT_MM = 300.0          # the tilted views stand further off: tilting brings t
 SPEED_TIP_MM = 150.0      # the speed test's height: clear of everything
 SPEED_LINE = ((0.40, -0.12), (0.40, 0.12))  # base frame m: across the middle of the table, well inside reach
 SPEEDS_MM_S = (100.0, 200.0, 300.0, 400.0, 500.0)
+# the scan (plan_scan): the camera as low as the fingertips allow (MIN_TIP_MM + ~131 mm), gliding slowly enough that
+# the wrist pictures (~9 a second) move ~6 px apart: points can be followed frame to frame
+SCAN_CAM_MM = 230.0
+SCAN_MM_S = 30.0
+SCAN_HALF_MM = (120.0, 200.0)  # the lines' half-lengths along x and y
+SCAN_TILT_DEG = 25.0
+SCAN_TILT_CAM_MM = 285.0       # tilting brings the fingertips down: stand further off
 
 
 def fork(client: CellClient) -> CellClient:
@@ -130,6 +138,54 @@ def plan(centre, cam_mm: float, step_mm: float = 10.0):
     return out
 
 
+def plan_scan(centre, cam_mm: float = SCAN_CAM_MM, speed: float = SCAN_MM_S):
+    """Long straight glides for structure from motion (lab/fog3d.py): (phase, camera pose, speed or None) like plan().
+    Each line is a stop at its start (a full set) and a glide to its end. Lines both ways (an edge along the motion
+    has no parallax), then the same lines with the camera tilted SCAN_TILT_DEG across them (side walls)."""
+    c = np.array([centre[0], centre[1], SURFACE_Z])
+    down = np.array([0, 0, -1.0])
+    hx, hy = SCAN_HALF_MM[0] / 1000, SCAN_HALF_MM[1] / 1000
+    out = []
+
+    def line(name, a, b, d, dist):
+        out.append((name, _look_at(c + a, d, dist, 0.0), None))
+        out.append((name, _look_at(c + b, d, dist, 0.0), speed))
+
+    for i, dx in enumerate((-0.08, 0.0, 0.08)):  # along y, back and forth
+        a, b = np.array([dx, -hy, 0]), np.array([dx, hy, 0])
+        line("line_y", *((a, b) if i % 2 == 0 else (b, a)), down, cam_mm / 1000)
+    for i, dy in enumerate((-0.12, 0.0, 0.12)):  # along x
+        a, b = np.array([-hx, dy, 0]), np.array([hx, dy, 0])
+        line("line_x", *((a, b) if i % 2 == 0 else (b, a)), down, cam_mm / 1000)
+    t = np.radians(SCAN_TILT_DEG)
+    dist = SCAN_TILT_CAM_MM / 1000
+    # tilted, the camera stands back from where it looks: the far-reaching ones look a little nearer in
+    for sx, dx in ((1, 0.04), (-1, -0.09)):  # along y, looking across it from either side
+        line("tilt_y", np.array([dx, -0.75 * hy, 0]), np.array([dx, 0.6 * hy, 0]), np.array([sx * np.sin(t), 0, -np.cos(t)]), dist)
+    for sy in (1, -1):
+        line("tilt_x", np.array([-hx, 0, 0]), np.array([0.04, 0, 0]), np.array([0, sy * np.sin(t), -np.cos(t)]), dist)
+    return out
+
+
+def check_plan(targets, T_ct) -> list[str]:
+    """Without the arm: each target's fingertip height and reach, and the glide time. One line per target."""
+    rep, tot = [], 0.0
+    prev = None
+    for phase, T_cam, speed in targets:
+        Tt = T_cam @ np.linalg.inv(T_ct)
+        tip = Tt[:3, 3]
+        up = (tip[2] - SURFACE_Z) * 1000
+        ok = up >= MIN_TIP_MM and P.reachable(*tip[:2], margin_mm=15)
+        if speed and prev is not None:
+            tot += np.linalg.norm(T_cam[:3, 3] - prev) * 1000 / speed
+        prev = T_cam[:3, 3]
+        rep.append(f"{phase:7s} {'glide %3.0f mm/s' % speed if speed else 'stop + full set':16s} camera at "
+                   f"({T_cam[0, 3] * 1000:4.0f}, {T_cam[1, 3] * 1000:4.0f}, {(T_cam[2, 3] - SURFACE_Z) * 1000:3.0f}) mm, "
+                   f"fingertips {up:3.0f} mm up{'' if ok else '  <- SKIPPED (too low or out of reach)'}")
+    rep.append(f"gliding {tot:.0f} s, plus about 3 s per stop")
+    return rep
+
+
 def _now(client: CellClient) -> np.ndarray:
     return np.asarray(client.observe(["wrist"], (64, 36), "jpeg")["joints"][:6], float)
 
@@ -158,28 +214,34 @@ def _move(cell, client, tip, wpr, speed=None, settle: int = 5, joint_deg_s: floa
     return None
 
 
-def run(cell, client: CellClient, centre, cam_mm: float = 250.0, say=print, out: Path | None = None,
-        stopped=lambda: False) -> Path:
-    """The data run on this cell (the trial is already running). Returns the folder it recorded into."""
+def run(cell, client: CellClient, centre, cam_mm: float | None = None, say=print, out: Path | None = None,
+        stopped=lambda: False, kind: str = "scan") -> Path:
+    """The data run on this cell (the trial is already running). Returns the folder it recorded into.
+    kind "scan": plan_scan (long slow lines); "cross": plan (the Oct 28 stop-and-go cross, glides, orbit)."""
     out = out or RUNS / f"{datetime.now():%Y%m%d-%H%M%S}_datarun_{'real' if hasattr(cell, 'check') else 'sim'}"
     out.mkdir(parents=True, exist_ok=True)
     T_ct = _cam_in_tool(load()["wrist"])
-    targets = plan(centre, cam_mm)
-    (out / "plan.json").write_text(json.dumps({"centre_m": list(centre), "cam_mm": cam_mm, "frame_size": FRAME_SIZE,
+    cam_mm = cam_mm or (SCAN_CAM_MM if kind == "scan" else 250.0)
+    targets = plan_scan(centre, cam_mm) if kind == "scan" else plan(centre, cam_mm)
+    (out / "plan.json").write_text(json.dumps({"kind": kind, "centre_m": list(centre), "cam_mm": cam_mm, "frame_size": FRAME_SIZE,
                                                "targets": [(p, T.tolist(), s) for p, T, s in targets]}))
     rec = Recorder(fork(client), out)
     full_set(client, out, 0, "home")
     q_home = _now(client)
     rec.start()
-    t0, k, phase_said = time.time(), 1, None
+    t0, k, phase_said, skip = time.time(), 1, None, False
     try:
         for phase, T_cam, speed in targets:
             if stopped():
                 say("Data run stopped.")
                 break
+            if speed and skip:  # its line's start was skipped: don't glide from somewhere else
+                skip = False
+                continue
             Tt = T_cam @ np.linalg.inv(T_ct)
             rec.phase = phase
             why = _move(cell, client, Tt[:3, 3], wpr_of(Tt[:3, :3]), speed, settle=0 if speed else 5)
+            skip = bool(why) and speed is None
             if why:
                 continue
             if speed is None:
@@ -273,14 +335,22 @@ def analyse(out: Path, marks: list[dict], line_mm: float) -> list[dict]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    g = ap.add_mutually_exclusive_group(required=True)
+    g = ap.add_mutually_exclusive_group(required=False)
     g.add_argument("--sim", action="store_true", help="the Isaac cell (the 4090 box)")
     g.add_argument("--real", action="store_true", help="the real cell, with our approved request")
     ap.add_argument("--speed", action="store_true", help="the speed test instead of the data run")
     ap.add_argument("--centre", default="430,40", help="where the parts are, x,y mm in the base frame")
-    ap.add_argument("--cam-mm", type=float, default=250.0, help="camera above the table (mm)")
+    ap.add_argument("--cam-mm", type=float, default=None, help="camera above the table (mm)")
+    ap.add_argument("--kind", default="scan", choices=("scan", "cross"), help="scan: long slow lines; cross: Oct 28's")
+    ap.add_argument("--check", action="store_true", help="no arm: print the plan, fingertip heights, reach, time")
     ap.add_argument("--trial", default="sort_cups15", help="--sim: the layout")
     a = ap.parse_args()
+    centre = [float(v) / 1000 for v in a.centre.split(",")]
+    if a.check:
+        cam = a.cam_mm or (SCAN_CAM_MM if a.kind == "scan" else 250.0)
+        targets = plan_scan(centre, cam) if a.kind == "scan" else plan(centre, cam)
+        print("\n".join(check_plan(targets, _cam_in_tool(load()["wrist"]))))
+        return
     if a.real:
         from lab.realcell import RealCell
         from lab.robot import _approved_token, SPEEDS
@@ -295,7 +365,7 @@ def main() -> None:
     if a.speed:
         speed_test(cell, cell.client)
     else:
-        run(cell, cell.client, [float(v) / 1000 for v in a.centre.split(",")], a.cam_mm)
+        run(cell, cell.client, centre, a.cam_mm, kind=a.kind)
 
 
 if __name__ == "__main__":
