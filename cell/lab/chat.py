@@ -175,6 +175,10 @@ class Chat:
                     return
                 m = r.choices[0].message
                 calls = m.tool_calls or []
+                from lab import record
+                record.write("chat_llm.jsonl", {"kind": kind, "message": text, "status": msgs[1]["content"],
+                                                "answer": m.content or "", "seconds": round(time.time() - t0, 1),
+                                                "tools": [{"name": c.function.name, "args": c.function.arguments} for c in calls]})
                 self.history.append({"role": "assistant", "content": m.content or "",
                                      **({"tool_calls": [c.model_dump() for c in calls]} if calls else {})})
                 if not calls:

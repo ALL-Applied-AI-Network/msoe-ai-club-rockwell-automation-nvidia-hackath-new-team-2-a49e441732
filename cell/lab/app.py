@@ -36,6 +36,8 @@ class Board:
         with self.cv:
             self.items.append({"n": len(self.items), "who": who, "text": text, "t": time.time()})
             self.cv.notify_all()
+        from lab import record
+        record.write("page.jsonl", {"who": who, "text": text})
 
     def reset(self) -> None:
         """Clear the page: everyone's messages, gone (the page empties when it sees the 'reset' item)."""

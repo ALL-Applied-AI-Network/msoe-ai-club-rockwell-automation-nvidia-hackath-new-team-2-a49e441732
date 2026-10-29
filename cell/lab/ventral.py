@@ -175,10 +175,17 @@ class Ventral(threading.Thread):
             msgs = [{"role": "system", "content": sys_text + (f"\n\nThe person asked: \"{self.instruction}\"" if self.instruction else "")}] + self.history[-24:]
             while msgs[1]["role"] == "tool":  # never start mid tool call
                 msgs.pop(1)
+            t_ask = time.time()
             r = self.client.chat.completions.create(model=self.model, messages=msgs, tools=TOOLS, max_tokens=3000,
                                                     extra_body={"reasoning": {"effort": "low"}})
             m = r.choices[0].message
             calls = m.tool_calls or []
+            from lab import record
+            first, self._logged_system = not getattr(self, "_logged_system", False), True
+            record.write("ventral_llm.jsonl", {"system": msgs[0]["content"] if first else "(as before)",
+                                               "last": record.text_only(msgs[-2:]), "answer": m.content or "",
+                                               "seconds": round(time.time() - t_ask, 1),
+                                               "tools": [{"name": c.function.name, "args": c.function.arguments} for c in calls]})
             self.history.append({"role": "assistant", "content": m.content or "",
                                  **({"tool_calls": [c.model_dump() for c in calls]} if calls else {})})
             if m.content and m.content.strip():
