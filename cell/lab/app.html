@@ -85,6 +85,8 @@
       <button id="map" title="look around the table until the gaps are filled">Map</button>
       <button id="sort" title="map, then put each part in the box of its colour (or one box per colour), checking each pick">Sort</button>
       <button id="streams" title="two streams: depth maps and moves the arm; an LLM with SAM 3.1 names things, asks for break-ups, and sets the sort rule">Think + sort</button></div>
+    <div class="big"><button id="datarun" title="no sorting: camera sweeps over the parts, recording wrist pictures at full rate and a full set at every stop (about 2-3 min)">Data run</button>
+      <button id="speedtest" title="out and back along a line, 150 mm above the table, at 100 to 500 mm/s: how fast the arm really goes, how late it starts, how long it settles">Speed test</button></div>
   </div>
 
   <details class="sec fold" id="scene" open>
@@ -171,6 +173,8 @@ $("reset").onclick = () => post("/reset").then(refresh);
 $("map").onclick = () => post("/map");
 $("sort").onclick = () => post("/sort");
 $("streams").onclick = () => post("/streams");
+$("datarun").onclick = () => post("/datarun");
+$("speedtest").onclick = () => post("/speedtest");
 $("check").onclick = () => {
   $("check").disabled = true; $("trials").textContent = "checking…";
   post("/real/check", {url: $("url").value, token: $("token").value}).then(r => {

@@ -70,6 +70,9 @@ def main() -> None:
                 chat.banner.update(phase=phase, headline=headline)
                 board.add("status", json.dumps(chat.banner))
             return
+        if kind == "data":  # a data run's progress: the log only
+            board.add("log", text)
+            return
         if kind == "plan":
             rule = text.split("Rule: ")[-1] if "Rule: " in text else text
             board.add("log", f"plan: {text}")
@@ -162,6 +165,10 @@ def main() -> None:
             elif self.path == "/streams":
                 msg = robot.start("sort these", mind="focus")
                 board.add("action", f"think + sort (two streams): {msg}")
+                self._json({"msg": msg})
+            elif self.path in ("/datarun", "/speedtest"):
+                msg = robot.data_job("speed" if self.path == "/speedtest" else "sweep")
+                board.add("action", f"{'speed test' if self.path == '/speedtest' else 'data run'}: {msg}")
                 self._json({"msg": msg})
             elif self.path == "/stop":
                 msg = robot.pause()

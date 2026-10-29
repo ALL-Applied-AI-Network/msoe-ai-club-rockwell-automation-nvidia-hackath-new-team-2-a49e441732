@@ -59,6 +59,8 @@ Decide what each message is and act on it:
   size if they gave them. It's not a rule and not a change to the table. You use their words to search, check your
   counts against theirs before you say you're done, and say so when what you measure disagrees with what they said
   (their word helps you look; it never replaces measuring).
+- "do a data run", "gather data", "record a sweep": call data_run (no sorting: camera sweeps, everything recorded);
+  "how fast can you move?", "speed test": call data_run with kind "speed". Not while a sort is running.
 - "map the whole table": call start_mapping (the old depth-only map; it stops a sort in progress).
 - a correction or preference ("no, Lego goes in the white box", "leave the ring out"): call add_rule with it, in plain
   words; during a sort your ventral stream takes it and redoes the sort rule. Things already in a box stay there unless they ask; if they ask,
@@ -111,6 +113,11 @@ TOOLS = [
              "count": {"type": "integer", "description": "how many, if they said"},
              "size_mm": {"type": "number", "description": "its width in mm, if they said"}}, "required": ["word"]}}},
          "required": ["text", "items"]}}},
+    {"type": "function", "function": {"name": "data_run", "description": "No sorting. kind 'sweep': camera sweeps over the parts recording pictures at full rate (about 2-3 min). kind 'speed': a speed test of the arm, out and back at 100-500 mm/s, 150 mm above the table.",
+     "parameters": {"type": "object", "properties": {
+         "kind": {"type": "string", "enum": ["sweep", "speed"]},
+         "x_mm": {"type": "number", "description": "sweep: centre of the sweeps (default: where the parts are)"},
+         "y_mm": {"type": "number"}}, "required": ["kind"]}}},
     {"type": "function", "function": {"name": "start_sorting", "description": "Sort the table: the depth stream maps and moves the arm while the ventral stream (an LLM with SAM 3.1) works out what things are, asks for piles to be broken up, and sets the sort rule.",
      "parameters": {"type": "object", "properties": {"instruction": {"type": "string", "description": "the person's words for how to sort, if any"}}}}},
     {"type": "function", "function": {"name": "add_rule", "description": "A correction or standing preference from the person; the plan is redone before the next move.",
@@ -194,6 +201,8 @@ class Chat:
             return self.robot.start(args.get("instruction", "") or "map the table", mind="map")
         if name == "look_at":
             return self.robot.look_at(args.get("x_mm"), args.get("y_mm"), args.get("thing"), (args.get("word") or "").strip())
+        if name == "data_run":
+            return self.robot.data_job(args.get("kind") or "sweep", args.get("x_mm"), args.get("y_mm"))
         if name == "tell":
             return self.robot.tell(args.get("text", ""), args.get("items") or [])
         if name == "start_sorting":

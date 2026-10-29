@@ -110,6 +110,43 @@ class Robot:
             return "rule added; replanning"
         return "rule added; it applies to the next sort"
 
+    def data_job(self, kind: str = "sweep", x_mm: float | None = None, y_mm: float | None = None) -> str:
+        """No sorting: a data run (camera sweeps, everything recorded) or a speed test (lab/datarun.py). The centre of
+        the sweeps: the given place, else the parts measured lately, else the middle of today's parts."""
+        with self.lock:
+            if self.policy is not None:
+                return "not now: a job is running (stop it first)"
+            self.pending = ("data", kind, None if x_mm is None or y_mm is None else (x_mm / 1000, y_mm / 1000))
+        return ("starting the speed test: out and back at 100 to 500 mm/s, 150 mm above the table" if kind == "speed"
+                else "starting a data run: camera sweeps over the parts, no picking, about 2-3 minutes")
+
+    def _data(self, kind: str, centre) -> None:
+        from lab import datarun
+        if self.mode == "real" and not self.cell.running():
+            self._emit("note", "No trial is running on the real cell: press Run the test first.")
+            return
+        if centre is None:
+            objs = getattr(self.parked, "objects", None)
+            parts = objs.parts() if objs is not None else []
+            centre = tuple(np.mean([o.xy for o in parts], 0)) if parts else (0.43, 0.04)
+        self.state = "speed test" if kind == "speed" else "data run"
+        self._emit("state", "working")
+        say = lambda t: self._emit("data", t)
+        stopped = lambda: self.pending == "pause"
+        try:
+            if kind == "speed":
+                r = datarun.speed_test(self.cell, self.cell.client, say=say, stopped=stopped)
+                self._emit("note", "Speed test finished: " + "; ".join(
+                    f"asked {x['speed']:.0f}, reached {x['peak']:.0f} mm/s, {x['late']:.2f} s late to start"
+                    for x in r.get("results", []) if x.get("peak") is not None) + f" (saved in {r.get('folder', '?')}).")
+            else:
+                out = datarun.run(self.cell, self.cell.client, centre, say=say, stopped=stopped)
+                n = sum(1 for _ in open(out / "frames.jsonl"))
+                self._emit("note", f"Data run finished: {n} wrist pictures and the full sets saved in {out.name}.")
+        finally:
+            self.state = "idle"
+            self._emit("state", "paused")
+
     def look_at(self, x_mm: float | None = None, y_mm: float | None = None, thing: int | None = None,
                 word: str = "") -> str:
         """The person's "look over there": a close look at a place (mm, base frame), at a thing on the board, or at what
@@ -306,7 +343,10 @@ class Robot:
                 cmd, self.pending = self.pending, None
             with self.cell_lock:
                 try:
-                    if cmd == "start":
+                    if isinstance(cmd, tuple) and cmd[0] == "data":
+                        self._data(cmd[1], cmd[2])
+                        obs, fresh = None, True
+                    elif cmd == "start":
                         if self.mode == "real" and not self.cell.running():
                             self._emit("note", "No trial is running on the real cell: press Run the test first.")
                         else:
