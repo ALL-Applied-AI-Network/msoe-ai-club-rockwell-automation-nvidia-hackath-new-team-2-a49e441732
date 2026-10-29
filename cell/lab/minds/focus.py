@@ -41,6 +41,16 @@ TABLE_EVERY = 8                   # ask for the table camera at least every this
 PILE_GAP = 0.07                   # m between parts of different piles on the table (the piles never touch)
 REAL_PART_MM = 15.0               # the real cubes (measured through the Oct 28 calibration)
 UNSEEN_CAP_MM = 90.0              # space no depth has seen counts as solid up to this high, for the fingertips
+CUP_TOP_MIN_MM = 70.0             # a cup's rim for clearance: never lower than this (Oct 28: the table camera read a real
+                                  # cup as 41 mm, the wrist 45-52, and the hand caught the rim on the way in)
+
+
+def cup_top(b) -> float:
+    """A cup's height for planning clearance: its measured top, or CUP_TOP_MIN_MM if that's higher (depth sees the thin
+    rim poorly and reads cups short)."""
+    return max(float(b.top_mm), CUP_TOP_MIN_MM)
+
+
 BOX_WORDS = ("cup", "box", "container", "bin", "tray", "bowl", "basket", "bucket")
 BOX_ASSUME_MM = 90.0              # an unmeasured cup or box near a close look: the fingertips stay above this
 SIZE_TOL_MM = 4.0                 # measured this much wider than the person said: say so when the grip fails
@@ -324,7 +334,7 @@ class FocusMind(TwoStreamMind):
             if any(w in str(r.get("prompt", "")).lower() for w in BOX_WORDS) and np.linalg.norm(np.asarray(r["xy"]) - xy) < 0.09:
                 if not any(np.linalg.norm(b.xy - np.asarray(r["xy"])) < 0.03 for b in self.objects.boxes()):
                     return BOX_ASSUME_MM
-        return max([b.top_mm + 10 for b in self.objects.boxes() if np.linalg.norm(b.xy - xy) < 0.09], default=0.0)
+        return max([cup_top(b) + 10 for b in self.objects.boxes() if np.linalg.norm(b.xy - xy) < 0.09], default=0.0)
 
     def _heights(self):
         """height_under(xy, r): the tallest thing (mm) the map or the measured objects put within r of xy."""
@@ -347,7 +357,7 @@ class FocusMind(TwoStreamMind):
                     h = (pts[near, 2].max() - SURFACE_Z) * 1000
             for o in objs:
                 if np.linalg.norm(o.xy - xy) < r + max(o.size_mm) / 2000:
-                    h = max(h, o.top_mm)
+                    h = max(h, cup_top(o) if o.kind == "box" else o.top_mm)
             return h
         return under
 
@@ -749,7 +759,7 @@ class FocusMind(TwoStreamMind):
             self.misses.append(np.asarray(o.xy))  # tried again later (after neighbours leave), twice at most
             self.board.post("gave_up", f"#{o.id}: neighbours too close for the fingers (ask to break it up)")
             return obs
-        safe = max(P.SAFE_MM, box.top_mm + 15.0 + g.height_mm)
+        safe = max(P.SAFE_MM, cup_top(box) + 15.0 + g.height_mm)
         a = self._approach((g.x, g.y), g.yaw, safe, obs)
         if a is None:
             self.failed.add(o.id)
@@ -757,7 +767,7 @@ class FocusMind(TwoStreamMind):
             return obs
         approach, q_over = a
         rows, _ = P.pick_and_place(tcp_uf0(q_over), (g.x, g.y), g.height_mm, g.yaw, tuple(box.xy),
-                                   drop_mm=box.top_mm + DROP_ABOVE_RIM_MM, safe_mm=safe)
+                                   drop_mm=cup_top(box) + DROP_ABOVE_RIM_MM, safe_mm=safe)
         rep = armcheck.check(rows, q_over)
         if not rep.ok:
             self.failed.add(o.id)
