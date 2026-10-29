@@ -317,11 +317,10 @@ class Ventral(threading.Thread):
             return self._glance(img, prompts)
         crop, scale = agree.focus(things, cam, wh)
         masks, failed = [], []
-        for p in prompts:
-            try:
-                masks += sam.segment(img, p, crop=crop, scale=scale)
-            except Exception as e:
-                failed.append(f"{p}: {e}")
+        try:
+            masks = sam.segment_many(img, list(prompts), crop=crop, scale=scale)
+        except Exception as e:
+            failed.append(f"{', '.join(prompts)}: {e}")
         ag = agree.compare(things, masks, cam, wh, self.table_px, arm=arm)
         with b.cond:
             b.masks, b.agreement = ag.masks, ag
@@ -338,11 +337,10 @@ class Ventral(threading.Thread):
         b = self.board
         x0y0 = self._work_crop(img)
         masks, failed = [], []
-        for p in prompts:
-            try:
-                masks += sam.segment(img, p, crop=x0y0, scale=1.5)
-            except Exception as e:
-                failed.append(f"{p}: {e}")
+        try:
+            masks = sam.segment_many(img, list(prompts), crop=x0y0, scale=1.5)
+        except Exception as e:
+            failed.append(f"{', '.join(prompts)}: {e}")
         regs = focus.regions(masks, self.table_px)
         with b.cond:
             b.masks, b.prompts = masks, list(prompts)

@@ -90,7 +90,7 @@ def measure(obs: dict, cams: dict, prompts: list[str], masks: list | None = None
     img = obs["images"]["wrist"]
     H, W = img.shape[:2]
     if masks is None:
-        masks = [m for p in prompts for m in sam.segment(img, p, scale=1.0)]
+        masks = sam.segment_many(img, list(prompts), scale=1.0)
     masks = _dedupe(masks)
     D = obs["depth"]["wrist"]
     Hd, Wd = D.shape

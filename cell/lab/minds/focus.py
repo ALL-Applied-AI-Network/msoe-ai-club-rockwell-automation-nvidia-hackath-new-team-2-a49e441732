@@ -199,12 +199,11 @@ class FocusMind(TwoStreamMind):
         from lab import sam
         img = obs["images"]["table"]
         tp = agree.TablePixels(self.cams["table"], (img.shape[1], img.shape[0]))
-        masks = []
-        for p in prompts:
-            try:
-                masks += sam.segment(img, p, crop=self._table_crop(img), scale=1.5)
-            except Exception as e:
-                viz.narrate(f"(SAM failed on '{p}': {e})", level="WARN")
+        try:
+            masks = sam.segment_many(img, list(prompts), crop=self._table_crop(img), scale=1.5)
+        except Exception as e:
+            viz.narrate(f"(SAM failed on {', '.join(prompts)}: {e})", level="WARN")
+            masks = []
         return focus.regions(masks, tp)
 
     def _table_crop(self, img):
