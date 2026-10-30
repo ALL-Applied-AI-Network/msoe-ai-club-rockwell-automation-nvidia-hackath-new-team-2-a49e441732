@@ -48,6 +48,7 @@ def main() -> None:
     ap.add_argument("--first", default=None,
                     help="quick start: an .npz with the table depth picture (and joints, table/side pictures) taken at "
                          "second 0 by the caller: the safe height from it, then straight into the sweep")
+    ap.add_argument("--short-twitch", action="store_true", help="measure the picture delay with a 4 s wrist twitch")
     ap.add_argument("--delay-ms", type=float, default=None,
                     help="the picture delay, known already (no wrist twitch to measure it)")
     ap.add_argument("--fast", action="store_true",
@@ -211,7 +212,7 @@ def main() -> None:
     rows += r0
     n_move = len(rows)
     if a.delay_ms is None:
-        rows += twitch(q0)
+        rows += twitch(q0, short=a.short_twitch)
     else:
         pull.delay = a.delay_ms / 1000
     n_twitch = len(rows)
@@ -239,12 +240,14 @@ def main() -> None:
             fwd = Forward(pull, link, T_fc)
         if fwd is None and moved:  # the twitch done? measure the picture delay, then start feeding the depth service
             tw_idx = np.nonzero((np.abs(jq[:, 5] - q0[5]) > 0.5) & (jt >= t_sent + n_move * P.DT - 0.5))[0]
-            if len(tw_idx) and jt[-1] - jt[tw_idx[0]] > 12.0:
-                in_tw = tw_idx[jt[tw_idx] < jt[tw_idx[0]] + 10.0]
+            tw_s = (n_twitch - n_move) * P.DT  # how long the twitch lasts
+            if len(tw_idx) and jt[-1] - jt[tw_idx[0]] > tw_s + 1.0:
+                in_tw = tw_idx[jt[tw_idx] < jt[tw_idx[0]] + tw_s - 1.0]
                 tw = (jt[in_tw[0]] - 1.0, jt[in_tw[-1]] + 1.0)
                 pull.fit()
                 md = pull.measure_delay(*tw, T_fc, fx=cam["fx"])
-                print(f"picture delay {md['delay_s'] * 1000:.0f} ms (from the twitch); feeding the depth service")
+                print(f"picture delay {md['delay_s'] * 1000:.0f} ms (from the twitch, match {md['score']:.2f}); "
+                      f"feeding the depth service")
                 fwd = Forward(pull, link, T_fc)
         g = link.grid()
         hb((f"sweeping the table: {g.get('frames', 0)} wrist pictures into the 3D map, "

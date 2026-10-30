@@ -45,7 +45,7 @@ from lab.trial import TRIALS, build, load_trial
 MODEL = "openrouter/openai/gpt-6-luna"
 BIN_MIN_MM, BIN_TOP_MM, WALL_MM = 40.0, 25.0, 12.0  # bin-sized, and how thick its walls are taken to be
 SWEEP_MM_S = 250.0  # the opening sweep: one quick pass over the table, then pick
-REAL_DELAY_MS = 40.0  # the real cell's: not measured yet (a guess like the sim's)
+REAL_SWEEP_MM_S = 150.0  # the real cell: slower, sharper (250 smeared a 15 mm cube to 23 mm, Oct 30), delay measured
 DELAY_MS = 35.0  # the wrist pictures' delay in the sim (measured 32-38 ms by the twitch, Oct 30): no twitch per task
 STAY_MM, MOVED_MM, PILE_MM = 10.0, 30.0, 45.0
 SPACE_MM = 32.0  # a set-down spot this far from any matter or anything already put down (fingers open 20 mm + 6 each)
@@ -401,10 +401,10 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
     tell("Looking at everything at once: the language model is reading the pictures while the arm sweeps the "
          "table and the GPU box builds the 3D map.")
     env = {**os.environ, **({"RERUN_TO": rerun_to} if rerun_to else {})}
-    if real:  # the real cell: same quick start (its picture delay a guess, not measured: no wrist twitch)
+    if real:  # the real cell: quick start, a 4 s wrist twitch to measure its picture delay, a 150 mm/s sweep
         env |= {"CELL_URL": url, "CELL_TOKEN": token_, **({"CELL_CA": ca_} if ca_ else {})}
-    cmd = ["--first", str(out / "first.npz"), "--speed", str(SWEEP_MM_S),
-           "--delay-ms", str(REAL_DELAY_MS if real else DELAY_MS)]
+    cmd = (["--first", str(out / "first.npz"), "--speed", str(REAL_SWEEP_MM_S), "--short-twitch"] if real else
+           ["--first", str(out / "first.npz"), "--speed", str(SWEEP_MM_S), "--delay-ms", str(DELAY_MS)])
     p = subprocess.Popen([sys.executable, "-u", "-m", "lab.depth_check", "--no-reset", "--trial", task, *cmd],
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
     lines_, timing = [], {}

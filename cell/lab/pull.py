@@ -304,11 +304,15 @@ TWITCH = [(0, 8), (12, 2), (0, 6), (-12, 3), (0, 7), (8, 1), (0, 5), (-8, 4), (0
           (5, 1), (0, 4), (-5, 2), (0, 8)]
 
 
-def twitch(q) -> list:
+TWITCH_SHORT = [(0, 3), (12, 2), (0, 4), (-12, 3), (0, 2), (8, 1), (0, 5), (-8, 4), (0, 3), (15, 3), (0, 4), (-15, 2),
+                (0, 3)]  # 3.9 s: the same kind of rolls, shorter holds (the real cell's first runs)
+
+
+def twitch(q, short: bool = False) -> list:
     """Joint rows: the wrist rolls back and forth from q (J1-J6, deg) and ends where it started, still."""
     q = np.asarray(q, float)[:6].copy()
     rows = []
-    for turn, n in TWITCH:
+    for turn, n in (TWITCH_SHORT if short else TWITCH):
         for i in range(n):
             if turn:
                 q[5] += turn / n

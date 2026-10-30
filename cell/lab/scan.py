@@ -54,6 +54,7 @@ def tallest(pictures, region=REGION) -> tuple[float, dict]:
     (x0, x1), (y0, y1) = region
     m = (pts[:, 0] > x0 - 0.05) & (pts[:, 0] < x1 + 0.05) & (pts[:, 1] > y0 - 0.05) & (pts[:, 1] < y1 + 0.05)
     h = (pts[m, 2] - SURFACE_Z) * 1000
+    h = h[h < MAX_TALL_MM]  # higher than anything put on this table: the arm (its model misses the motor housings)
     top = float(np.percentile(h, 99.7)) if len(h) else 0.0
     return top, {"pixels": int(m.sum()), "above_5mm": int((h > 5).sum()), "pictures": len(pictures)}
 
