@@ -29,6 +29,7 @@ from lab.pull import Pull, twitch
 from lab.recorder import RUNS
 from lab.scene3d import cameras
 
+SETTLE_S = 1.0  # the queue empty this long = the arm has stopped (it trails the queue by ~0.8 s on the real cell)
 CAM_MM = 150  # fingertips above the table (camera ~280 mm up)
 LINES = [((0.26, -0.30), (0.50, -0.30)), ((0.50, -0.20), (0.26, -0.20)), ((0.26, -0.10), (0.50, -0.10)),
          ((0.50, 0.00), (0.26, 0.00)), ((0.26, 0.08), (0.50, 0.08)), ((0.30, 0.08), (0.30, -0.30)),
@@ -137,8 +138,7 @@ def main() -> None:
 
     def arm_words(last):
         q = last.get("queued") or 0
-        return f"moving ({q / 10:.0f} s of motion left)" if q else ("still" if last.get("status") == "idle" else
-                                                                     str(last.get("status")))
+        return f"moving ({q / 10:.0f} s of motion left)" if q else "still"
 
     def hb(where, last=None):  # a heartbeat for whoever watches (lab/ladder.py reads these lines): where + the arm
         if last is None:
@@ -149,13 +149,18 @@ def main() -> None:
     def play(rows_, where):
         for k in range(0, len(rows_), 100):
             c.act(rows_[k:k + 100], P.DT)
-        while True:  # until it has played and the arm is still
-            time.sleep(0.5)
+        zero = None
+        while True:  # until it has played and the arm has settled (the real cell's status says "running" all trial
+            time.sleep(0.5)  # long, so: nothing left in the queue for SETTLE_S)
             with pull.lock:
                 last = dict(pull.last)
             hb(where, last)
-            if last.get("queued") == 0 and last.get("status") == "idle":
-                return
+            if last.get("queued") == 0:
+                zero = zero or time.time()
+                if time.time() - zero >= SETTLE_S:
+                    return
+            else:
+                zero = None
 
     rows = []
     if first is not None:  # quick start: one table-depth picture (from the caller), straight into the sweep
@@ -258,7 +263,7 @@ def main() -> None:
                                               mat3x3=(flange_pose(jn) @ T_fc)[:3, :3]))
         rr.log("world/camera", rr.Pinhole(focal_length=cam["fx"], width=cam["size"][0], height=cam["size"][1],
                                           image_plane_distance=0.05))
-        if moved and last.get("queued") == 0 and last.get("status") == "idle":
+        if moved and last.get("queued") == 0:
             still_since = still_since or time.time()
             if time.time() - still_since > 2.0 and fwd is not None:
                 if not pull.stop_ev.is_set():  # the arm is done: no more pictures (a still camera adds nothing, and

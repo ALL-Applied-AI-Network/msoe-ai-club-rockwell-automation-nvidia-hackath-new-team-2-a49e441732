@@ -210,14 +210,18 @@ def free_spot(h: np.ndarray, cols: dict, taken: list, near=None) -> np.ndarray |
 
 
 def wait_idle(c, each=None) -> None:
-    t0 = time.time()
+    t0, zeros = time.time(), False
     while time.time() - t0 < 120:  # (a pick and place is well under a minute)
         time.sleep(1.0)
         o = c._call("GET", "observation", params={"cameras": "wrist", "width": 64, "height": 36, "format": "jpeg"})
         if each:
             each(o["queued"])
-        if o["queued"] == 0 and o["status"] == "idle":
-            return
+        if o["queued"] == 0:  # (the real cell's status says "running" all trial long) twice in a row = settled
+            if zeros:
+                return
+            zeros = True
+        else:
+            zeros = False
 
 
 def where(c) -> tuple:
