@@ -7,6 +7,7 @@
                                                      base, row-major), JPEG base64. In any order; used once it arrives
     GET  /grid?sure=2.2                              voxels with evidence for something (L >= sure): centres (m), colours,
                                                      their L; and counts
+    GET  /columns?sure=2.2                           per 2 mm column: the top of what's there, the bottom of the known-empty
     GET  /stats
 
 The Mac works out when each picture was taken and where the camera was (lab/pull.py); this only does depth.
@@ -321,6 +322,17 @@ class Depth:
         return {"xyz": np.round(xyz, 4).tolist(), "rgb": rgb.tolist(), "L": np.round(L, 2).tolist(),
                 "something": len(xyz), "nothing": nothing, **self.stat()}
 
+    def columns(self, sure: float) -> dict:
+        """Per 2 mm column (x, y): the highest voxel with evidence for something (-1: none) and the lowest with
+        evidence for nothing (-1: none), as voxel indices up from REGION's bottom."""
+        with torch.no_grad():
+            z = torch.arange(SHAPE[2], device=DEV)
+            top = torch.where(self.L >= sure, z, torch.full_like(z, -1)).max(2).values
+            low = torch.where(self.L <= -sure, z, torch.full_like(z, 10 ** 6)).min(2).values
+            low = torch.where(low == 10 ** 6, torch.full_like(low, -1), low)
+        return {"x0": REGION[0][0], "y0": REGION[1][0], "z0": SURFACE_Z + REGION[2][0], "vox": VOX,
+                "shape": list(SHAPE[:2]), "top": top.cpu().numpy().tolist(), "free_low": low.cpu().numpy().tolist()}
+
     def stat(self) -> dict:
         return {"frames": self.stats["frames"], "refs": len(self.refs), "searched": self.stats["refs"],
                 "waiting": len([k for k in self.refs if k not in self.done]), "points": self.stats["points"],
@@ -356,6 +368,8 @@ def handler(depth: Depth):
                     return self._send(200, depth.add(body))
                 if path == "grid":
                     return self._send(200, depth.grid(float(q.get("sure", 2.2))))
+                if path == "columns":
+                    return self._send(200, depth.columns(float(q.get("sure", 2.2))))
                 if path == "stats":
                     return self._send(200, depth.stat())
                 self._send(404, {"error": f"no such endpoint: {method} /{path}"})

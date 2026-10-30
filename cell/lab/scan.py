@@ -1,12 +1,14 @@
 """The opening scan: how high it's safe to fly, then sweep the whole table, fast.
 
-    tallest_mm, info = tallest(client)            # one table-camera depth picture: the tallest thing on the table
+    pics = [table_depth(client), ...]            # table-camera depth pictures, the arm somewhere else in each
+    tallest_mm, info = tallest(pics)              # the tallest thing on the table
     tip = safe_tip_mm(tallest_mm)                 # fingertips this high: CLEAR_MM over it, never under MIN_TIP_MM
     rows = sweep(q, tip, speed)                   # joint rows: lines both ways over REGION, hops between them
     lowest_tip_mm(rows)                           # the check: the lowest the fingertips go on the way
 
 The table camera looks straight down and measures depth, so the tallest thing is a height read off it directly (its
-~8 mm noise is covered by the clearance); nothing has to be picked out of a picture. Lines go both ways (an edge along
+~8 mm noise is covered by the clearance); nothing has to be picked out of a picture. The arm is in its view: its own
+pixels are blanked (its shape at those joints), and two pictures with the arm in different places cover for each other. Lines go both ways (an edge along
 the motion has no parallax, so both directions are needed), LINE_GAP apart: the wrist camera sees about +-240 x +-135 mm
 of table from ~280 mm up, so neighbouring lines overlap.
 """
@@ -25,17 +27,28 @@ LINE_GAP = 0.10
 HOP = 150.0  # mm/s between lines
 
 
-def tallest(client, region=REGION) -> tuple[float, dict]:
-    """The tallest thing over the region (mm above the table), from one table-camera depth picture: the 99.7th
-    percentile of the heights there (a few noisy pixels don't count), leaving out the arm itself."""
+def table_depth(client) -> tuple[np.ndarray, np.ndarray]:
+    """One table-camera depth picture (mm, 0 = none), with the arm's own pixels blanked out, and the joints then."""
     o = client.observe(["table"], (64, 36), "jpeg", depth=["table"])
-    pts = depth_to_base(load()["table_depth"], o["depth"]["table"], stride=2)
-    pts = pts[~near_arm(pts, o["joints"])]  # the arm stands over the table in this picture: it isn't on the table
+    d = np.asarray(o["depth"]["table"]).copy()
+    pts, uv = depth_to_base(load()["table_depth"], d, with_pixels=True)
+    arm = near_arm(pts, o["joints"])
+    d[uv[arm, 1], uv[arm, 0]] = 0
+    return d, np.asarray(o["joints"], float)
+
+
+def tallest(pictures, region=REGION) -> tuple[float, dict]:
+    """The tallest thing over the region (mm above the table) from table-camera depth pictures taken with the arm in
+    different places (table_depth): per pixel the farthest reading wins (the arm, wherever it is in one picture, is
+    above what's under it; the things on the table are the same in every picture), then the 99.7th percentile of the
+    heights over the region (a few noisy pixels don't count)."""
+    d = np.max(np.stack([p[0] for p in pictures]), 0)
+    pts = depth_to_base(load()["table_depth"], d, stride=2)
     (x0, x1), (y0, y1) = region
     m = (pts[:, 0] > x0 - 0.05) & (pts[:, 0] < x1 + 0.05) & (pts[:, 1] > y0 - 0.05) & (pts[:, 1] < y1 + 0.05)
     h = (pts[m, 2] - SURFACE_Z) * 1000
     top = float(np.percentile(h, 99.7)) if len(h) else 0.0
-    return top, {"pixels": int(m.sum()), "above_5mm": int((h > 5).sum())}
+    return top, {"pixels": int(m.sum()), "above_5mm": int((h > 5).sum()), "pictures": len(pictures)}
 
 
 def near_arm(pts: np.ndarray, joints, margin: float = 0.05) -> np.ndarray:

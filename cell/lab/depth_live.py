@@ -102,6 +102,9 @@ class DepthLink:
     def grid(self, sure: float = 2.2) -> dict:
         return self.s.get(self.url + "grid", params={"sure": sure}, timeout=60).json()
 
+    def columns(self, sure: float = 2.2) -> dict:
+        return self.s.get(self.url + "columns", params={"sure": sure}, timeout=60).json()
+
     def stats(self) -> dict:
         return self.s.get(self.url + "stats", timeout=30).json()
 

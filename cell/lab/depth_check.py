@@ -81,26 +81,56 @@ def main() -> None:
     c = CellClient(url, token="sim")
     speed = a.speed or (150.0 if a.fast else 60.0)
     if a.fast:
-        tall, info = scan.tallest(c)
-        tip_mm = scan.safe_tip_mm(tall)
-        segs = None  # set once the start pose is known: the camera's lines, shifted back by its offset
-        print(f"tallest thing on the table {tall:.0f} mm ({info['above_5mm']} depth pixels above 5 mm): "
-              f"fingertips fly at {tip_mm:.0f} mm")
+        tip_mm, segs = None, None  # the safe height comes from two table-depth pictures, below
     else:
         tip_mm, segs = CAM_MM, LINES
     pull = Pull(url, "sim", inflight=3)
     time.sleep(1.0)
     with pull.lock:
         q_now = np.asarray(pull.jq[-1], float)[:6]
-    if segs is None:
-        mid = P.uf0(0.36, -0.10, tip_mm)
-        off = scan.cam_offset(tool_ik(tip_m(mid), DOWN, q_now), T_fc)
+    def go(q_from, tip_xy, h_mm):
+        """Joint rows to the fingertips at tip_xy (m), h_mm up, straight down, lifted clear first."""
+        Tf = tool_pose(q_from)
+        goal = P.uf0(*tip_xy, h_mm)
+        qg = tool_ik(tip_m(goal), DOWN, q_from)
+        for lift in (max(h_mm, 150.0), 250.0):
+            jm = P.joint_move(q_from, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tip_m(goal), DOWN, height_mm=lift)
+            if jm is not None:
+                return [list(r) for r in jm], qg
+        raise SystemExit(f"no joint move to {np.round(np.asarray(tip_xy) * 1000)} mm from where the arm is")
+
+    def play(rows_):
+        for k in range(0, len(rows_), 100):
+            c.act(rows_[k:k + 100], P.DT)
+        while True:  # until it has played and the arm is still
+            time.sleep(0.5)
+            with pull.lock:
+                last = dict(pull.last)
+            if last.get("queued") == 0 and last.get("status") == "idle":
+                return
+
+    rows = []
+    if a.fast:  # two table-depth pictures, the arm in two places: how high it's safe to fly
+        Tn = tool_pose(q_now)
+        here = Tn[:2, 3]
+        r1, q1 = go(q_now, here, 250.0)
+        play(r1)
+        pics = [scan.table_depth(c)]
+        mid = P.uf0(0.36, -0.10, 250.0)
+        off = scan.cam_offset(tool_ik(tip_m(mid), DOWN, q1), T_fc)
         segs = scan.for_camera(scan.lines(), off)
-        print(f"the camera rides ({off[0] * 1000:.0f}, {off[1] * 1000:.0f}) mm from the fingertips: lines shifted back")
+        r2, q2 = go(q1, segs[0][0], 250.0)
+        play(r2)
+        pics.append(scan.table_depth(c))
+        tall, info = scan.tallest(pics)
+        tip_mm = scan.safe_tip_mm(tall)
+        print(f"tallest thing on the table {tall:.0f} mm (2 pictures, arm moved between): fingertips fly at "
+              f"{tip_mm:.0f} mm; the camera rides ({off[0] * 1000:.0f}, {off[1] * 1000:.0f}) mm from them")
+        q_now = q2
     start = P.uf0(*segs[0][0], tip_mm)
     q0 = tool_ik(tip_m(start), DOWN, q_now)
-    T = tool_pose(q_now)
-    rows = [list(r) for r in P.joint_move(q_now, T[:3, 3], wpr_of(T[:3, :3]), q0, tip_m(start), DOWN, height_mm=tip_mm)]
+    r0, q0 = go(q_now, segs[0][0], tip_mm)
+    rows += r0
     n_move = len(rows)
     rows += twitch(q0)
     n_twitch = len(rows)
@@ -108,6 +138,8 @@ def main() -> None:
     rows += scan_part
     low = scan.lowest_tip_mm(scan_part)
     print(f"the scan: {len(scan_part) * P.DT:.0f} s, fingertips never lower than {low:.0f} mm (safe height {tip_mm:.0f})")
+    with pull.lock:
+        t_sent = pull.last.get("t", 0.0)
     for k in range(0, len(rows), 100):
         c.act(rows[k:k + 100], P.DT)
     print(f"motion: {len(rows)} rows, {len(rows) * P.DT:.0f} s of arm time (twitch from {n_move * P.DT:.0f} s to "
@@ -122,7 +154,7 @@ def main() -> None:
             jt, jq = np.asarray(pull.jt), np.asarray(pull.jq)
         moved |= (last.get("queued") or 0) > 0
         if fwd is None and moved:  # the twitch done? measure the picture delay, then start feeding the depth service
-            tw_idx = np.nonzero(np.abs(jq[:, 5] - q0[5]) > 0.5)[0]
+            tw_idx = np.nonzero((np.abs(jq[:, 5] - q0[5]) > 0.5) & (jt >= t_sent + n_move * P.DT - 0.5))[0]
             if len(tw_idx) and jt[-1] - jt[tw_idx[0]] > 12.0:
                 in_tw = tw_idx[jt[tw_idx] < jt[tw_idx[0]] + 10.0]
                 tw = (jt[in_tw[0]] - 1.0, jt[in_tw[-1]] + 1.0)
@@ -165,6 +197,29 @@ def main() -> None:
     (out / "result.json").write_text(json.dumps(res, indent=1, default=float))
     (out / "grid.json").write_text(json.dumps(g))
     sheet(xyz, objects, str(out / "heights.jpg"))
+    # step 5: rigid objects from the grid
+    from lab import objects as OB
+    cols = link.columns()
+    found = OB.find(cols, xyz, g["rgb"])
+    mt = OB.match(found, objects)
+    res["rigid"] = {"found": len(found), "missed": mt["missed"], "merged": mt["merged"], "extra": mt["extra"],
+                    "objects": mt["objects"]}
+    (out / "objects.json").write_text(json.dumps([{**{k: v for k, v in o.__dict__.items() if k != "cells"},
+                                                   "footprint": o.footprint.tolist(), "centre": o.centre.tolist(),
+                                                   "opening": None if o.opening is None else o.opening.tolist()}
+                                                  for o in found], default=float, indent=1))
+    for o in found:
+        ring = np.vstack([o.footprint, o.footprint[:1]])
+        z = SURFACE_Z + o.top_mm / 1000
+        rr.log(f"world/objects/{o.id}", rr.LineStrips3D([np.c_[ring, np.full(len(ring), z)],
+                                                          np.c_[ring, np.full(len(ring), SURFACE_Z)]],
+                                                         colors=[[40, 200, 90] if not o.container else [230, 150, 30]],
+                                                         radii=0.0008, labels=[f"#{o.id} {'container' if o.container else 'solid'} "
+                                                                               f"{o.top_mm:.0f} mm"] * 2), static=True)
+    print(f"rigid objects: {len(found)} found; missed {mt['missed']}; merged {mt['merged']}; extra {mt['extra']}")
+    for k, v in mt["objects"].items():
+        print(f"  {k:22} -> #{v['found']}  top {v['top_mm']} (true {v['true_top_mm']})  "
+              f"{'container' if v['container'] else 'solid'}  free inside {v['free_inside']}")
     for k, v in res["objects"].items():
         print(f"  {k:22} true top {v['true_top_mm']:5.1f} mm  measured {v['measured_top_mm']}  ({v['voxels']} voxels)")
     print(f"seen {res['seen']} of {res['of']}; tops off by median {res['median_abs_error_mm']} mm, worst "
