@@ -141,12 +141,19 @@ def sweep(q, tip_mm: float, speed: float, segs=None, start=None, say=print) -> l
     for a, b in segs:
         for goal, v in ((P.uf0(*a, h), HOP), (P.uf0(*b, h), speed)):
             seg = []
+            q_before = q
             try:
                 for row in P.line(p, goal, r, r, 0, v):
                     q = tool_ik(_tip_m(row[:3]), row[3:6], q, near=True)
                     seg.append([*q.tolist(), 0.0])
             except ValueError:
                 say(f"skipped a leg to ({goal[0]:.0f}, {goal[1]:.0f}) mm: out of reach on this wrist branch")
+                q = q_before
+                break
+            bad = next((w for w in map(unsafe, seg[::3]) if w), None)
+            if bad:  # this leg would bring the arm too close to itself: leave it out, go on from where it was
+                say(f"skipped a leg to ({goal[0]:.0f}, {goal[1]:.0f}) mm: {bad}")
+                q = q_before
                 break
             rows += seg
             p = goal
@@ -159,35 +166,17 @@ def lowest_tip_mm(rows) -> float:
     return float((tcp[:, 2] - P.TABLE_UF0).min())
 
 
-# The joints the real arm has run without a fault (4123 poses: the data runs and the scans, Oct 28-30). Outside them
-# it has hit itself twice: 509 mm out and low (J2 62.7, J3 41.7), and folded back near the base on an orbit (J1 57.4,
-# J2 -17.7, J3 -69.0). Its own shape model (lab/armcheck) passed both, so this, measured on the arm, is the guard.
-SAFE_JOINTS = ((-74.0, 42.0), (-10.0, 64.0), (-67.0, 45.0), (-78.0, 56.0), (-86.0, 0.0), (-128.0, 132.0))
-MIN_REACH_MM = 200.0  # the fingertips at least this far from the base's axis (the orbit fault: 188 mm)
-
-
 def unsafe(q) -> str | None:
-    """Why the arm shouldn't be sent to joints q, or None: too far out (or far out and low: the real arm hit itself at
-    509 mm out, 71 mm up, Oct 30), into itself (lab/armcheck's model), or outside the cell's fingertip box."""
-    from lab import armcheck
+    """Why the arm shouldn't be sent to joints q, or None: the padded self-collision check on the ER-4iA's real meshes
+    with the gripper and camera (calibration/selfcollide: both of the real arm's Oct 30 faults fail it, none of its
+    4123 fault-free poses but the farthest reaches do), and the cell's fingertip box."""
+    from calibration import selfcollide
     q = np.asarray(q, float)
     tcp = np.array(P.tcp_rows(np.asarray([[*q[:6], q[6] if len(q) > 6 else 0.0]])))[0]
-    reach = float(np.hypot(tcp[0], tcp[1]))
-    up = float(tcp[2] - P.TABLE_UF0)
-    for k, (lo, hi) in enumerate(SAFE_JOINTS):
-        if not lo <= q[k] <= hi:
-            return f"J{k + 1} at {q[k]:.0f} deg, outside what the arm has run safely ({lo:.0f} to {hi:.0f})"
-    if reach < MIN_REACH_MM:
-        return f"the fingertips only {reach:.0f} mm from the base (the arm folds back into itself)"
-    if reach > REACH_MM + 15:
-        return f"the fingertips {reach:.0f} mm out from the base (the arm hits itself reaching that far)"
-    if reach > FAR_MM + 15 and up < FAR_TIP_MM - 10:
-        return f"the fingertips {reach:.0f} mm out and only {up:.0f} mm up (the arm hit itself reaching far and low)"
     for k, (lo, hi) in enumerate(P.TCP_BOX):
         if not lo <= tcp[k] <= hi:
             return "the fingertips outside the cell's allowed box"
-    why = armcheck.self_problem(armcheck.shapes(q[:6], float(q[6]) if len(q) > 6 else 0.0))
-    return why
+    return selfcollide.problem(q[:6], float(q[6]) if len(q) > 6 else 0.0)
 
 
 def feed(c, rows, queued, chunk: int = 40, keep: int = 80, each=None, say=None) -> bool:
@@ -337,23 +326,26 @@ def _look_rot(R0, z_to):
 
 
 def orbit(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 75.0, say=print) -> list:
-    """The longest orbit (orbit_at) over a few heights on the sphere and both directions round: the arm can't reach
-    every arc (an arc ends where the wrist branch runs out)."""
+    """The longest orbit (orbit_at) over a few heights on the sphere, three sides of the object (facing the base, and
+    either side of that: facing the base folded the real arm into itself near the base) and both directions round;
+    every pose passes the padded self-collision check (unsafe), so an arc ends before the arm comes too close."""
     global ORBIT_EL
     best, keep = [], ORBIT_EL
     try:
-        for el in (70.0, 62.0, 55.0):
-            ORBIT_EL = el
-            for rev in (False, True):
-                r = orbit_at(q, centre, top_mm, T_fc, min_tip_mm, speed, rev)
-                if len(r) > len(best):
-                    best = r
+        for side in (90.0, -90.0, 0.0):
+            for el in (70.0, 62.0, 55.0):
+                ORBIT_EL = el
+                for rev in (False, True):
+                    r = orbit_at(q, centre, top_mm, T_fc, min_tip_mm, speed, rev, side)
+                    if len(r) > len(best):
+                        best = r
     finally:
         ORBIT_EL = keep
     return best
 
 
-def orbit_at(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 75.0, rev: bool = False) -> list:
+def orbit_at(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 75.0, rev: bool = False,
+             side: float = 0.0) -> list:
     """Joint rows flying the wrist camera along an arc of a sphere ORBIT_R round the hypothesis (centre xy, at half
     its height), always looking at it: the 10 Hz video sees it from many angles (its height, its sides). Points
     where the fingertips would come below min_tip_mm, or out of reach on this wrist branch, end the arc there."""
@@ -363,7 +355,7 @@ def orbit_at(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 7
     T_t = tool_pose(q)
     T_tc = np.linalg.inv(T_t) @ flange_pose(q) @ T_fc  # tool (fingertips) -> camera: fixed
     R0 = T_t[:3, :3] @ T_tc[:3, :3]  # the camera's turn when the fingers point straight down
-    az0 = np.degrees(np.arctan2(-o[1], -o[0]))  # facing the robot's base
+    az0 = np.degrees(np.arctan2(-o[1], -o[0])) + side  # 0: the side facing the robot's base
     el = np.radians(ORBIT_EL)
     poses = []
     azs = np.linspace(az0 - ORBIT_SPAN / 2, az0 + ORBIT_SPAN / 2, 25)
@@ -381,11 +373,7 @@ def orbit_at(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 7
         if (tip[2] - SURFACE_Z) * 1000 < min_tip_mm:
             continue
         t_uf0 = (tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM)
-        rr_ = np.hypot(tip[0], tip[1]) * 1000
-        if rr_ > REACH_MM or (rr_ > FAR_MM and (tip[2] - SURFACE_Z) * 1000 < FAR_TIP_MM):
-            if rows:
-                break  # the arc ends before reaching too far out (or too far and low)
-            continue
+
         if any(not (lo <= v <= hi) for v, (lo, hi) in zip(t_uf0, box)):
             if rows:
                 break  # the arc ends before it would leave the box (an orbit reached x 146 mm, under the 150 limit)
@@ -407,3 +395,63 @@ def orbit_at(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 7
             continue
         p_prev = (tip, wpr)
     return rows
+
+
+NEUTRAL = (0.33, 0.0, 200.0)  # fingertips here (m, m, mm up), straight down: a detour point clear of everything
+
+
+def move_to(q, goal_uf0, wpr=None, lifts=(None, 150.0, 250.0)):
+    """Joint rows from joints q to the fingertips at goal_uf0 (UF0 mm), turned wpr (default straight down), that
+    pass the padded self-collision check at every row: the lifted joint move at each height in `lifts` (None: the
+    goal's own), and if none does, the same via NEUTRAL. Returns (rows, joints at the goal) or (None, why)."""
+    from calibration.kinematics import DOWN as _DOWN, tool_pose, wpr_of
+    wpr = _DOWN if wpr is None else wpr
+    q = np.asarray(q, float)[:6]
+    try:
+        qg = tool_ik(_tip_m(goal_uf0), wpr, q)
+    except ValueError:
+        return None, "out of reach"
+    if (w := unsafe(qg)):
+        return None, w
+
+    def direct(qa, qb, tip_b, wpr_b):
+        Ta = tool_pose(qa)
+        for lift in lifts:
+            h = (tip_b[2] * 1000 + UF0_Z_MM - P.TABLE_UF0) if lift is None else lift
+            rows = P.joint_move(qa, Ta[:3, 3], wpr_of(Ta[:3, :3]), qb, tip_b, wpr_b, height_mm=max(h, 60.0))
+            if rows is not None and not any(unsafe(r) for r in rows[::2]):
+                return [list(r) for r in rows]
+        return None
+    pre = []
+    T0 = tool_pose(q)
+    tilt = np.degrees(np.arccos(np.clip(-T0[2, 0], -1, 1)))  # the tool's angle from straight down
+    if tilt > 5.0:  # tilted (after an orbit): straighten in place while rising 40 mm first (a lift that keeps the
+        w0 = wpr_of(T0[:3, :3])  # tilt can be out of reach), a degree a row, every row checked
+        w1 = np.array(_DOWN, float)
+        dw = ((w1 - w0) + 180) % 360 - 180
+        n = max(5, int(np.ceil(np.abs(dw).max())))
+        p0 = T0[:3, 3]
+        qq = q
+        try:
+            for f in np.linspace(0, 1, n + 1)[1:]:
+                qq = tool_ik(p0 + np.array([0, 0, 0.04 * f]), w0 + dw * f, qq, near=True)
+                if unsafe(qq):
+                    raise ValueError("unsafe")
+                pre.append([*qq.tolist(), 0.0])
+            q = qq
+            qg = tool_ik(_tip_m(goal_uf0), wpr, q)
+        except ValueError:
+            pre = []
+    rows = direct(q, qg, _tip_m(goal_uf0), wpr)
+    if rows is not None:
+        return pre + rows, qg
+    n_uf0 = P.uf0(*NEUTRAL)
+    try:
+        qn = tool_ik(_tip_m(n_uf0), _DOWN, q)
+    except ValueError:
+        return None, "no clear way there"
+    a = direct(q, qn, _tip_m(n_uf0), _DOWN)
+    b = direct(qn, qg, _tip_m(goal_uf0), wpr) if a is not None else None
+    if a is None or b is None:
+        return None, "no way there that keeps the arm clear of itself"
+    return pre + a + b, qg

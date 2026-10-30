@@ -88,6 +88,7 @@ import cell as twin  # noqa: E402
 import scene_config as C  # noqa: E402
 from calibration.geometry import UF0_Z_MM, load as load_cams  # noqa: E402
 from calibration.kinematics import HOME, tcp_of, tool_ik  # noqa: E402
+from calibration import selfcollide  # noqa: E402
 
 JUMP_DEG = 20.0  # a row whose joints are this far from the last row's: a wrist flip the controller would refuse
 TORSION_M = 0.004  # torsional friction patch radius on objects (m): a finger pad's contact, roughly
@@ -180,6 +181,9 @@ class Cell:
         self.world = World(stage_units_in_meters=1.0, physics_dt=1 / args.physics_hz, rendering_dt=1 / 30)
         self.stage = omni.usd.get_context().get_stage()
         twin.build(self.stage, with_objects=False)
+        # (PhysX's own self-collision, _self_collision_on, stays off: with the twin's gripper bolted to J6 it made
+        # contacts on ordinary moves, stopping the arm 50-170 mm short within seconds. The padded check per row,
+        # play_row, is the sim's self-collision fault.)
         cal = load_cams()
         self.cams = {n: Cam(self.stage, n, c) for n, c in cal.items()}
         UsdGeom.Xform.Define(self.stage, OBJ_ROOT)
@@ -215,6 +219,17 @@ class Cell:
         self.pace: collections.deque = collections.deque(maxlen=400)  # (wall, clock) per physics step: the sim's speed
         for _ in range(30):  # let the MDL materials compile
             self.world.render()
+
+    def _self_collision_on(self):
+        """PhysX self-collision for the arm's links (off by default for an articulation: the sim arm could pass
+        through itself while the real one faulted). Plus every row is checked padded (calibration/selfcollide)."""
+        from pxr import PhysxSchema, UsdPhysics
+        n = 0
+        for prim in self.stage.Traverse():
+            if str(prim.GetPath()).startswith(C.ROBOT_PRIM) and prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+                PhysxSchema.PhysxArticulationAPI.Apply(prim).CreateEnabledSelfCollisionsAttr(True)
+                n += 1
+        print(f"[isaac-cell] self-collision on for {n} articulation root(s)", flush=True)
 
     def _arm(self):
         self.arm = SingleArticulation(prim_path=C.ROBOT_PRIM, name="er4ia")
@@ -423,6 +438,14 @@ class Cell:
         else:
             goal = np.asarray(row[:6], float)
         grip = float(row[6]) if len(row) > 6 else self.grip
+        why = selfcollide.problem(goal, grip)
+        if why and not selfcollide.problem(self.q, self.grip):  # (only on the way in: already there, let it back out)
+            with self.lock:
+                dropped = len(self.rows)
+                self.rows.clear()
+                self.fault = f"collision ({why}); stopped, {dropped} queued rows dropped"
+            print(f"[isaac-cell] FAULT {self.fault}", flush=True)
+            goal, grip = self.q, self.grip
         n = max(1, int(round(dt * args.physics_hz)))
         every = n  # the window redraws once a row (10 a second of robot time): 3 a row made Isaac run at 0.44x real time
         q0 = self.q.copy()

@@ -182,18 +182,12 @@ def park(c) -> bool:
     cur, q = where(c)
     goal = P.uf0(PARK[0], PARK[1], PARK[2])
     tm = np.array([goal[0], goal[1], goal[2] - UF0_Z_MM]) / 1000
-    try:
-        qg = tool_ik(tm, DOWN, q)
-    except ValueError:
+    rows, _ = SC.move_to(q, goal, lifts=(PARK[2], 250.0, 350.0))
+    if rows is None:
         return False
-    Tf = tool_pose(q)
-    for lift in (PARK[2], 250.0, 350.0):
-        rows = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tm, DOWN, height_mm=lift)
-        if rows is not None:
-            ok_ = SC.feed(c, [list(r) for r in rows], lambda: queued_of(c))
-            wait_idle(c)
-            return ok_
-    return False
+    ok_ = SC.feed(c, rows, lambda: queued_of(c))
+    wait_idle(c)
+    return ok_
 
 
 def queued_of(c) -> int:
@@ -221,14 +215,10 @@ def snap(c, o, plan, out, say=print, cols=None):
         near = HD.path_max(cols, HD.column_heights(cols), tip_xy, tip_xy, None, half_mm=30) if cols is not None else 0
         tip_h = max(o.top_mm + HOVER_ABOVE_MM, near + 15.0)
         goal = P.uf0(*tip_xy, tip_h)
-        Tf = tool_pose(q)
-        qg = tool_ik(tm(goal), DOWN, q)  # (not near: a hover can be far from where the arm is; joint_move bridges it)
-        rows = None
-        for lift in (max(min(plan.carry_mm, tip_h + 30), tip_h), 150.0, 250.0):  # lifted higher if the path dips
-            rows = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tm(goal), DOWN, height_mm=max(lift, tip_h))
-            if rows is not None:
-                break
+        rows, why_mv = SC.move_to(q, goal, lifts=(max(min(plan.carry_mm, tip_h + 30), tip_h), 150.0, 250.0))
         if rows is None:
+            say(f"  hover over ({target[0] * 1000:.0f}, {target[1] * 1000:.0f}) mm, fingertips {tip_h:.0f} mm up, from "
+                f"joints {np.round(q, 1).tolist()}: {why_mv}")
             if not again:
                 return False
             return park(c) and hover(target, again=False)  # from a neutral pose, once
@@ -794,10 +784,23 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
         tell(f"Close look at {nm(o.id)}: {why_}. Going down.")
         plan_m = snapped
         cur, q = where(c)
-        try:
-            jrows = joints_for(HD.rows(plan_m, cur), q)
-        except ValueError as e:
-            tell(f"{nm(o.id).capitalize()} is out of the arm's reach from here. Skipping it.")
+        import dataclasses as _dc
+        from lab import scan as SC
+        jrows, why_bad = None, "out of the arm's reach from here"
+        square = abs(o.size_mm[0] - o.size_mm[1]) < 4.0  # (a square top can be gripped across either pair of sides)
+        for turn in ((0.0, 180.0, 90.0, -90.0) if square else (0.0, 180.0)):  # the jaws turned, if one way folds
+            pm = _dc.replace(plan_m, grip=_dc.replace(plan_m.grip, yaw=plan_m.grip.yaw + turn))  # the arm into itself
+            try:
+                jr = joints_for(HD.rows(pm, cur), q)
+            except ValueError:
+                continue
+            bad = next((w for w in map(SC.unsafe, jr[::2]) if w), None)
+            if bad is None:
+                jrows, plan_m = jr, pm
+                break
+            why_bad = bad
+        if jrows is None:
+            tell(f"I'm not picking up {nm(o.id)}: every way I could grip it would put {why_bad}. Skipping it.")
             continue
         if place is not None:
             taken.append(place)

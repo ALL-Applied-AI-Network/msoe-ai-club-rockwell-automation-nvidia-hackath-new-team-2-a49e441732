@@ -200,14 +200,10 @@ def main() -> None:
         q_now = np.asarray(pull.jq[-1], float)[:6]
     def go(q_from, tip_xy, h_mm):
         """Joint rows to the fingertips at tip_xy (m), h_mm up, straight down, lifted clear first."""
-        Tf = tool_pose(q_from)
-        goal = P.uf0(*tip_xy, h_mm)
-        qg = tool_ik(tip_m(goal), DOWN, q_from)
-        for lift in (max(h_mm, 150.0), 250.0):
-            jm = P.joint_move(q_from, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tip_m(goal), DOWN, height_mm=lift)
-            if jm is not None:
-                return [list(r) for r in jm], qg
-        raise SystemExit(f"no joint move to {np.round(np.asarray(tip_xy) * 1000)} mm from where the arm is")
+        rows_, qg = scan.move_to(q_from, P.uf0(*tip_xy, h_mm), lifts=(max(h_mm, 150.0), 250.0))
+        if rows_ is None:  # (qg: why) every row checked against the padded self-collision model
+            raise SystemExit(f"no joint move to {np.round(np.asarray(tip_xy) * 1000)} mm from where the arm is: {qg}")
+        return rows_, qg
 
     def arm_words(last):
         q = last.get("queued") or 0
@@ -324,11 +320,10 @@ def main() -> None:
                 orb = scan.orbit(q_end, ctr, top, T_fc, min_tip_mm=max(top + 30.0, 60.0), speed=40.0)
                 if not orb:
                     continue
-                Tf = tool_pose(q_end)
                 q_o = np.asarray(orb[0][:6], float)
                 To = tool_pose(q_o)
-                jm = P.joint_move(q_end, Tf[:3, 3], wpr_of(Tf[:3, :3]), q_o, To[:3, 3], wpr_of(To[:3, :3]),
-                                  height_mm=tip_mm)
+                jm, _ = scan.move_to(q_end, np.array([*(To[:3, 3] * 1000)[:2], To[2, 3] * 1000 + UF0_Z_MM]),
+                                     wpr_of(To[:3, :3]), lifts=(tip_mm, 150.0))
                 if jm is None:
                     continue
                 extra += [list(r) for r in jm] + orb
