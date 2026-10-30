@@ -1,0 +1,12 @@
+# Not a task: a depth test. It looks and records everything (the sweep's wrist video with joints, orbits, close looks,
+# still wrist and table depth over each thing) and touches nothing. On the real cell: things of known size, apart.
+instruction: "Depth test: look at everything, touch nothing."
+mode: depth_test
+layout: spread
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 1}
+  - {kind: cube_10, color: blue, count: 1}
+fixtures:
+  - {kind: box_60, color: white, at: [0.36, -0.24]}
+goal: []

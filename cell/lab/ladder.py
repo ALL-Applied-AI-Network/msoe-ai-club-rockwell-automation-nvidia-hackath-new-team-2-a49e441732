@@ -277,6 +277,70 @@ def snap(c, o, plan, out, say=print, cols=None):
                                                f"jaws at {yaw:.0f} deg")
 
 
+def depth_looks(c, objs, cols, out, task, t0, say, tell, state, real) -> dict:
+    """The depth test, after the scan: over each thing the map found, the close look (two still wrist pictures, its
+    outline and size) and then, higher up, still wrist and table depth pictures (the depth cameras at their range).
+    Touches nothing. Everything saved for offline scoring against the real sizes."""
+    import dataclasses
+    from calibration.geometry import UF0_Z_MM
+    from calibration.kinematics import DOWN, tool_ik, tool_pose, wpr_of
+    from lab import grasp
+    from lab import scan as SC
+    from lab.scene3d import cameras
+    cam, T_fc, _ = cameras(None)
+    tm = lambda p_: np.array([p_[0], p_[1], p_[2] - UF0_Z_MM]) / 1000
+    tell(f"Depth test: the scan found {_things(objs)}. Now a close look and a still depth picture over each one; "
+         "I won't touch anything.")
+    found = []
+    for o in objs[:6]:
+        state("arm", f"close look over #{o.id}")
+        g = grasp.Grip(float(o.centre[0]), float(o.centre[1]), 4.0, 0.0, 0, 0.0)
+        pl = HD.Plan(True, "depth test", grip=g, carry_mm=max(o.top_mm + 60.0, 90.0))
+        try:
+            snapped, why_ = snap(c, o, pl, out, say, cols=cols)
+        except Exception as e:
+            snapped, why_ = None, f"{type(e).__name__}: {e}"
+        rec = {"id": o.id, "container": o.container, "depth_top_mm": o.top_mm, "depth_size_mm": o.size_mm,
+               "depth_centre_mm": (o.centre * 1000).round(1).tolist(), "close_look": why_}
+        if snapped is not None:
+            rec["look_centre_mm"] = [round(snapped.grip.x * 1000, 1), round(snapped.grip.y * 1000, 1)]
+        # higher: the camera ~350 mm over it, still; wrist and table depth (the wrist depth camera at its range)
+        state("arm", f"still depth pictures over #{o.id}")
+        try:
+            cur, q = where(c)
+            off = SC.cam_offset(q, T_fc)
+            tip_xy = o.centre - off
+            goal = P.uf0(*tip_xy, 220.0)
+            Tf = tool_pose(q)
+            qg = tool_ik(tm(goal), DOWN, q)
+            jm = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tm(goal), DOWN, height_mm=220.0)
+            if jm is not None:
+                SC.feed(c, [list(r) for r in jm], lambda: queued_of(c))
+                wait_idle(c)
+                time.sleep(0.6)
+                shots = []
+                for _ in range(5):  # five, to average the depth noise
+                    ob = c.observe(["wrist", "table"], (848, 480), "png", depth=["wrist", "table"])
+                    shots.append(ob)
+                    time.sleep(0.15)
+                np.savez(out / f"still_{o.id}.npz", wrist=shots[0]["images"]["wrist"], table=shots[0]["images"]["table"],
+                         wrist_depth=np.stack([s_["depth"]["wrist"] for s_ in shots]),
+                         table_depth=np.stack([s_["depth"]["table"] for s_ in shots]),
+                         joints=np.stack([np.asarray(s_["joints"], float) for s_ in shots]), T_fc=T_fc)
+                rec["still"] = f"still_{o.id}.npz"
+        except Exception as e:
+            rec["still_error"] = f"{type(e).__name__}: {e}"
+        found.append(rec)
+        say(f"  depth test #{o.id}: {json.dumps(rec)}")
+    state("arm", "done: nothing touched")
+    res = {"task": task, "ok": True, "depth_test": True, "objects": found, "seconds": round(time.time() - t0),
+           "real": bool(real)}
+    (out / "result.json").write_text(json.dumps(res, indent=1, default=float))
+    tell(f"Depth test done in {res['seconds']} s: {len(found)} things looked at; everything saved in {out.name}. "
+         "Tell me the real sizes and I'll score each way of measuring depth against them.")
+    return res
+
+
 def labelled(img: np.ndarray, objs) -> np.ndarray:
     """The table picture cropped to the work area, each found object's number drawn at its top."""
     cam = load()["table"]
@@ -524,6 +588,8 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
     cmd = ["--first", str(out / "first.npz"), "--speed", str(REAL_SWEEP_MM_S), "--delay-ms", str(REAL_DELAY_MS)] + \
         ORBITS if real else \
           ["--first", str(out / "first.npz"), "--speed", str(SWEEP_MM_S), "--delay-ms", str(DELAY_MS)] + ORBITS
+    if t.get("mode") == "depth_test":
+        cmd += ["--record", str(out / "video")]
     p = subprocess.Popen([sys.executable, "-u", "-m", "lab.depth_check", "--no-reset", "--trial", task, *cmd],
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
     lines_, timing = [], {}
@@ -595,6 +661,8 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
     pic = labelled(before_img, objs)
     cv2.imwrite(str(out / "before.jpg"), cv2.cvtColor(pic, cv2.COLOR_RGB2BGR))
     state("where", f"map done: {len(objs)} things ({sum(o.container for o in objs)} open containers)")
+    if t.get("mode") == "depth_test":
+        return depth_looks(c, objs, cols, out, task, t0, say, tell, state, real)
     tell(f"Scan done. The depth map has {_things(objs)}.")
     t1 = time.time()
     while th_first.is_alive():  # (usually done long before the scan)

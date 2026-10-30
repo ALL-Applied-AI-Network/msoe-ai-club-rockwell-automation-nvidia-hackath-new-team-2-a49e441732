@@ -12,6 +12,7 @@ matter. Writes runs/<stamp>_depth/.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import json
 import time
 
@@ -114,6 +115,7 @@ def main() -> None:
     ap.add_argument("--first", default=None,
                     help="quick start: an .npz with the table depth picture (and joints, table/side pictures) taken at "
                          "second 0 by the caller: the safe height from it, then straight into the sweep")
+    ap.add_argument("--record", default=None, help="save every wrist picture and the joint record to this folder")
     ap.add_argument("--angled", action="store_true",
                     help="after the sweep, orbit each thing the table camera sees: the camera on a sphere round it")
     ap.add_argument("--stills", action="store_true",
@@ -396,6 +398,19 @@ def main() -> None:
     if not pull.stop_ev.is_set():
         pull.stop()
     hb("sweep done: finding objects in the 3D map", {"queued": 0, "status": "idle"})
+    if a.record:  # every wrist picture and the joint record, for offline work (lab/timing_real.py, depth benches)
+        rec = Path(a.record)
+        (rec / "frames").mkdir(parents=True, exist_ok=True)
+        with pull.lock:
+            fr, jt_, jq_ = list(pull.frames), list(pull.jt), [np.asarray(q_) for q_ in pull.jq]
+        lines_ = []
+        for i, f in enumerate(fr):
+            (rec / "frames" / f"{i:05d}.jpg").write_bytes(f.jpeg)
+            lines_.append(json.dumps({"n": i, "t_first": f.t_first, "tc": f.tc, "k": f.k, "sure": f.sure, "hash": f.hash}))
+        (rec / "frames.jsonl").write_text("\n".join(lines_))
+        np.savez(rec / "joints.npz", t=np.array(jt_), q=np.array(jq_), delay=pull.delay if pull.delay is not None else np.nan,
+                 T_fc=T_fc)
+        print(f"recorded {len(fr)} wrist pictures and {len(jt_)} joint readings to {rec}")
     if fwd and not fwd.stop_ev.is_set():
         fwd.stop()
     g = link.grid()
