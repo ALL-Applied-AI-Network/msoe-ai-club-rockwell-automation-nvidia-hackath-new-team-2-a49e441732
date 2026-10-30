@@ -113,12 +113,18 @@ def main() -> None:
             lad["lanes"], lad["t0"] = {}, time.time()
             for attempt in (1, 2):
                 try:
-                    r = LD.run(n, lad["root"] / (n if attempt == 1 else n + "_retry"), say=say, rerun_to=robot.viewer_uri, tell=tell, state=lane)
+                    real = None
+                    if robot.mode == "real":  # the real cell: its address, token and certificate, a trial running
+                        cl = robot.cell.client
+                        real = (robot.cell.url, cl.s.headers["Authorization"].split(" ", 1)[1],
+                                cl.s.verify if isinstance(cl.s.verify, str) else None)
+                    r = LD.run(n, lad["root"] / (n if attempt == 1 else n + "_retry"), say=say, rerun_to=robot.viewer_uri,
+                               tell=tell, state=lane, real=real)
                     break
                 except Exception as e:
                     r = {"task": n, "ok": False, "why": f"{type(e).__name__}: {e}"}
                     say(f"  crashed: {r['why']}")
-                    if attempt == 2 or "Connection" not in r["why"]:
+                    if attempt == 2 or "Connection" not in r["why"] or robot.mode == "real":
                         break
                     # the Isaac app on the GPU box sometimes quits by itself (no error in its log): start it again
                     say("  the Isaac cell stopped answering: restarting it on the GPU box, then this task again")
@@ -165,7 +171,18 @@ def main() -> None:
                 self._json(out)
             elif self.path == "/ladder":
                 names = sorted(f.stem for f in LD.TRIALS.glob("ladder*.yaml"))
-                self._json({"tasks": [{"name": n, "instruction": LD.load_trial(n)["instruction"]} for n in names],
+                def setup(t):  # what to put on the real table for this task
+                    pretty = {"cube_10": "block", "box_60": "bin", "screw_m6x30": "bolt", "marker": "pen",
+                              "lego_1x2": "lego brick", "d6": "die", "dowel": "dowel"}
+                    out = []
+                    for o in t["objects"] + t.get("fixtures", []):
+                        n_ = o.get("count", 1)
+                        w = pretty.get(o["kind"], o["kind"])
+                        col = "" if o["color"] in ("steel", "white", "black") and w in ("bolt", "die", "pen") else o["color"] + " "
+                        out.append(f"{n_} {col}{w}{'s' * (n_ > 1)}")
+                    return ", ".join(out)
+                self._json({"tasks": [{"name": n, "instruction": LD.load_trial(n)["instruction"],
+                                       "setup": setup(LD.load_trial(n))} for n in names],
                             "running": lad["running"], "results": lad["results"], "lanes": lad["lanes"],
                             "now": time.time(), "t0": lad["t0"]})
             elif self.path.startswith("/runs/"):  # pictures and results from runs/ (nothing outside it)

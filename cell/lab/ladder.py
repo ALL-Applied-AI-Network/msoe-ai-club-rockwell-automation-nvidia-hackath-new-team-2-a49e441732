@@ -43,6 +43,8 @@ from lab.recorder import RUNS
 from lab.trial import TRIALS, build, load_trial
 
 MODEL = "openrouter/openai/gpt-6-luna"
+BIN_MIN_MM, BIN_TOP_MM, WALL_MM = 40.0, 25.0, 12.0  # bin-sized, and how thick its walls are taken to be
+SWEEP_MM_S = 250.0  # the opening sweep: one quick pass over the table, then pick
 DELAY_MS = 35.0  # the wrist pictures' delay in the sim (measured 32-38 ms by the twitch, Oct 30): no twitch per task
 STAY_MM, MOVED_MM, PILE_MM = 10.0, 30.0, 45.0
 SPACE_MM = 32.0  # a set-down spot this far from any matter or anything already put down (fingers open 20 mm + 6 each)
@@ -123,12 +125,23 @@ def match(first: dict, objs, img: np.ndarray, near: float = 0.08) -> tuple[dict,
     def find(name, want_container):
         if name not in at or not np.isfinite(at[name]).all():
             return None
-        cands = [o for o in objs if o.container == want_container]
+        # a bin the depth map didn't see as open (a plain inside gives it nothing to match) is still a bin when the
+        # language model says so and it's bin-sized: open it up, the opening its outline less the walls
+        cands = [o for o in objs if o.container == want_container or
+                 (want_container and min(o.size_mm) >= BIN_MIN_MM and o.top_mm >= BIN_TOP_MM)]
         if not cands:
             return None
         d = [np.linalg.norm(frac(o) - at[name]) for o in cands]
         i = int(np.argmin(d))
-        return cands[i] if d[i] <= near else None
+        if d[i] > near:
+            return None
+        o = cands[i]
+        if want_container and not o.container:
+            c_ = o.footprint.mean(0)
+            r_ = np.linalg.norm(o.footprint - c_, axis=1, keepdims=True)
+            o.container, o.rim_mm = True, o.top_mm
+            o.opening = c_ + (o.footprint - c_) * np.clip(1 - WALL_MM / 1000 / np.maximum(r_, 1e-6), 0.1, 1)
+        return o
     for m in first.get("moves") or []:
         o = find(m.get("thing"), False)
         if o is None:
@@ -315,7 +328,7 @@ Before the depth scan finishes, glance at the picture and say in one or two plai
 the table and roughly what you'll do. JSON only: {{"say": "..."}}"""
 
 
-def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state=None) -> dict:
+def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state=None, real=None) -> dict:
     """say: detail lines (a log); tell: what the robot would say to a person watching, as things change;
     state(lane, text): live status, lanes "arm" (what it's doing), "where" (depth: the scan, the 3D map),
     "what" (the language model: what things are, the plan)."""
@@ -323,22 +336,31 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
     state = state or (lambda lane, text: None)
     from cell_client import CellClient
     from lab.isaaccell import PORT, IsaacCell
-    url = f"http://127.0.0.1:{PORT}"
+    if real:  # (url, token, ca) of the real cell, a trial already running: no reset, no sim truth
+        url, token_, ca_ = real
+        c = CellClient(url, token_, ca_)
+    else:
+        url = f"http://127.0.0.1:{PORT}"
+        c = CellClient(url, token="sim")
     api = url + "/api/v1/"
-    c = CellClient(url, token="sim")
     t = load_trial(task)
     out.mkdir(parents=True)
     t0 = time.time()
     state("where", "nothing yet")
     state("what", "nothing yet")
-    state("arm", "switching the sim's timing mode off for the reset")
-    requests.post(api + "sim/honest", json={"on": False}, timeout=30)
     t_ = time.time()
-    state("arm", "resetting the table (the simulator rebuilds the scene)")
-    IsaacCell(build(t, 0))
+    if not real:
+        state("arm", "switching the sim's timing mode off for the reset")
+        requests.post(api + "sim/honest", json={"on": False}, timeout=30)
+        t_ = time.time()
+        state("arm", "resetting the table (the simulator rebuilds the scene)")
+        IsaacCell(build(t, 0))
     t_reset = time.time() - t_
-    state("arm", "taking the first pictures (table, side, wrist)")
-    obs0 = c.observe(["table", "side", "wrist"], (1280, 720), "jpeg")
+    state("arm", "taking the first pictures (table, side, wrist, table depth)")
+    t_go = time.time()  # second 0: from here everything runs at once
+    obs0 = c.observe(["table", "side", "wrist"], (1280, 720), "jpeg", depth=["table"])
+    np.savez(out / "first.npz", depth=obs0["depth"]["table"], joints=np.asarray(obs0["joints"], float),
+             table=cv2.resize(obs0["images"]["table"], (960, 540)), side=cv2.resize(obs0["images"]["side"], (960, 540)))
     say(f"  timing: honest-off {t_ - t0:.1f} s, reset {t_reset:.1f} s, first pictures {time.time() - t_ - t_reset:.1f} s")
     before_img = obs0["images"]["table"]
     look = first_look(obs0)
@@ -369,14 +391,19 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
     import threading
     th_first = threading.Thread(target=plan_first, daemon=True)
     th_first.start()
+    say(f"  LLM asked at {time.time() - t_go:.1f} s")
     say(f"\n=== {task}: \"{t['instruction']}\"")
-    tell("Looking at everything at once: the language model is reading the pictures while the arm takes two "
-         "table-camera depth pictures to see how tall things are.")
-    p = subprocess.Popen([sys.executable, "-u", "-m", "lab.depth_check", "--fast", "--no-reset", "--trial", task,
-                          "--delay-ms", str(DELAY_MS)],
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                         env={**os.environ, **({"RERUN_TO": rerun_to} if rerun_to else {})})
-    lines_ = []
+    tell("Looking at everything at once: the language model is reading the pictures while the arm sweeps the "
+         "table and the GPU box builds the 3D map.")
+    env = {**os.environ, **({"RERUN_TO": rerun_to} if rerun_to else {})}
+    if real:  # the real cell: two table pictures for the safe height, 150 mm/s, the picture delay measured (twitch)
+        env |= {"CELL_URL": url, "CELL_TOKEN": token_, **({"CELL_CA": ca_} if ca_ else {})}
+        cmd = ["--fast", "--speed", "150"]
+    else:
+        cmd = ["--first", str(out / "first.npz"), "--speed", str(SWEEP_MM_S), "--delay-ms", str(DELAY_MS)]
+    p = subprocess.Popen([sys.executable, "-u", "-m", "lab.depth_check", "--no-reset", "--trial", task, *cmd],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    lines_, timing = [], {}
     import queue as _q
     inbox = _q.Queue()
     def _read():
@@ -404,6 +431,9 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
             continue
         if l.startswith("HB\t"):
             _, where_, arm_ = (l.split("\t") + ["", ""])[:3]
+            if arm_.startswith("moving") and "t_move" not in timing:
+                timing["t_move"] = round(time.time() - t_go, 1)
+                say(f"  arm moving at {timing['t_move']} s")
             state("where", where_)
             state("arm", arm_)
             continue
@@ -431,8 +461,8 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
     link = DepthLink()
     g, cols = link.grid(), link.columns()
     objs = OB.find(cols, g["xyz"], g["rgb"])
-    truth = sim_objects(task)
-    before = requests.get(api + "sim/truth", timeout=30).json()["poses"]
+    truth = {} if real else sim_objects(task)
+    before = {} if real else requests.get(api + "sim/truth", timeout=30).json()["poses"]
     pic = labelled(before_img, objs)
     cv2.imwrite(str(out / "before.jpg"), cv2.cvtColor(pic, cv2.COLOR_RGB2BGR))
     state("where", f"map done: {len(objs)} things ({sum(o.container for o in objs)} open containers)")
@@ -516,6 +546,9 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
         say(f"  #{o.id} -> " + (f"bin #{dest.id}" if dest else f"pile {name!r} at ({place[0] * 1000:.0f}, "
                                                                  f"{place[1] * 1000:.0f}) mm") +
             f": grip {plan_m.grip_mm:.1f} mm, carry {plan_m.carry_mm:.0f} mm, release {plan_m.release_mm:.0f} mm")
+        if "t_pick" not in timing:
+            timing["t_pick"] = round(time.time() - t_go, 1)
+            say(f"  first pick sent at {timing['t_pick']} s")
         for k in range(0, len(jrows), 100):
             c.act(jrows[k:k + 100], P.DT)
         what_ = f"{nm(o.id)} -> " + (nm(dest.id) if dest else "a free spot")
@@ -524,16 +557,19 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
         done.append(m)
     state("arm", "still: checking the result")
     time.sleep(2.0)
-    after = requests.get(api + "sim/truth", timeout=30).json()["poses"]
+    after = {} if real else requests.get(api + "sim/truth", timeout=30).json()["poses"]
     cv2.imwrite(str(out / "after.jpg"), cv2.cvtColor(labelled(table_picture(c), objs), cv2.COLOR_RGB2BGR))
-    lines = check(t["goal"], truth, before, after)
+    lines = [] if real else check(t["goal"], truth, before, after)
     ok = all(x for x, _ in lines)
     for x, s_ in lines:
         say(f"  {'PASS' if x else 'FAIL'}  {s_}")
-    tell(("Done, and the simulator agrees: " if ok else "Done, but the simulator says it's not right: ") +
-         "; ".join(s_ for _, s_ in lines) + ".")
+    if real:
+        tell("Done. Look at the table: there's no simulator to check it here.")
+    else:
+        tell(("Done, and the simulator agrees: " if ok else "Done, but the simulator says it's not right: ") +
+             "; ".join(s_ for _, s_ in lines) + ".")
     res = {"task": task, "instruction": t["instruction"], "ok": ok, "checks": [{"ok": x, "says": s} for x, s in lines],
-           "llm": plan, "moves_done": done, "seconds": round(time.time() - t0), "scan_s": round(t_scan),
+           "llm": plan, "moves_done": done, "timing": timing, "seconds": round(time.time() - t0), "scan_s": round(t_scan),
            "llm_s": round(t_llm)}
     (out / "result.json").write_text(json.dumps(res, indent=1, default=float))
     say(f"  {'PASSED' if ok else 'FAILED'} in {res['seconds']} s (scan {res['scan_s']} s, LLM {res['llm_s']} s)")

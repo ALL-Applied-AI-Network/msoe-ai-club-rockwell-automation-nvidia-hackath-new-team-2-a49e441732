@@ -80,7 +80,16 @@ class DepthLink:
 
     @classmethod
     def start(cls, lens: dict, restart: bool = True) -> "DepthLink":
-        deploy(restart)
+        if restart:
+            deploy(restart)
+        else:  # already running on the box: just reset it (no copying, no restart: saves seconds); else start it
+            try:
+                tunnel()
+                link = cls()
+                link.s.post(link.url + "reset", json=lens, timeout=10).raise_for_status()
+                return link
+            except Exception:
+                deploy(True)
         tunnel()
         link = cls()
         link.s.post(link.url + "reset", json=lens, timeout=30).raise_for_status()

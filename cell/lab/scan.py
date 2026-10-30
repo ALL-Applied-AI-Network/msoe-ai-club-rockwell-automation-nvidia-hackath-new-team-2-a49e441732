@@ -23,6 +23,7 @@ from lab import primitives as P
 REGION = ((0.26, 0.50), (-0.30, 0.08))  # x, y (m): where things are put (the sim's layouts)
 CLEAR_MM = 30.0
 MIN_TIP_MM = 76.0  # (at 60 a one-cube table gave an empty grid, Oct 30: not understood yet)
+FALLBACK_TIP_MM = 120.0  # when the one picture can't be trusted (the arm misread as a thing)
 MAX_TALL_MM = 200.0  # taller than this is the arm misread as a thing (nothing on this table is)
 LINE_GAP = 0.10
 HOP = 150.0  # mm/s between lines
@@ -31,11 +32,16 @@ HOP = 150.0  # mm/s between lines
 def table_depth(client) -> tuple[np.ndarray, np.ndarray]:
     """One table-camera depth picture (mm, 0 = none), with the arm's own pixels blanked out, and the joints then."""
     o = client.observe(["table"], (64, 36), "jpeg", depth=["table"])
-    d = np.asarray(o["depth"]["table"]).copy()
+    return blank_arm(o["depth"]["table"], o["joints"]), np.asarray(o["joints"], float)
+
+
+def blank_arm(depth, joints) -> np.ndarray:
+    """A table-camera depth picture with the arm's own pixels (its shape at these joints) set to 0."""
+    d = np.asarray(depth).copy()
     pts, uv = depth_to_base(load()["table_depth"], d, with_pixels=True)
-    arm = near_arm(pts, o["joints"])
+    arm = near_arm(pts, joints)
     d[uv[arm, 1], uv[arm, 0]] = 0
-    return d, np.asarray(o["joints"], float)
+    return d
 
 
 def tallest(pictures, region=REGION) -> tuple[float, dict]:

@@ -44,23 +44,33 @@ def main() -> None:
     ap.add_argument("--trial", default="sort_cubes")
     ap.add_argument("--no-reset", action="store_true")
     ap.add_argument("--speed", type=float, default=None, help="mm/s along the scan lines (60; --fast: 150)")
+    ap.add_argument("--first", default=None,
+                    help="quick start: an .npz with the table depth picture (and joints, table/side pictures) taken at "
+                         "second 0 by the caller: the safe height from it, then straight into the sweep")
     ap.add_argument("--delay-ms", type=float, default=None,
                     help="the picture delay, known already (no wrist twitch to measure it)")
     ap.add_argument("--fast", action="store_true",
                     help="step 4: the safe height from the table camera, lines over the whole table (lab/scan.py)")
     a = ap.parse_args()
 
-    from lab.isaaccell import PORT, IsaacCell, tunnel
-    from lab.trial import build, load_trial
-    tunnel()
-    url = f"http://127.0.0.1:{PORT}"
-    api = url + "/api/v1/"
-    if not a.no_reset:
-        IsaacCell(build(load_trial(a.trial), 0))
-    objects = sim_objects(a.trial)
-    requests.post(api + "sim/honest", json=HONEST, timeout=30)
+    import os
+    real = bool(os.getenv("CELL_URL"))  # the real cell (lab/ladder.py passes its address and token): no sim anything
+    token, ca = (os.getenv("CELL_TOKEN", ""), os.getenv("CELL_CA") or None) if real else ("sim", None)
+    if real:
+        url = os.environ["CELL_URL"].rstrip("/")
+        objects = {}
+    else:
+        from lab.isaaccell import PORT, IsaacCell, tunnel
+        from lab.trial import build, load_trial
+        tunnel()
+        url = f"http://127.0.0.1:{PORT}"
+        api = url + "/api/v1/"
+        if not a.no_reset:
+            IsaacCell(build(load_trial(a.trial), 0))
+        objects = sim_objects(a.trial)
+        requests.post(api + "sim/honest", json=HONEST, timeout=30)
     cam, T_fc, _ = cameras(None)
-    link = DepthLink.start({"fx": cam["fx"], "k1": cam["k1"], "size": list(cam["size"])})
+    link = DepthLink.start({"fx": cam["fx"], "k1": cam["k1"], "size": list(cam["size"])}, restart=a.first is None)
 
     out = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_depth"
     out.mkdir(parents=True)
@@ -92,10 +102,12 @@ def main() -> None:
 
     from lab import scan
     from cell_client import CellClient
-    c = CellClient(url, token="sim")
+    c = CellClient(url, token, ca)
+    first = np.load(a.first) if a.first else None
     try:
-        o_fix = c.observe(["table", "side"], (960, 540), "jpeg")
-        for k, im in o_fix["images"].items():
+        fix = {k: first[k] for k in ("table", "side") if k in first} if first is not None else \
+            c.observe(["table", "side"], (960, 540), "jpeg")["images"]
+        for k, im in fix.items():
             rr.log(f"cams/{k}", rr.Image(im), static=True)
     except Exception as e:
         print(f"(no table/side pictures: {e})")
@@ -104,8 +116,12 @@ def main() -> None:
         tip_mm, segs = None, None  # the safe height comes from two table-depth pictures, below
     else:
         tip_mm, segs = CAM_MM, LINES
-    pull = Pull(url, "sim", inflight=3)
-    time.sleep(1.0)
+    pull = Pull(url, token, ca, inflight=3)
+    for _ in range(50):  # the first joints heard
+        with pull.lock:
+            if pull.jq:
+                break
+        time.sleep(0.05)
     with pull.lock:
         q_now = np.asarray(pull.jq[-1], float)[:6]
     def go(q_from, tip_xy, h_mm):
@@ -142,7 +158,20 @@ def main() -> None:
                 return
 
     rows = []
-    if a.fast:  # two table-depth pictures, the arm in two places: how high it's safe to fly
+    if first is not None:  # quick start: one table-depth picture (from the caller), straight into the sweep
+        mid = P.uf0(0.36, -0.10, 250.0)
+        off = scan.cam_offset(tool_ik(tip_m(mid), DOWN, q_now), T_fc)
+        segs = scan.for_camera(scan.lines(), off)
+        tall, _ = scan.tallest([(scan.blank_arm(first["depth"], first["joints"]), first["joints"])])
+        if tall > scan.MAX_TALL_MM:
+            tip_mm = scan.FALLBACK_TIP_MM
+            print(f"tallest thing on the table {tall:.0f} mm: that's the arm, not a thing; fingertips fly at "
+                  f"{tip_mm:.0f} mm (the fallback)")
+        else:
+            tip_mm = scan.safe_tip_mm(tall)
+            print(f"tallest thing on the table {tall:.0f} mm (1 picture): fingertips fly at {tip_mm:.0f} mm")
+        hb("safe height known: moving to the first sweep line")
+    elif a.fast:  # two table-depth pictures, the arm in two places: how high it's safe to fly
         mid = P.uf0(0.36, -0.10, 250.0)
         off = scan.cam_offset(tool_ik(tip_m(mid), DOWN, q_now), T_fc)
         segs = scan.for_camera(scan.lines(), off)
@@ -248,18 +277,21 @@ def main() -> None:
         fwd.stop()
     g = link.grid()
     xyz = np.asarray(g["xyz"]).reshape(-1, 3)
-    res = bench(xyz, objects)
+    res = bench(xyz, objects) if objects else {"seen": None, "of": 0, "median_abs_error_mm": None,
+                                               "max_abs_error_mm": None, "false_matter": None, "voxels": len(xyz),
+                                               "false_fraction": None, "objects": {}}
     res["stats"] = {k: g[k] for k in ("frames", "refs", "searched", "points", "something", "nothing", "ms_per_ref")}
     res["wall_s"] = round(time.time() - t_wall)
     res["scan"] = {"speed_mm_s": speed, "tip_mm": tip_mm, "lowest_tip_mm": round(low, 1), "scan_s": round(len(scan_part) * P.DT, 1)}
     (out / "result.json").write_text(json.dumps(res, indent=1, default=float))
     (out / "grid.json").write_text(json.dumps(g))
-    sheet(xyz, objects, str(out / "heights.jpg"))
+    if objects:
+        sheet(xyz, objects, str(out / "heights.jpg"))
     # step 5: rigid objects from the grid
     from lab import objects as OB
     cols = link.columns()
     found = OB.find(cols, xyz, g["rgb"])
-    mt = OB.match(found, objects)
+    mt = OB.match(found, objects) if objects else {"missed": [], "merged": {}, "extra": [], "objects": {}}
     res["rigid"] = {"found": len(found), "missed": mt["missed"], "merged": mt["merged"], "extra": mt["extra"],
                     "objects": mt["objects"]}
     (out / "objects.json").write_text(json.dumps([{k: v.tolist() if isinstance(v, np.ndarray) else v

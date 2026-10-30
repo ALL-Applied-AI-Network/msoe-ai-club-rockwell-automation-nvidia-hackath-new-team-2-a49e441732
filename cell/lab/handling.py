@@ -31,7 +31,7 @@ TIP_MIN_MM = 2.5   # fingertips at least this far off the table (they drag on it
 GRIP_ON_MM = 5.0   # at least this much of the fingers on the object
 CLEAR_MM = 10.0
 SET_MM = 1.5
-FIT_MM = 4.0
+FIT_MM = 1.5  # (4 refused a 34 mm bolt for a 60 mm box, Oct 30: the opening reads a little small)
 CORRIDOR_MM = 25.0  # half-width of the swept path checked for matter (fingers 20 mm open + their 10 mm depth, roughly)
 
 
@@ -84,7 +84,7 @@ def fits(o: Obj, opening: np.ndarray, at, margin_mm: float = FIT_MM) -> float | 
     shrunk = opening.mean(0) + (opening - opening.mean(0)) * (1 - margin_mm / 1000 / np.maximum(
         np.linalg.norm(opening - opening.mean(0), axis=1, keepdims=True), 1e-6))
     poly = Poly(shrunk)
-    for turn in np.arange(0, 180, 15):
+    for turn in np.arange(0, 180, 5):
         a = np.radians(turn)
         R = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
         pts = (o.top_footprint - c) @ R.T + np.asarray(at)
