@@ -211,7 +211,8 @@ class Cell:
         self.served: list = []  # every honest answer: t, frame id
         self.enc: dict = {}  # (frame, size, format, quality) -> base64: a repeated frame is the same bytes
         self.rng = np.random.default_rng(0)
-        self.n_cap = self.n_tick = 0
+        self.n_cap = 0
+        self.pace: collections.deque = collections.deque(maxlen=400)  # (wall, clock) per physics step: the sim's speed
         for _ in range(30):  # let the MDL materials compile
             self.world.render()
 
@@ -428,9 +429,11 @@ class Cell:
         t0 = time.perf_counter()
         for s in range(1, n + 1):
             self._command(q0 + (goal - q0) * s / n, grip)
-            self.world.step(render=(s % every == 0) and not args.headless and not self.honest)
-            if self.honest:
+            if self.honest:  # the step before the camera's moment renders: the renderer only picks up poses that way
+                self.world.step(render=self._cap_due(dt / n))
                 self._advance(dt / n)
+            else:
+                self.world.step(render=(s % every == 0) and not args.headless)
         self.t += dt
         self.prof["steps"] += time.perf_counter() - t0
         self.prof["rows"] += 1
@@ -503,13 +506,15 @@ class Cell:
         if not body.get("on", True):
             self.honest = None
             return {"honest": None}
-        every = max(1, int(round(10 / float(body.get("fps", 10)))))  # frames on the 0.1 s tick: 10 or 5 fps
         h = {"rtt_ms": float(body.get("rtt_ms", 94)), "rtt_sigma": float(body.get("rtt_sigma", 0.45)),
              "pipe_ms": float(body.get("pipe_ms", 70)), "pipe_jitter_ms": float(body.get("pipe_jitter_ms", 0)),
-             "fps": 10 / every, "every": every}
+             "fps": float(body.get("fps", 10)), "speed": float(body.get("speed", 0.5))}
         with self.tick:
             self.cap_log, self.served, self.enc = [], [], {}
             self.caps.clear()
+            # the camera runs on its own clock, out of step with the 0.1 s motion rows (as on the real cell)
+            self.next_cap = self.clock + float(self.rng.uniform(0.01, 0.09))
+            self.pub0 = (time.perf_counter(), self.clock)  # the public clock starts here
         self.honest = h
         return {"honest": h, "clock": self.clock}
 
@@ -518,32 +523,59 @@ class Cell:
         with self.tick:
             self.clock += dt
             self.qhist.append((self.clock, q))
+            self.pace.append((time.perf_counter(), self.clock))
             self.tick.notify_all()
+            due = self.honest is not None and self.clock >= self.next_cap
+        if due:  # the camera's moment: the clock holds while it renders, so the picture is of this pose
+            self._capture()
+            with self.tick:
+                self.next_cap += 1 / self.honest["fps"]
+
+    def _cap_due(self, dt: float) -> bool:
+        with self.tick:
+            return self.honest is not None and self.clock + dt >= self.next_cap
 
     def _idle_tick(self) -> None:
         """0.1 s of the clock with nothing to play: the arm holds still, the camera keeps going."""
-        q = self.joints_now()
         n = max(1, int(round(0.1 * args.physics_hz)))
+        q = self.joints_now()
         for _ in range(n):
-            self._advance(0.1 / n, q)
+            if self._cap_due(0.1 / n):  # a physics step that renders, so the picture has the arm where it is now
+                self.world.step(render=True)
+                self._advance(0.1 / n)
+                q = self.joints_now()
+            else:
+                self._advance(0.1 / n, q)
 
     def _capture(self) -> None:
-        self.n_tick += 1
-        if self.n_tick % self.honest["every"]:
-            return
-        for _ in range(3):  # a few renders so the render product has this pose (as observe does)
+        # the step just before was a physics step that renders (the renderer only picks up the arm's pose that way;
+        # with plain renders the picture showed the pose of the frame before, ~0.1 s old); a few renders more so the
+        # render product has it (as observe does)
+        for _ in range(3):
             self.world.render()
         rgb = self.cams["wrist"].read()
         self.n_cap += 1
         with self.tick:  # sendable after the pipeline delay, plus a random extra (exponential, mean pipe_jitter_ms)
-            avail = self.clock + (self.honest["pipe_ms"] + float(self.rng.exponential(self.honest["pipe_jitter_ms"] or 1e-9))) / 1000
+            avail =self.clock + (self.honest["pipe_ms"] + float(self.rng.exponential(self.honest["pipe_jitter_ms"] or 1e-9))) / 1000
             self.caps.append((self.n_cap, self.clock, rgb, avail))
             self.cap_log.append({"id": self.n_cap, "t": round(self.clock, 4), "joints": self.qhist[-1][1].tolist()})
 
+    def _now(self) -> float:
+        """The public clock: simulated time flowing evenly at `speed` x wall time. Physics and the camera run in bursts
+        (a 0.1 s row in ~30 ms, then ~110 ms frozen rendering a frame) a little ahead of it, everything they produce
+        stamped with its simulated time, and requests are answered against this clock. Seen from outside, time flows
+        evenly, as on the real cell; a clock that stalls while a frame renders would lock every request to the camera."""
+        w0, c0 = self.pub0
+        return c0 + self.honest["speed"] * (time.perf_counter() - w0) if self.honest else self.clock
+
     def _wait_until(self, t: float) -> None:
-        with self.tick:
-            while self.honest and self.clock < t:
-                self.tick.wait(0.5)
+        """Until the public clock has reached t and physics has produced it."""
+        while self.honest:
+            ahead = t - self._now()
+            with self.tick:
+                if ahead <= 0 and self.clock >= t:
+                    return
+                self.tick.wait(min(0.05, max(0.001, ahead / self.honest["speed"])) if ahead > 0 else 0.05)
 
     def honest_observe(self, size, fmt: str, quality: int) -> dict:
         """On the HTTP thread: the request travels, the joints are read, the newest sendable frame is attached, the
@@ -552,7 +584,7 @@ class Cell:
         with self.tick:
             rtt = float(self.rng.lognormal(np.log(h["rtt_ms"] / 1000), h["rtt_sigma"]))
             up = rtt * float(self.rng.uniform(0.35, 0.65))
-            t = self.clock + up
+        t = self._now() + up
         self._wait_until(t)
         with self.tick:
             ts = [x[0] for x in self.qhist]
@@ -627,14 +659,19 @@ class Cell:
                     traceback.print_exc()
                     box["error"] = f"{type(e).__name__}: {e}"
                 ev.set()
-            elif self.honest:  # the clock runs, idle or not, and the camera takes a frame every tick
+            elif self.honest and self.clock > self._now() + 0.15:  # far enough ahead of the public clock: wait
+                if row is not None:
+                    with self.lock:
+                        self.rows.appendleft(row)
+                        self.playing = False
+                time.sleep(0.003)
+            elif self.honest:  # the clock runs, idle or not; the camera takes frames on its own beat
                 if row is not None:
                     self.play_row(*row)
                 else:
                     self._idle_tick()
                 with self.lock:
                     self.playing = False
-                self._capture()
             elif row is not None:
                 self.play_row(*row)
                 with self.lock:

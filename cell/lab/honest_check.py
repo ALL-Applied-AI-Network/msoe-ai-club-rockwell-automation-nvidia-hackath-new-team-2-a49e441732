@@ -31,7 +31,7 @@ from lab import primitives as P
 from lab.recorder import RUNS
 
 REAL = {"spacing_ms": 99, "spacing_p90_ms": 167, "repeats": 0.10, "missed": 0.19}  # Oct 28, one request at a time
-HONEST = {"rtt_ms": 48, "rtt_sigma": 0.45, "pipe_ms": 40, "pipe_jitter_ms": 30, "fps": 10}
+HONEST = {"rtt_ms": 78, "rtt_sigma": 0.45, "pipe_ms": 40, "pipe_jitter_ms": 25, "fps": 10, "speed": 0.5}  # tuned so 1 in flight matches Oct 28
 CAM_MM = 150  # fingertips this high above the table: the camera ~280 mm up
 LEGS = [((0.33, -0.10), 150), ((0.48, -0.10), 50), ((0.48, 0.10), 100), ((0.33, 0.10), 30), ((0.33, -0.10), 150)]
 STOP = 10  # rows (1 s) still after each leg
