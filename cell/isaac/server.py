@@ -28,13 +28,22 @@ Joel's hands (a person changing the table mid-trial; the robot isn't told, it ha
     POST /api/v1/sim/add {"objects": [...]}           new objects (usually above the table: a cup poured out)
     POST /api/v1/sim/remove {"ids": [...]}            take objects away
     POST /api/v1/sim/move {"poses": {id: pose}}       put objects somewhere else (a box tipped out: its contents)
+    POST /api/v1/sim/honest {"on", "rtt_ms", "rtt_sigma", "pipe_ms", "fps"}   answer with the real cell's timing
+    GET  /api/v1/sim/captures               honest mode: every camera frame (id, t, joints) and every answer (t, frame)
 
 Time is simulated: each 0.1 s row is 0.1 s of physics, however long it takes to compute. Idle, nothing moves.
+
+Honest mode (POST /sim/honest) answers wrist-colour observations the way the real cell does, on a simulated clock that
+keeps running when idle: the camera takes a frame every 0.1 s, a frame can be sent pipe_ms after it was taken, an answer
+carries the joints from the moment the request arrived and the newest frame sendable then, and the request and answer
+take a lognormal round trip (Oct 28 on the real cell: median 94 ms, 1 in 10 over 160 ms). So pictures come back
+repeated, skipped and older than the joints, like on the real cell. Asks for other cameras or depth take the old path.
 """
 from __future__ import annotations
 
 import argparse
 import base64
+import bisect
 import faulthandler
 import signal
 import collections
@@ -193,6 +202,16 @@ class Cell:
         self.view = None
         self.trial = None
         self.n_trials = 0
+        self.honest = None  # the real cell's timing (POST /sim/honest)
+        self.tick = threading.Condition()
+        self.clock = 0.0  # honest mode: simulated seconds, advanced every physics step, idle too
+        self.qhist: collections.deque = collections.deque(maxlen=4000)  # (clock, J1-J6 + grip) every physics step
+        self.caps: collections.deque = collections.deque(maxlen=100)  # (id, t, rgb): the camera's latest frames
+        self.cap_log: list = []  # every frame taken: id, t, joints (what the timing check compares against)
+        self.served: list = []  # every honest answer: t, frame id
+        self.enc: dict = {}  # (frame, size, format, quality) -> base64: a repeated frame is the same bytes
+        self.rng = np.random.default_rng(0)
+        self.n_cap = self.n_tick = 0
         for _ in range(30):  # let the MDL materials compile
             self.world.render()
 
@@ -409,7 +428,9 @@ class Cell:
         t0 = time.perf_counter()
         for s in range(1, n + 1):
             self._command(q0 + (goal - q0) * s / n, grip)
-            self.world.step(render=(s % every == 0) and not args.headless)
+            self.world.step(render=(s % every == 0) and not args.headless and not self.honest)
+            if self.honest:
+                self._advance(dt / n)
         self.t += dt
         self.prof["steps"] += time.perf_counter() - t0
         self.prof["rows"] += 1
@@ -476,6 +497,100 @@ class Cell:
         print(f"[isaac-cell] observe: render {t1 - t0:.2f} s, read+encode {time.time() - t1:.2f} s", flush=True)
         return obs
 
+    # ------------------------------------------------------------ honest mode: the real cell's timing
+
+    def set_honest(self, body: dict) -> dict:
+        if not body.get("on", True):
+            self.honest = None
+            return {"honest": None}
+        every = max(1, int(round(10 / float(body.get("fps", 10)))))  # frames on the 0.1 s tick: 10 or 5 fps
+        h = {"rtt_ms": float(body.get("rtt_ms", 94)), "rtt_sigma": float(body.get("rtt_sigma", 0.45)),
+             "pipe_ms": float(body.get("pipe_ms", 70)), "pipe_jitter_ms": float(body.get("pipe_jitter_ms", 0)),
+             "fps": 10 / every, "every": every}
+        with self.tick:
+            self.cap_log, self.served, self.enc = [], [], {}
+            self.caps.clear()
+        self.honest = h
+        return {"honest": h, "clock": self.clock}
+
+    def _advance(self, dt: float, q=None) -> None:
+        q = self.joints_now() if q is None else q
+        with self.tick:
+            self.clock += dt
+            self.qhist.append((self.clock, q))
+            self.tick.notify_all()
+
+    def _idle_tick(self) -> None:
+        """0.1 s of the clock with nothing to play: the arm holds still, the camera keeps going."""
+        q = self.joints_now()
+        n = max(1, int(round(0.1 * args.physics_hz)))
+        for _ in range(n):
+            self._advance(0.1 / n, q)
+
+    def _capture(self) -> None:
+        self.n_tick += 1
+        if self.n_tick % self.honest["every"]:
+            return
+        for _ in range(3):  # a few renders so the render product has this pose (as observe does)
+            self.world.render()
+        rgb = self.cams["wrist"].read()
+        self.n_cap += 1
+        with self.tick:  # sendable after the pipeline delay, plus a random extra (exponential, mean pipe_jitter_ms)
+            avail = self.clock + (self.honest["pipe_ms"] + float(self.rng.exponential(self.honest["pipe_jitter_ms"] or 1e-9))) / 1000
+            self.caps.append((self.n_cap, self.clock, rgb, avail))
+            self.cap_log.append({"id": self.n_cap, "t": round(self.clock, 4), "joints": self.qhist[-1][1].tolist()})
+
+    def _wait_until(self, t: float) -> None:
+        with self.tick:
+            while self.honest and self.clock < t:
+                self.tick.wait(0.5)
+
+    def honest_observe(self, size, fmt: str, quality: int) -> dict:
+        """On the HTTP thread: the request travels, the joints are read, the newest sendable frame is attached, the
+        answer travels back. Overlapping requests overlap, like on the real cell."""
+        h = self.honest
+        with self.tick:
+            rtt = float(self.rng.lognormal(np.log(h["rtt_ms"] / 1000), h["rtt_sigma"]))
+            up = rtt * float(self.rng.uniform(0.35, 0.65))
+            t = self.clock + up
+        self._wait_until(t)
+        with self.tick:
+            ts = [x[0] for x in self.qhist]
+            k = bisect.bisect_left(ts, t)
+            if k <= 0 or k >= len(ts):
+                q = np.asarray(self.qhist[min(max(k, 0), len(ts) - 1)][1], float)
+            else:
+                (t0, q0), (t1, q1) = self.qhist[k - 1], self.qhist[k]
+                f = (t - t0) / max(t1 - t0, 1e-9)
+                q = np.append(q0[:6] + (q1[:6] - q0[:6]) * f, q0[6])
+            ready = [c for c in self.caps if c[3] <= t]
+        fid, tc, b64 = None, None, None
+        if ready:
+            fid, tc, rgb, _ = max(ready, key=lambda c: c[1])
+            key = (fid, tuple(size), fmt, quality)
+            b64 = self.enc.get(key)
+            if b64 is None:
+                img = rgb if tuple(size) == rgb.shape[1::-1] else cv2.resize(rgb, tuple(size), interpolation=cv2.INTER_AREA)
+                ext, opts = (".jpg", [cv2.IMWRITE_JPEG_QUALITY, quality]) if fmt == "jpeg" else (".png", [])
+                ok, buf = cv2.imencode(ext, cv2.cvtColor(img, cv2.COLOR_RGB2BGR), opts)
+                b64 = base64.b64encode(buf.tobytes()).decode()
+                with self.tick:
+                    self.enc[key] = b64
+                    while len(self.enc) > 400:
+                        self.enc.pop(next(iter(self.enc)))
+        tip, wpr = tcp_of(q[:6])
+        with self.lock:
+            queued = len(self.rows)
+        obs = {"t": round(t, 4), "status": "running" if (queued or self.playing) else "idle", "queued": queued,
+               "trial": self.trial, "joints": q.tolist(),
+               "tcp_pose": [tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, *wpr.tolist()],
+               "images": {"wrist": b64} if b64 else {},
+               "_truth": {"frame": fid, "t_capture": tc}}  # for the timing check only: the real cell sends nothing like it
+        with self.tick:
+            self.served.append({"t": round(t, 4), "frame": fid})
+        self._wait_until(t + rtt - up)
+        return obs
+
     def debug(self, prims) -> dict:
         from pxr import Usd
         out = {"joints": self.joints_now().tolist(), "dof_names": list(self.arm.dof_names)}
@@ -512,6 +627,14 @@ class Cell:
                     traceback.print_exc()
                     box["error"] = f"{type(e).__name__}: {e}"
                 ev.set()
+            elif self.honest:  # the clock runs, idle or not, and the camera takes a frame every tick
+                if row is not None:
+                    self.play_row(*row)
+                else:
+                    self._idle_tick()
+                with self.lock:
+                    self.playing = False
+                self._capture()
             elif row is not None:
                 self.play_row(*row)
                 with self.lock:
@@ -559,7 +682,7 @@ def handler(cell: Cell):
 
         def _do(self, method, path, q, body):
             if path == "time":
-                return {"t": cell.t}
+                return {"t": cell.clock if cell.honest else cell.t}
             if path == "run":
                 return {"trials": [cell.trial] if cell.trial else []}
             if path.startswith("trials/") and path.endswith("/start"):
@@ -570,6 +693,8 @@ def handler(cell: Cell):
                 cams = [c for c in q.get("cameras", "table").split(",") if c]
                 size = (int(q.get("width", 640)), int(q.get("height", 360)))
                 depth = [d for d in q.get("depth", "").split(",") if d]
+                if cell.honest and cams == ["wrist"] and not depth:
+                    return cell.honest_observe(size, q.get("format", "png"), int(q.get("quality", 90)))
                 return cell.run_job(cell.observe, cams, size, q.get("format", "png"), int(q.get("quality", 90)), depth)
             if path == "actions":
                 dt = float(body.get("dt", 0.1))
@@ -612,6 +737,12 @@ def handler(cell: Cell):
                 return {"t": cell.t, "poses": cell.run_job(cell.truth)}
             if path == "sim/debug":  # world transforms (row-vector USD matrices, transposed to column form) of prims
                 return cell.run_job(cell.debug, q.get("prims", "").split(","))
+            if path == "sim/honest":
+                return cell.set_honest(body)
+            if path == "sim/captures":
+                with cell.tick:
+                    return {"clock": cell.clock, "honest": cell.honest, "captures": list(cell.cap_log),
+                            "served": list(cell.served)}
             if path == "sim/end":
                 if cell.trial:
                     cell.trial["status"] = "done"
