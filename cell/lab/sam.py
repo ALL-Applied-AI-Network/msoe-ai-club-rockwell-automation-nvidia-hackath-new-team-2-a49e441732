@@ -45,7 +45,8 @@ def _tunnel() -> None:
         return
     host = os.getenv("ISAAC_SSH", "joel@shepherd-traffic-base-server")
     subprocess.Popen(["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15",
-                      "-L", f"{LOCAL_PORT}:127.0.0.1:{LOCAL_PORT}", host], stdin=subprocess.DEVNULL)
+                      "-L", f"{LOCAL_PORT}:127.0.0.1:{LOCAL_PORT}", host], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     for _ in range(50):
         if up():
             return

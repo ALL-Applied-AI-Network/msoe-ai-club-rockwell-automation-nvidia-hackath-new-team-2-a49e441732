@@ -43,7 +43,8 @@ def tunnel() -> None:
     if up():
         return
     subprocess.Popen(["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15",
-                      "-L", f"{PORT}:127.0.0.1:{PORT}", SSH], stdin=subprocess.DEVNULL)
+                      "-L", f"{PORT}:127.0.0.1:{PORT}", SSH], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     for _ in range(50):
         if up():
             return

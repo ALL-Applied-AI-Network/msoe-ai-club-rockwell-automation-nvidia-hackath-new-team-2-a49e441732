@@ -104,7 +104,10 @@ def find(cols: dict, xyz, rgb=None) -> list[Obj]:
             if span.min() >= HOLE_MM:
                 below = h_low[hc[:, 0], hc[:, 1]] <= t - FREE_MM
                 o.free_inside = round(float(below.mean()), 2)
-                if o.free_inside >= 0.2:
+                # a plain inside (a white box) gives nothing to match, so no rays are known to reach down: then a ring
+                # with nothing seen in its middle near the rim is open too (a big plain-topped block would fool this)
+                empty = h_top[hc[:, 0], hc[:, 1]] < t - FREE_MM
+                if o.free_inside >= 0.2 or empty.mean() >= 0.9:
                     o.container, o.rim_mm = True, o.top_mm
                     o.opening = cv2.convexHull(to_xy(hc).astype(np.float32)).reshape(-1, 2).astype(float)
         out.append(o)

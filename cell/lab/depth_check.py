@@ -44,6 +44,8 @@ def main() -> None:
     ap.add_argument("--trial", default="sort_cubes")
     ap.add_argument("--no-reset", action="store_true")
     ap.add_argument("--speed", type=float, default=None, help="mm/s along the scan lines (60; --fast: 150)")
+    ap.add_argument("--delay-ms", type=float, default=None,
+                    help="the picture delay, known already (no wrist twitch to measure it)")
     ap.add_argument("--fast", action="store_true",
                     help="step 4: the safe height from the table camera, lines over the whole table (lab/scan.py)")
     a = ap.parse_args()
@@ -73,8 +75,13 @@ def main() -> None:
         except Exception:
             rr.spawn()
     import rerun.blueprint as rrb
-    rr.send_blueprint(rrb.Blueprint(rrb.Spatial3DView(origin="world", name="the table: depth evidence, found objects"),
-                                    collapse_panels=True))  # just the 3D view: no source tree, selection or stats panels
+    rr.send_blueprint(rrb.Blueprint(
+        rrb.Horizontal(rrb.Spatial3DView(origin="world", name="what it knows: depth evidence, found objects"),
+                       rrb.Vertical(rrb.Spatial2DView(origin="cams/wrist", name="wrist camera (live)"),
+                                    rrb.Spatial2DView(origin="cams/table", name="table camera"),
+                                    rrb.Spatial2DView(origin="cams/side", name="side camera")),
+                       column_shares=[3, 1]),
+        rrb.BlueprintPanel(state="hidden"), rrb.SelectionPanel(state="hidden"), rrb.TimePanel(state="collapsed")))
     rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
     for name, m in objects.items():
         e = m.edges_unique
@@ -86,6 +93,12 @@ def main() -> None:
     from lab import scan
     from cell_client import CellClient
     c = CellClient(url, token="sim")
+    try:
+        o_fix = c.observe(["table", "side"], (960, 540), "jpeg")
+        for k, im in o_fix["images"].items():
+            rr.log(f"cams/{k}", rr.Image(im), static=True)
+    except Exception as e:
+        print(f"(no table/side pictures: {e})")
     speed = a.speed or (150.0 if a.fast else 60.0)
     if a.fast:
         tip_mm, segs = None, None  # the safe height comes from two table-depth pictures, below
@@ -106,13 +119,25 @@ def main() -> None:
                 return [list(r) for r in jm], qg
         raise SystemExit(f"no joint move to {np.round(np.asarray(tip_xy) * 1000)} mm from where the arm is")
 
-    def play(rows_):
+    def arm_words(last):
+        q = last.get("queued") or 0
+        return f"moving ({q / 10:.0f} s of motion left)" if q else ("still" if last.get("status") == "idle" else
+                                                                     str(last.get("status")))
+
+    def hb(where, last=None):  # a heartbeat for whoever watches (lab/ladder.py reads these lines): where + the arm
+        if last is None:
+            with pull.lock:
+                last = dict(pull.last)
+        print(f"HB\t{where}\t{arm_words(last)}", flush=True)
+
+    def play(rows_, where):
         for k in range(0, len(rows_), 100):
             c.act(rows_[k:k + 100], P.DT)
         while True:  # until it has played and the arm is still
             time.sleep(0.5)
             with pull.lock:
                 last = dict(pull.last)
+            hb(where, last)
             if last.get("queued") == 0 and last.get("status") == "idle":
                 return
 
@@ -127,11 +152,13 @@ def main() -> None:
         far = max(scan.for_camera([((x, y), (x, y)) for x in (x0, x1) for y in (y0, y1)], off),
                   key=lambda s: np.linalg.norm(np.asarray(s[0]) - segs[0][0]))[0]
         r1, q1 = go(q_now, far, 250.0)
-        play(r1)
+        play(r1, "moving the arm aside for table-camera picture 1 of 2")
         pics = [scan.table_depth(c)]
+        hb("table-camera picture 1 of 2 taken")
         r2, q2 = go(q1, segs[0][0], 250.0)
-        play(r2)
+        play(r2, "moving the arm to the other side for picture 2 of 2")
         pics.append(scan.table_depth(c))
+        hb("picture 2 of 2 taken: working out how tall things are")
         tall, info = scan.tallest(pics)
         if tall > scan.MAX_TALL_MM:
             raise SystemExit(f"the table camera says something is {tall:.0f} mm tall: the arm, not a thing on the "
@@ -144,7 +171,10 @@ def main() -> None:
     r0, q0 = go(q_now, segs[0][0], tip_mm)
     rows += r0
     n_move = len(rows)
-    rows += twitch(q0)
+    if a.delay_ms is None:
+        rows += twitch(q0)
+    else:
+        pull.delay = a.delay_ms / 1000
     n_twitch = len(rows)
     scan_part = scan.sweep(q0, tip_mm, speed, segs, start)
     rows += scan_part
@@ -165,6 +195,9 @@ def main() -> None:
             last = dict(pull.last)
             jt, jq = np.asarray(pull.jt), np.asarray(pull.jq)
         moved |= (last.get("queued") or 0) > 0
+        if fwd is None and moved and a.delay_ms is not None:
+            print(f"picture delay {a.delay_ms:.0f} ms (known); feeding the depth service")
+            fwd = Forward(pull, link, T_fc)
         if fwd is None and moved:  # the twitch done? measure the picture delay, then start feeding the depth service
             tw_idx = np.nonzero((np.abs(jq[:, 5] - q0[5]) > 0.5) & (jt >= t_sent + n_move * P.DT - 0.5))[0]
             if len(tw_idx) and jt[-1] - jt[tw_idx[0]] > 12.0:
@@ -175,10 +208,18 @@ def main() -> None:
                 print(f"picture delay {md['delay_s'] * 1000:.0f} ms (from the twitch); feeding the depth service")
                 fwd = Forward(pull, link, T_fc)
         g = link.grid()
+        hb((f"sweeping the table: {g.get('frames', 0)} wrist pictures into the 3D map, "
+            f"{g.get('something', 0)} spots sure to hold something") if fwd is not None else
+           "wiggling the wrist to time the camera", last)
         rr.set_time("wall_s", duration=time.time() - t_wall)
-        if g["xyz"]:
+        with pull.lock:
+            f_last = pull.frames[-1] if pull.frames else None
+        if f_last is not None:
+            rr.log("cams/wrist", rr.EncodedImage(contents=f_last.jpeg, media_type="image/jpeg"))
+        if g.get("xyz"):
             rr.log("world/something", rr.Points3D(g["xyz"], colors=g["rgb"], radii=0.001))
-        rr.log("stats", rr.TextDocument(
+        if "frames" in g:
+          rr.log("stats", rr.TextDocument(
             f"frames {g['frames']} · reference frames {g['searched']}/{g['refs']} searched · "
             f"{g['points']} edge points · {g['something']} voxels something · {g['nothing']} nothing · "
             f"{g['ms_per_ref']} ms per reference frame"))
@@ -191,14 +232,19 @@ def main() -> None:
         if moved and last.get("queued") == 0 and last.get("status") == "idle":
             still_since = still_since or time.time()
             if time.time() - still_since > 2.0 and fwd is not None:
-                fwd.flush()
+                if not pull.stop_ev.is_set():  # the arm is done: no more pictures (a still camera adds nothing, and
+                    pull.stop()                # new frames would keep the depth service's queue from ever emptying)
+                    fwd.flush()
+                    fwd.stop()
                 st = link.stats()
-                if st["inbox"] == 0 and st["waiting"] == 0 and link.q.empty():
+                if (st["inbox"] == 0 and st["waiting"] == 0 and link.q.empty()) or time.time() - still_since > 25.0:
                     break
         else:
             still_since = None
-    pull.stop()
-    if fwd:
+    if not pull.stop_ev.is_set():
+        pull.stop()
+    hb("sweep done: finding objects in the 3D map", {"queued": 0, "status": "idle"})
+    if fwd and not fwd.stop_ev.is_set():
         fwd.stop()
     g = link.grid()
     xyz = np.asarray(g["xyz"]).reshape(-1, 3)

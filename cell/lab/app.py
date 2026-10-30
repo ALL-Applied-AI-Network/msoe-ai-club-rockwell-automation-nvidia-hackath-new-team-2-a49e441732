@@ -92,7 +92,10 @@ def main() -> None:
     # the task ladder (lab/ladder.py): run from the page, its lines into the actions panel, results into /ladder
     from lab import ladder as LD
     from lab.recorder import RUNS
-    lad = {"running": None, "queue": [], "results": {}, "root": None, "stop": False}
+    lad = {"running": None, "queue": [], "results": {}, "root": None, "stop": False, "lanes": {}, "t0": None}
+
+    def lane(name, text):
+        lad["lanes"][name] = {"text": text, "t": time.time()}
 
     def ladder_loop(names):
         lad["root"] = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_ladder"
@@ -102,12 +105,15 @@ def main() -> None:
                 break
             lad["running"] = n
             lad["results"][n] = {"state": "running"}
-            chat.banner.update(phase="working", headline=f"Ladder: {n}")
+            chat.banner.update(phase="working", headline=LD.load_trial(n)["instruction"])
             board.add("status", json.dumps(chat.banner))
-            say = lambda line, n=n: board.add("motion", line.strip())
+            say = lambda line: board.add("log", line.strip())
+            tell = lambda text: board.add("robot", text)
+            board.add("you", LD.load_trial(n)["instruction"])
+            lad["lanes"], lad["t0"] = {}, time.time()
             for attempt in (1, 2):
                 try:
-                    r = LD.run(n, lad["root"] / (n if attempt == 1 else n + "_retry"), say=say, rerun_to=robot.viewer_uri)
+                    r = LD.run(n, lad["root"] / (n if attempt == 1 else n + "_retry"), say=say, rerun_to=robot.viewer_uri, tell=tell, state=lane)
                     break
                 except Exception as e:
                     r = {"task": n, "ok": False, "why": f"{type(e).__name__}: {e}"}
@@ -160,7 +166,8 @@ def main() -> None:
             elif self.path == "/ladder":
                 names = sorted(f.stem for f in LD.TRIALS.glob("ladder*.yaml"))
                 self._json({"tasks": [{"name": n, "instruction": LD.load_trial(n)["instruction"]} for n in names],
-                            "running": lad["running"], "results": lad["results"]})
+                            "running": lad["running"], "results": lad["results"], "lanes": lad["lanes"],
+                            "now": time.time(), "t0": lad["t0"]})
             elif self.path.startswith("/runs/"):  # pictures and results from runs/ (nothing outside it)
                 f = (RUNS / self.path[len("/runs/"):].split("?")[0]).resolve()
                 if RUNS.resolve() not in f.parents or not f.is_file() or f.suffix not in (".jpg", ".json", ".txt"):

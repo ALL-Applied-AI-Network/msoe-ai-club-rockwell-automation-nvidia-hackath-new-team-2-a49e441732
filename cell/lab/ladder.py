@@ -43,6 +43,7 @@ from lab.recorder import RUNS
 from lab.trial import TRIALS, build, load_trial
 
 MODEL = "openrouter/openai/gpt-6-luna"
+DELAY_MS = 35.0  # the wrist pictures' delay in the sim (measured 32-38 ms by the twitch, Oct 30): no twitch per task
 STAY_MM, MOVED_MM, PILE_MM = 10.0, 30.0, 45.0
 SPACE_MM = 32.0  # a set-down spot this far from any matter or anything already put down (fingers open 20 mm + 6 each)
 SPOTS = ((0.27, 0.49), (-0.17, 0.07))  # where piles may go (x, y m): the table minus the box row and the far corner
@@ -56,6 +57,8 @@ The instruction: "{instruction}"
 Decide what to move. Answer in JSON only:
 {{
   "see": "one sentence: what is on the table (name each numbered thing: block, bolt, pen, lego brick, die, bin...)",
+  "names": {{"1": "short name, e.g. red block, blue bin, bolt"}},
+  "say": "what you tell the person watching, first person, plain words, one or two sentences: what you were asked and what you're going to do about it",
   "moves": [{{"object": 3, "into": 7}}, {{"object": 4, "pile": "yellow pile"}}],
   "leave": [5],
   "why": "one sentence"
@@ -67,6 +70,81 @@ anything the instruction doesn't ask you to move. Move each thing at most once, 
 
 def table_picture(c) -> np.ndarray:
     return c.observe(["table"], (1280, 720), "jpeg")["images"]["table"]
+
+
+FIRST = """You control a robot arm at a table. The instruction: "{instruction}".
+The TOP picture is the table camera looking down at the work area; below it, left: the side camera, right: the camera
+on the robot's wrist. A depth scan is running at the same time and will measure every thing's exact place and size; you
+say what things are and what to do. Answer in JSON only:
+{{
+  "say": "what you tell the person watching, first person, plain words, one or two sentences: what you see and what you'll do",
+  "things": [{{"name": "red block", "at": [0.42, 0.61]}}, {{"name": "white bin", "at": [0.20, 0.30]}}],
+  "moves": [{{"thing": "red block", "into": "white bin"}}, {{"thing": "yellow block", "pile": "yellow pile"}}],
+  "why": "one sentence"
+}}
+"things": every thing on the table that matters, each with a unique name and "at" = where its middle is in the TOP
+picture, as fractions of the picture's width and height (0,0 top left). "into" names a container from "things";
+"pile" names a pile (things with the same pile name are set down together in a free spot; a pile of one thing is how to
+move something "somewhere else"). Leave out anything the instruction doesn't ask to move; move each thing at most once,
+in the order to do it."""
+
+
+def crop_box(img: np.ndarray):
+    """The work area in the table picture: (corner (u, v), far corner (u, v), picture px per calibration px)."""
+    cam = load()["table"]
+    s = img.shape[1] / cam["size"][0]
+    (x0, x1), (y0, y1) = (0.20, 0.56), (-0.34, 0.14)
+    uv = project(cam, [[x, y, SURFACE_Z] for x in (x0, x1) for y in (y0, y1)]) * s
+    return np.clip(uv.min(0).astype(int), 0, None), uv.max(0).astype(int), s
+
+
+def first_look(obs) -> np.ndarray:
+    """The pictures the language model gets at second 0: the table camera's work area on top, side and wrist below."""
+    tab = obs["images"]["table"]
+    a, b, _ = crop_box(tab)
+    top = cv2.resize(tab[a[1]:b[1], a[0]:b[0]], (1024, int(1024 * (b[1] - a[1]) / (b[0] - a[0]))))
+    small = [cv2.resize(obs["images"][k], (512, 288)) for k in ("side", "wrist")]
+    for im, k in zip(small, ("side", "wrist")):
+        cv2.putText(im, k, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    return np.vstack([top, np.hstack(small)])
+
+
+def match(first: dict, objs, img: np.ndarray, near: float = 0.08) -> tuple[dict, list]:
+    """The first look's named things -> the scan's objects: the object whose middle (projected into the top picture)
+    is nearest the point the language model gave, containers for "into", solids for what's moved. Returns the plan in
+    object numbers ({"moves": [...], "names": {...}}) and what couldn't be matched."""
+    cam = load()["table"]
+    a, b, s = crop_box(img)
+    def frac(o):
+        u, v = project(cam, [[*o.centre, SURFACE_Z + o.top_mm / 1000]])[0] * s
+        return np.array([(u - a[0]) / (b[0] - a[0]), (v - a[1]) / (b[1] - a[1])])
+    at = {t_["name"]: np.asarray(t_.get("at", [np.nan, np.nan]), float) for t_ in first.get("things") or []}
+    names, moves, missing = {}, [], []
+    def find(name, want_container):
+        if name not in at or not np.isfinite(at[name]).all():
+            return None
+        cands = [o for o in objs if o.container == want_container]
+        if not cands:
+            return None
+        d = [np.linalg.norm(frac(o) - at[name]) for o in cands]
+        i = int(np.argmin(d))
+        return cands[i] if d[i] <= near else None
+    for m in first.get("moves") or []:
+        o = find(m.get("thing"), False)
+        if o is None:
+            missing.append(m.get("thing"))
+            continue
+        names[o.id] = m["thing"]
+        if m.get("into"):
+            d = find(m["into"], True)
+            if d is None:
+                missing.append(m["into"])
+                continue
+            names[d.id] = m["into"]
+            moves.append({"object": o.id, "into": d.id})
+        else:
+            moves.append({"object": o.id, "pile": m.get("pile") or "elsewhere"})
+    return {"moves": moves, "names": names, "why": first.get("why"), "see": first.get("say")}, missing
 
 
 def labelled(img: np.ndarray, objs) -> np.ndarray:
@@ -118,11 +196,13 @@ def free_spot(h: np.ndarray, cols: dict, taken: list, near=None) -> np.ndarray |
     return np.array([gx[i], gy[i]])
 
 
-def wait_idle(c) -> None:
+def wait_idle(c, each=None) -> None:
     t0 = time.time()
-    while time.time() - t0 < 300:
+    while time.time() - t0 < 120:  # (a pick and place is well under a minute)
         time.sleep(1.0)
         o = c._call("GET", "observation", params={"cameras": "wrist", "width": 64, "height": 36, "format": "jpeg"})
+        if each:
+            each(o["queued"])
         if o["queued"] == 0 and o["status"] == "idle":
             return
 
@@ -213,7 +293,34 @@ def check(goals: list, truth: dict, before: dict, after: dict) -> list:
 
 # ---- one task ---------------------------------------------------------------------------------------------------
 
-def run(task: str, out, say=print, rerun_to: str | None = None) -> dict:
+def _things(objs) -> str:
+    """The found objects in a sentence: 'two small solids (about 10 mm) and one open container (45 mm)'."""
+    words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+    n = lambda k: words[k] if k < len(words) else str(k)
+    solids = [o for o in objs if not o.container]
+    boxes = [o for o in objs if o.container]
+    parts = []
+    if solids:
+        tops = sorted(o.top_mm for o in solids)
+        parts.append(f"{n(len(solids))} solid thing{'s' * (len(solids) != 1)} "
+                     f"({tops[0]:.0f} mm tall" + (f" to {tops[-1]:.0f} mm)" if tops[-1] - tops[0] > 2 else ")"))
+    if boxes:
+        parts.append(f"{n(len(boxes))} open container{'s' * (len(boxes) != 1)} (rim{'s' * (len(boxes) != 1)} "
+                     f"{', '.join(f'{b.rim_mm:.0f}' for b in boxes)} mm up)")
+    return " and ".join(parts) or "nothing"
+
+
+GLANCE = """You control a robot arm at a table; the picture is the table camera's view. You've been asked: "{instruction}".
+Before the depth scan finishes, glance at the picture and say in one or two plain first-person sentences what you see on
+the table and roughly what you'll do. JSON only: {{"say": "..."}}"""
+
+
+def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state=None) -> dict:
+    """say: detail lines (a log); tell: what the robot would say to a person watching, as things change;
+    state(lane, text): live status, lanes "arm" (what it's doing), "where" (depth: the scan, the 3D map),
+    "what" (the language model: what things are, the plan)."""
+    tell = tell or (lambda m: say("  " + m))
+    state = state or (lambda lane, text: None)
     from cell_client import CellClient
     from lab.isaaccell import PORT, IsaacCell
     url = f"http://127.0.0.1:{PORT}"
@@ -222,21 +329,103 @@ def run(task: str, out, say=print, rerun_to: str | None = None) -> dict:
     t = load_trial(task)
     out.mkdir(parents=True)
     t0 = time.time()
+    state("where", "nothing yet")
+    state("what", "nothing yet")
+    state("arm", "switching the sim's timing mode off for the reset")
     requests.post(api + "sim/honest", json={"on": False}, timeout=30)
+    t_ = time.time()
+    state("arm", "resetting the table (the simulator rebuilds the scene)")
     IsaacCell(build(t, 0))
-    before_img = table_picture(c)
+    t_reset = time.time() - t_
+    state("arm", "taking the first pictures (table, side, wrist)")
+    obs0 = c.observe(["table", "side", "wrist"], (1280, 720), "jpeg")
+    say(f"  timing: honest-off {t_ - t0:.1f} s, reset {t_reset:.1f} s, first pictures {time.time() - t_ - t_reset:.1f} s")
+    before_img = obs0["images"]["table"]
+    look = first_look(obs0)
+    cv2.imwrite(str(out / "first_look.jpg"), cv2.cvtColor(look, cv2.COLOR_RGB2BGR))
+    first = {}
+
+    def plan_first():  # second 0: the language model gets every camera and the instruction, while the scan runs
+        t_ = time.time()
+        state("what", "looking at the table, side and wrist pictures and deciding what to do...")
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(1) as ex:
+                fut = ex.submit(vlm.ask_image, look, FIRST.format(instruction=t["instruction"]), model=MODEL,
+                                think=True, timeout=120)
+                while not fut.done():
+                    time.sleep(1.0)
+                    state("what", f"deciding what to do from the first pictures ({time.time() - t_:.0f} s)")
+                a_ = fut.result()
+            first.update((a_ or {}).get("json") or {})
+            first["_s"] = time.time() - t_
+            if first.get("say"):
+                tell(first["say"])
+            mv = "; ".join(f"{m.get('thing')} -> {m.get('into') or 'pile ' + str(m.get('pile'))}" for m in first.get("moves") or [])
+            state("what", f"plan ready in {first['_s']:.0f} s: " + (mv or "nothing to move") +
+                  " (waiting for the scan to say exactly where)")
+        except Exception as e:
+            state("what", f"the first look failed: {e}")
+    import threading
+    th_first = threading.Thread(target=plan_first, daemon=True)
+    th_first.start()
     say(f"\n=== {task}: \"{t['instruction']}\"")
-    say("  scanning (safe height, sweep, depth on the GPU box)...")
-    r = subprocess.run([sys.executable, "-m", "lab.depth_check", "--fast", "--no-reset", "--trial", task],
-                       capture_output=True, text=True, env={**os.environ, **({"RERUN_TO": rerun_to} if rerun_to else {})})
-    scan_log = r.stdout + r.stderr
-    (out / "scan.txt").write_text("\n".join(l for l in scan_log.splitlines() if "token" not in l.lower()))
-    if r.returncode:
-        say("  the scan failed: " + scan_log.strip().splitlines()[-1])
-        return {"task": task, "ok": False, "why": "scan failed", "seconds": time.time() - t0}
-    for l in scan_log.splitlines():
-        if l.startswith(("tallest", "rigid objects", "seen ")):
+    tell("Looking at everything at once: the language model is reading the pictures while the arm takes two "
+         "table-camera depth pictures to see how tall things are.")
+    p = subprocess.Popen([sys.executable, "-u", "-m", "lab.depth_check", "--fast", "--no-reset", "--trial", task,
+                          "--delay-ms", str(DELAY_MS)],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                         env={**os.environ, **({"RERUN_TO": rerun_to} if rerun_to else {})})
+    lines_ = []
+    import queue as _q
+    inbox = _q.Queue()
+    def _read():
+        for l_ in p.stdout:
+            inbox.put(l_)
+    threading.Thread(target=_read, daemon=True).start()
+
+    def scan_lines():  # its lines until it exits (a background process holding the pipe open can't stall this)
+        quiet = 0.0
+        while True:
+            try:
+                yield inbox.get(timeout=1.0)
+                quiet = 0.0
+            except _q.Empty:
+                if p.poll() is not None:
+                    return
+                quiet += 1.0
+                if quiet >= 60:  # no heartbeat for a minute: the scan is hung
+                    p.kill()
+                    yield "the scan said nothing for 60 s: stopped it"
+                    return
+    for l in scan_lines():
+        l = l.rstrip()
+        if "token" in l.lower():
+            continue
+        if l.startswith("HB\t"):
+            _, where_, arm_ = (l.split("\t") + ["", ""])[:3]
+            state("where", where_)
+            state("arm", arm_)
+            continue
+        lines_.append(l)
+        if l.startswith("tallest thing"):
+            import re
+            m = re.search(r"tallest thing on the table (\d+) mm.*fly at (\d+) mm", l)
+            if m:
+                tell(f"The tallest thing on the table is {m[1]} mm, so I'll sweep the wrist camera over everything with "
+                     f"the fingertips {m[2]} mm up. Nothing on the table can be hit at that height.")
+        elif l.startswith("picture delay"):
+            ms = l.split()[2]
+            tell("Sweeping the wrist camera over the table now, building the 3D map on the GPU box as I go: the dots "
+                 "on the right are where I'm sure there's something.")
+        elif l.startswith(("tallest", "the scan:", "motion:", "rigid objects", "seen ")) or "Error" in l:
             say("  " + l)
+    p.wait()
+    scan_log = "\n".join(lines_)
+    (out / "scan.txt").write_text(scan_log)
+    if p.returncode:
+        tell("The scan failed: " + (lines_[-1] if lines_ else "no output") + ". I'm stopping this task.")
+        return {"task": task, "ok": False, "why": "scan failed: " + (lines_[-1] if lines_ else ""), "seconds": time.time() - t0}
     t_scan = time.time() - t0
 
     link = DepthLink()
@@ -246,17 +435,45 @@ def run(task: str, out, say=print, rerun_to: str | None = None) -> dict:
     before = requests.get(api + "sim/truth", timeout=30).json()["poses"]
     pic = labelled(before_img, objs)
     cv2.imwrite(str(out / "before.jpg"), cv2.cvtColor(pic, cv2.COLOR_RGB2BGR))
-    say(f"  {len(objs)} things found ({sum(o.container for o in objs)} containers); asking the LLM...")
-
+    state("where", f"map done: {len(objs)} things ({sum(o.container for o in objs)} open containers)")
+    tell(f"Scan done. The depth map has {_things(objs)}.")
     t1 = time.time()
-    ans = vlm.ask_image(pic, PROMPT.format(objects=describe(objs), instruction=t["instruction"]), model=MODEL,
-                        think=True, timeout=120)
-    plan = (ans or {}).get("json") or {}
-    t_llm = time.time() - t1
+    while th_first.is_alive():  # (usually done long before the scan)
+        state("arm", "still, waiting for the language model's plan")
+        time.sleep(1.0)
+    plan, missing = match(first, objs, before_img) if first else ({}, ["(no first plan)"])
+    ans = {"text": json.dumps(first)}
+    if missing or not first:
+        tell("I can't line up " + (", ".join(map(str, missing)) or "the plan") + " with what the depth scan found, "
+             "so I'm asking again with the found things numbered on the picture.")
+        state("what", "re-planning with the numbered picture...")
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(1) as ex:
+            fut = ex.submit(vlm.ask_image, pic, PROMPT.format(objects=describe(objs), instruction=t["instruction"]),
+                            model=MODEL, think=True, timeout=120)
+            while not fut.done():
+                time.sleep(1.0)
+                state("what", f"re-planning with the numbered picture ({time.time() - t1:.0f} s)")
+            ans = fut.result()
+        plan = (ans or {}).get("json") or {}
+        plan.pop("say", None)
+    else:
+        tell("Matched the plan to the depth map: " + "; ".join(
+            f"{plan['names'][m['object']]} is #{m['object']}" for m in plan["moves"]) + ".")
+    t_llm = first.get("_s", 0.0) + (time.time() - t1)
     (out / "plan.json").write_text(json.dumps({"answer": plan, "text": (ans or {}).get("text"), "seconds": t_llm,
                                                "objects": describe(objs)}, indent=1))
     say(f"  LLM ({t_llm:.0f} s): {plan.get('see')}")
     say(f"    moves {plan.get('moves')}; leave {plan.get('leave')}; why: {plan.get('why')}")
+    state("what", "plan: " + (plan.get("why") or plan.get("see") or "no answer"))
+    names = {int(k): v for k, v in (plan.get("names") or {}).items() if str(k).isdigit()}
+    nm = lambda i: f"the {names[i]}" if i in names else f"#{i}"
+    if plan.get("say"):
+        tell(plan["say"])
+    elif not plan:
+        tell("I couldn't get a plan from the language model, so I'm not moving anything.")
+    if plan and not plan.get("moves"):
+        tell("Nothing needs moving.")
 
     by_id = {o.id: o for o in objs}
     h = HD.column_heights(cols)
@@ -264,48 +481,57 @@ def run(task: str, out, say=print, rerun_to: str | None = None) -> dict:
     for m in plan.get("moves") or []:
         o = by_id.get(m.get("object"))
         if o is None or o.container:
-            say(f"  skip {m}: no such solid object")
+            tell(f"(The plan named #{m.get('object')}, but that's not something I can pick up. Skipping it.)")
             continue
         dest, place = None, None
         if m.get("into") is not None:
             dest = by_id.get(m["into"])
             if dest is None or not dest.container:
-                say(f"  skip {m}: #{m['into']} is not a container")
+                tell(f"(The plan said to put it in #{m['into']}, but I don't see an open container there. Skipping.)")
                 continue
         else:
             name = str(m.get("pile") or "elsewhere")
             members = piles.setdefault(name, [])
             place = free_spot(h, cols, taken, np.mean(members, 0) if members else None)
             if place is None:
-                say(f"  skip {m}: no free spot left for pile {name!r}")
+                tell("I can't find a free spot on the table to set it down. Skipping it.")
                 continue
         cur, q = where(c)
         plan_m = HD.put(o, dest, objs, cols, cur, place)
         if not plan_m.ok:
-            say(f"  #{o.id}: no plan ({plan_m.why})")
+            tell(f"I can't work out how to pick up {nm(o.id)}: {plan_m.why}.")
             continue
         try:
             jrows = joints_for(HD.rows(plan_m, cur), q)
         except ValueError as e:
-            say(f"  #{o.id}: out of reach ({e})")
+            tell(f"{nm(o.id).capitalize()} is out of the arm's reach from here. Skipping it.")
             continue
         if place is not None:
             taken.append(place)
             piles[name].append(place)
+        tell(f"Picking up {nm(o.id)} (#{o.id}) and " + (f"dropping it in {nm(dest.id)} (#{dest.id})" if dest else
+             f"setting it down in a free spot" + (" next to the others" if len(piles[name]) > 1 else "")) +
+             f": fingers {plan_m.grip_mm:.0f} mm off the table to grab it, carried {plan_m.carry_mm:.0f} mm up so it "
+             f"clears everything on the way.")
         say(f"  #{o.id} -> " + (f"bin #{dest.id}" if dest else f"pile {name!r} at ({place[0] * 1000:.0f}, "
                                                                  f"{place[1] * 1000:.0f}) mm") +
             f": grip {plan_m.grip_mm:.1f} mm, carry {plan_m.carry_mm:.0f} mm, release {plan_m.release_mm:.0f} mm")
         for k in range(0, len(jrows), 100):
             c.act(jrows[k:k + 100], P.DT)
-        wait_idle(c)
+        what_ = f"{nm(o.id)} -> " + (nm(dest.id) if dest else "a free spot")
+        wait_idle(c, lambda q: state("arm", f"moving {what_} ({q / 10:.0f} s of motion left)"))
+        state("arm", f"done: {what_}")
         done.append(m)
+    state("arm", "still: checking the result")
     time.sleep(2.0)
     after = requests.get(api + "sim/truth", timeout=30).json()["poses"]
     cv2.imwrite(str(out / "after.jpg"), cv2.cvtColor(labelled(table_picture(c), objs), cv2.COLOR_RGB2BGR))
     lines = check(t["goal"], truth, before, after)
     ok = all(x for x, _ in lines)
-    for x, s in lines:
-        say(f"  {'PASS' if x else 'FAIL'}  {s}")
+    for x, s_ in lines:
+        say(f"  {'PASS' if x else 'FAIL'}  {s_}")
+    tell(("Done, and the simulator agrees: " if ok else "Done, but the simulator says it's not right: ") +
+         "; ".join(s_ for _, s_ in lines) + ".")
     res = {"task": task, "instruction": t["instruction"], "ok": ok, "checks": [{"ok": x, "says": s} for x, s in lines],
            "llm": plan, "moves_done": done, "seconds": round(time.time() - t0), "scan_s": round(t_scan),
            "llm_s": round(t_llm)}
