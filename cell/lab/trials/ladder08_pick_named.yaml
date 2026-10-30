@@ -1,0 +1,15 @@
+# Ladder 8: semantic picking. A few different things; only the one named goes in.
+instruction: Put the bolt in the bin. Leave everything else where it is.
+layout: spread
+seed: 8
+objects:
+  - {kind: cube_10, color: red, count: 1}
+  - {kind: cube_10, color: blue, count: 1}
+  - {kind: lego_1x2, color: yellow, count: 1}
+  - {kind: screw_m6x30, color: steel, count: 1}
+fixtures:
+  - {kind: box_60, color: white, at: [0.36, -0.24]}
+goal:
+  - {what: {kind: screw_m6x30}, into: any}
+  - {what: {kind: cube_10}, stays: true}
+  - {what: {kind: lego_1x2}, stays: true}

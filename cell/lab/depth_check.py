@@ -63,11 +63,15 @@ def main() -> None:
     out = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_depth"
     out.mkdir(parents=True)
     rr.init("depth_live")
-    try:
-        rr.set_sinks(rr.GrpcSink(), rr.FileSink(str(out / "depth.rrd")))
-        rr.spawn(connect=False)
-    except Exception:
-        rr.spawn()
+    import os
+    if os.getenv("RERUN_TO"):  # the app's viewer (lab/app.py serves one): log there, no window of its own
+        rr.set_sinks(rr.GrpcSink(os.environ["RERUN_TO"]), rr.FileSink(str(out / "depth.rrd")))
+    else:
+        try:
+            rr.set_sinks(rr.GrpcSink(), rr.FileSink(str(out / "depth.rrd")))
+            rr.spawn(connect=False)
+        except Exception:
+            rr.spawn()
     rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
     for name, m in objects.items():
         e = m.edges_unique

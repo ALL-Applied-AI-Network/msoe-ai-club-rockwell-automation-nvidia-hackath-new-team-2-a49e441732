@@ -1,0 +1,12 @@
+# Ladder 3: a red and a blue block, one blue bin. Only the matching block goes in: needs a little reasoning.
+instruction: Put the block into the bin that matches its color.
+layout: spread
+seed: 3
+objects:
+  - {kind: cube_10, color: red, count: 1}
+  - {kind: cube_10, color: blue, count: 1}
+fixtures:
+  - {kind: box_60, color: blue, at: [0.36, -0.24]}
+goal:
+  - {what: {color: blue}, into: {color: blue}}
+  - {what: {color: red}, stays: true}

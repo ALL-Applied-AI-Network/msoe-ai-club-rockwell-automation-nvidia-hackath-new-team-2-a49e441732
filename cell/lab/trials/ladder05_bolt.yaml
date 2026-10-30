@@ -1,0 +1,10 @@
+# Ladder 5: a different shape. One bolt (M6 x 30) into the bin.
+instruction: Put the bolt in the bin.
+layout: spread
+seed: 5
+objects:
+  - {kind: screw_m6x30, color: steel, count: 1}
+fixtures:
+  - {kind: box_60, color: white, at: [0.36, -0.24]}
+goal:
+  - {what: {kind: screw_m6x30}, into: any}

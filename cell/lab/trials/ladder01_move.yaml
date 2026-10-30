@@ -1,0 +1,8 @@
+# Ladder 1: one block. Move it somewhere else.
+instruction: Move the block somewhere else on the table.
+layout: spread
+seed: 1
+objects:
+  - {kind: cube_10, color: red, count: 1}
+goal:
+  - {what: {kind: cube_10}, moved: true}

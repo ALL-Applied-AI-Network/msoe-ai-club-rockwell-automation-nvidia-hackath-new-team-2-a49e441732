@@ -1,0 +1,8 @@
+# Ladder 6: a pen (a 120 mm marker, 14 mm thick: too long for the bin). Move it.
+instruction: Move the pen to a different spot on the table.
+layout: spread
+seed: 6
+objects:
+  - {kind: marker, color: black, count: 1}
+goal:
+  - {what: {kind: marker}, moved: true}

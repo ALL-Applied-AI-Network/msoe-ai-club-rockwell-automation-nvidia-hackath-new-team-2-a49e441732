@@ -1,0 +1,15 @@
+# Ladder 9: sort two colours into their bins, ignore a third.
+instruction: Put the blue blocks in the blue bin and the red blocks in the red bin. Leave everything else alone.
+layout: spread
+seed: 9
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: blue, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+fixtures:
+  - {kind: box_60, color: red, at: [0.30, -0.24]}
+  - {kind: box_60, color: blue, at: [0.45, -0.24]}
+goal:
+  - {what: {color: red}, into: {color: red}}
+  - {what: {color: blue}, into: {color: blue}}
+  - {what: {color: yellow}, stays: true}

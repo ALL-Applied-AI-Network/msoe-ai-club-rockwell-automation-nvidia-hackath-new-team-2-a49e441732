@@ -88,6 +88,35 @@ def main() -> None:
             threading.Thread(target=chat.event, args=(kind, text), daemon=True).start()
 
     robot.listeners.append(on_event)
+
+    # the task ladder (lab/ladder.py): run from the page, its lines into the actions panel, results into /ladder
+    from lab import ladder as LD
+    from lab.recorder import RUNS
+    lad = {"running": None, "queue": [], "results": {}, "root": None, "stop": False}
+
+    def ladder_loop(names):
+        lad["root"] = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_ladder"
+        lad["stop"] = False
+        for n in names:
+            if lad["stop"]:
+                break
+            lad["running"] = n
+            lad["results"][n] = {"state": "running"}
+            chat.banner.update(phase="working", headline=f"Ladder: {n}")
+            board.add("status", json.dumps(chat.banner))
+            say = lambda line, n=n: board.add("motion", line.strip())
+            try:
+                r = LD.run(n, lad["root"] / n, say=say, rerun_to=robot.viewer_uri)
+            except Exception as e:
+                r = {"task": n, "ok": False, "why": f"{type(e).__name__}: {e}"}
+                say(f"  crashed: {r['why']}")
+            r["state"] = "pass" if r.get("ok") else "fail"
+            r["dir"] = str((lad["root"] / n).relative_to(RUNS))
+            lad["results"][n] = r
+        lad["running"] = None
+        done = [r for r in lad["results"].values() if r.get("state") in ("pass", "fail")]
+        chat.banner.update(phase="done", headline=f"Ladder: {sum(r['state'] == 'pass' for r in done)}/{len(done)} passed")
+        board.add("status", json.dumps(chat.banner))
     viewer = f"http://127.0.0.1:9090/?url={quote(robot.viewer_uri, safe='')}"
     board.add("system", "Ready. The Isaac window on the GPU box is the real world; the right side here is what I think.")
 
@@ -121,6 +150,21 @@ def main() -> None:
                     except Exception as e:
                         out["trials_error"] = str(e)[:200]
                 self._json(out)
+            elif self.path == "/ladder":
+                names = sorted(f.stem for f in LD.TRIALS.glob("ladder*.yaml"))
+                self._json({"tasks": [{"name": n, "instruction": LD.load_trial(n)["instruction"]} for n in names],
+                            "running": lad["running"], "results": lad["results"]})
+            elif self.path.startswith("/runs/"):  # pictures and results from runs/ (nothing outside it)
+                f = (RUNS / self.path[len("/runs/"):].split("?")[0]).resolve()
+                if RUNS.resolve() not in f.parents or not f.is_file() or f.suffix not in (".jpg", ".json", ".txt"):
+                    return self._json({"error": "not found"}, 404)
+                data = f.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", {".jpg": "image/jpeg", ".json": "application/json"}.get(f.suffix, "text/plain; charset=utf-8"))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
             elif self.path.startswith("/events"):
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -203,6 +247,24 @@ def main() -> None:
                 except Exception as e:
                     board.add("system", f"Couldn't start the trial: {e}")
                     self._json({"ok": False, "error": str(e)}, 400)
+            elif self.path == "/ladder/run":
+                if lad["running"]:
+                    return self._json({"error": f"{lad['running']} is running"}, 409)
+                names = sorted(f.stem for f in LD.TRIALS.glob("ladder*.yaml"))
+                want = body.get("tasks") or names
+                names = [n for n in names if n in want]
+                for n in names:
+                    lad["results"][n] = {"state": "queued"}
+                threading.Thread(target=ladder_loop, args=(names,), daemon=True).start()
+                board.add("action", f"ladder: {', '.join(names)}")
+                self._json({"ok": True, "tasks": names})
+            elif self.path == "/ladder/stop":
+                lad["stop"] = True
+                for n, r in lad["results"].items():
+                    if r.get("state") == "queued":
+                        r["state"] = "skipped"
+                board.add("action", "ladder: stopping after this task")
+                self._json({"ok": True})
             elif self.path == "/distract":
                 state["distract"] = bool(body.get("on"))
                 self._json({"distract": state["distract"]})

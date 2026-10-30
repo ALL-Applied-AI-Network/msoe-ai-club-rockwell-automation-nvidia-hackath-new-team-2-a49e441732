@@ -1,0 +1,14 @@
+# Ladder 12: assorted objects, three bins: one kind per bin.
+instruction: Sort these into the bins, one kind of object per bin.
+layout: spread
+seed: 12
+objects:
+  - {kind: cube_10, color: blue, count: 2}
+  - {kind: screw_m6x30, color: steel, count: 2}
+  - {kind: lego_1x2, color: red, count: 2}
+fixtures:
+  - {kind: box_60, color: white, at: [0.27, -0.24]}
+  - {kind: box_60, color: white, at: [0.36, -0.24]}
+  - {kind: box_60, color: white, at: [0.45, -0.24]}
+goal:
+  - {what: {}, bins_by: kind}

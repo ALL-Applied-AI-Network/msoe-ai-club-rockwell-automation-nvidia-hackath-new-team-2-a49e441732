@@ -22,7 +22,7 @@ from lab import primitives as P
 
 REGION = ((0.26, 0.50), (-0.30, 0.08))  # x, y (m): where things are put (the sim's layouts)
 CLEAR_MM = 30.0
-MIN_TIP_MM = 60.0
+MIN_TIP_MM = 76.0  # (at 60 a one-cube table gave an empty grid, Oct 30: not understood yet)
 MAX_TALL_MM = 200.0  # taller than this is the arm misread as a thing (nothing on this table is)
 LINE_GAP = 0.10
 HOP = 150.0  # mm/s between lines

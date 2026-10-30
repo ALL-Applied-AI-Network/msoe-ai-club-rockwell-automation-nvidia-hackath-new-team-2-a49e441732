@@ -1,0 +1,10 @@
+# Ladder 11: assorted objects, no bins: sort them into piles, one kind per pile.
+instruction: Sort these into piles, one pile per kind of object.
+layout: spread
+seed: 11
+objects:
+  - {kind: cube_10, color: blue, count: 2}
+  - {kind: screw_m6x30, color: steel, count: 2}
+  - {kind: lego_1x2, color: red, count: 2}
+goal:
+  - {what: {}, piles_by: kind}

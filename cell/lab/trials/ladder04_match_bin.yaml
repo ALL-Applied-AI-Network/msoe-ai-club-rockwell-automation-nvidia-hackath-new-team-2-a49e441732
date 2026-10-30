@@ -1,0 +1,11 @@
+# Ladder 4: the mirror image. One red block, a red and a blue bin.
+instruction: Put the block into the bin that matches its color.
+layout: spread
+seed: 4
+objects:
+  - {kind: cube_10, color: red, count: 1}
+fixtures:
+  - {kind: box_60, color: blue, at: [0.30, -0.24]}
+  - {kind: box_60, color: red, at: [0.45, -0.24]}
+goal:
+  - {what: {color: red}, into: {color: red}}

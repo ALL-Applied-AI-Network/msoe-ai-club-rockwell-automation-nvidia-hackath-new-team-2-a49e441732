@@ -1,0 +1,10 @@
+# Ladder 2: a block and a bin. Put the block in the bin.
+instruction: Put the block in the bin.
+layout: spread
+seed: 2
+objects:
+  - {kind: cube_10, color: red, count: 1}
+fixtures:
+  - {kind: box_60, color: white, at: [0.36, -0.24]}
+goal:
+  - {what: {kind: cube_10}, into: any}

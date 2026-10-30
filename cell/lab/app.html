@@ -72,6 +72,22 @@
   #toggle i { position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
   #right { position: relative; min-width: 0; }
   #right iframe { width: 100%; height: 100%; border: 0; display: block; background: #0d0f12; }
+  #ladder .lt { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 0; }
+  #ladder .lt span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  #ladder .lt span:hover { color: #fff; }
+  #ladder .chip { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 8px; background: #2a2f38; color: var(--dim); min-width: 44px; text-align: center; }
+  #ladder .chip.pass { background: #1f4d2c; color: #7ee2a0; } #ladder .chip.fail { background: #5c1f1f; color: #ff9b9b; }
+  #ladder .chip.running { background: #1f3a66; color: #9cc4ff; } #ladder .chip.queued { background: #33302a; color: #c9b27a; }
+  #ladder .lt button { padding: 1px 7px; font-size: 11px; }
+  #ltasks { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; }
+  #shot { position: absolute; inset: 0; background: #0d0f12f2; overflow: auto; padding: 16px 20px; }
+  #shot h3 { margin: 0 0 4px; font-size: 16px; } #shot .ins { color: var(--dim); margin-bottom: 10px; }
+  #shot .pics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  #shot .pics figure { margin: 0; } #shot img { width: 100%; border-radius: 6px; border: 1px solid var(--line); }
+  #shot figcaption { color: var(--dim); font-size: 12px; margin-bottom: 4px; }
+  #shot .chk { margin: 10px 0; font-size: 13px; } #shot .chk div { padding: 2px 0; }
+  #shot pre { white-space: pre-wrap; font-size: 12px; color: var(--motion); background: var(--panel); padding: 8px; border-radius: 6px; }
+  #shot .x { position: absolute; top: 12px; right: 16px; }
 </style>
 </head>
 <body>
@@ -86,6 +102,12 @@
     <div class="big"><button id="datarun" title="no sorting: camera sweeps over the parts, recording wrist pictures at full rate and a full set at every stop (about 2-3 min)">Data run</button>
       <button id="speedtest" title="out and back along a line, 150 mm above the table, at 100 to 500 mm/s: how fast the arm really goes, how late it starts, how long it settles">Speed test</button></div>
   </div>
+
+  <details class="sec fold" id="ladder" open>
+    <summary><h4>Task ladder <span class="r" id="lsum"></span></h4></summary>
+    <div class="row" style="margin-bottom:6px"><button id="lall">Run all</button><button id="lstop">Stop after this one</button></div>
+    <div id="ltasks"></div>
+  </details>
 
   <details class="sec fold" id="scene" open>
     <summary><h4>On the table <span class="r" id="count"></span></h4></summary>
@@ -113,7 +135,7 @@
   <div id="chat"><textarea id="text" placeholder="Talk to it… (Enter sends)"></textarea>
     <button id="toggle" title="show the conversation">💬<i hidden id="unread"></i></button></div>
 </div>
-<div id="right"><iframe id="viewer" title="the robot's mind"></iframe></div>
+<div id="right"><iframe id="viewer" title="the robot's mind"></iframe><div id="shot" hidden></div></div>
 <script>
 const KINDS = ["cube_10", "cube_16", "lego_1x2", "lego_2x4", "screw_m6x30", "dowel", "d6", "d4", "d8", "d20", "ring", "jack", "soldier"];
 const COLORS = ["red", "yellow", "blue", "green", "orange", "purple", "white", "black", "gray", "steel", "gold", "wood", "olive", "tan"];
@@ -216,11 +238,54 @@ function refresh() {
   }).catch(() => {});
 }
 refresh(); setInterval(refresh, 3000);
-for (const id of ["scene", "add"]) {  // remember which panels are folded
+for (const id of ["scene", "add", "ladder"]) {  // remember which panels are folded
   const d = $(id);
   try { const v = localStorage.getItem("fold-" + id); if (v !== null) d.open = v === "1"; } catch (e) {}
   d.addEventListener("toggle", () => { try { localStorage.setItem("fold-" + id, d.open ? "1" : "0"); } catch (e) {} });
 }
+
+// the task ladder: each task's state, run one or all, click one to see what it saw and how it ended
+const LS = {queued: "queued", running: "running", pass: "PASS", fail: "FAIL", skipped: "skipped"};
+let ladder = {tasks: [], results: {}}, shown = null;
+function ladderDraw() {
+  const box = $("ltasks"); box.innerHTML = "";
+  let p = 0, f = 0;
+  ladder.tasks.forEach(t => {
+    const r = ladder.results[t.name] || {}, st = r.state || "";
+    if (st === "pass") p++; if (st === "fail") f++;
+    const d = document.createElement("div"); d.className = "lt";
+    d.innerHTML = `<i class="chip ${st}">${LS[st] || "—"}</i><span title="${t.instruction}">${t.name.replace(/^ladder\d+_/, "").replace(/_/g, " ")} <small style="color:var(--dim)">${t.instruction}</small></span><button>Run</button>`;
+    d.querySelector("span").onclick = () => showTask(t.name);
+    d.querySelector("button").onclick = () => post("/ladder/run", {tasks: [t.name]}).then(ladderLoad);
+    d.querySelector("button").disabled = !!ladder.running;
+    box.appendChild(d);
+  });
+  $("lsum").textContent = p + f ? `${p} pass · ${f} fail` : "";
+  $("lall").disabled = !!ladder.running;
+  if (shown) showTask(shown, true);
+}
+function ladderLoad() { return fetch("/ladder").then(r => r.json()).then(d => { ladder = d; ladderDraw(); }).catch(() => {}); }
+function showTask(name, quiet) {
+  const r = ladder.results[name], t = ladder.tasks.find(x => x.name === name), el = $("shot");
+  if (!r || !r.dir) { if (!quiet) { el.hidden = false; shown = name; el.innerHTML = `<button class="x">Back to the viewer</button><h3>${name}</h3><div class="ins">${t.instruction}</div><p style="color:var(--dim)">${r ? "Running: the pictures appear when it's done." : "Not run yet."}</p>`; el.querySelector(".x").onclick = hideShot; } return; }
+  const key = name + r.state + (r.seconds || "");
+  if (quiet && el.dataset.key === key) return;
+  el.dataset.key = key; shown = name; el.hidden = false;
+  const src = f => `/runs/${r.dir}/${f}?${r.seconds || 0}`;
+  const llm = r.llm || {};
+  el.innerHTML = `<button class="x">Back to the viewer</button>
+    <h3><i class="chip ${r.state}" style="font-style:normal">${LS[r.state]}</i> ${name}</h3>
+    <div class="ins">“${t.instruction}” · ${r.seconds || "?"} s (scan ${r.scan_s ?? "?"} s, LLM ${r.llm_s ?? "?"} s)</div>
+    <div class="pics"><figure><figcaption>Before: what the LLM was shown (numbers = what depth found)</figcaption><img src="${src("before.jpg")}"></figure>
+    <figure><figcaption>After</figcaption><img src="${src("after.jpg")}"></figure></div>
+    <div class="chk">${(r.checks || []).map(c => `<div>${c.ok ? "✅" : "❌"} ${c.says}</div>`).join("") || (r.why ? `<div>❌ ${r.why}</div>` : "")}</div>
+    <pre>LLM sees: ${llm.see || "—"}\nmoves: ${JSON.stringify(llm.moves || [])}\nleave: ${JSON.stringify(llm.leave || [])}\nwhy: ${llm.why || "—"}</pre>`;
+  el.querySelector(".x").onclick = hideShot;
+}
+function hideShot() { $("shot").hidden = true; shown = null; }
+$("lall").onclick = () => post("/ladder/run", {}).then(ladderLoad);
+$("lstop").onclick = () => post("/ladder/stop").then(ladderLoad);
+ladderLoad(); setInterval(ladderLoad, 2000);
 </script>
 </body>
 </html>

@@ -1,0 +1,15 @@
+# Ladder 10: as 9, but the rest goes in a neat pile to the side.
+instruction: Blue blocks in the blue bin, red blocks in the red bin, and put everything else together in a neat pile off to the side.
+layout: spread
+seed: 10
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: cube_10, color: blue, count: 2}
+  - {kind: cube_10, color: yellow, count: 2}
+fixtures:
+  - {kind: box_60, color: red, at: [0.30, -0.24]}
+  - {kind: box_60, color: blue, at: [0.45, -0.24]}
+goal:
+  - {what: {color: red}, into: {color: red}}
+  - {what: {color: blue}, into: {color: blue}}
+  - {what: {color: yellow}, pile: true}

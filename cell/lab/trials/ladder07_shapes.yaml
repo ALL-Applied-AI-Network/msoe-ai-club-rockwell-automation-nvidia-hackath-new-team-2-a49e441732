@@ -1,0 +1,13 @@
+# Ladder 7: different rigid shapes, all into one bin.
+instruction: Put everything in the bin.
+layout: spread
+seed: 7
+objects:
+  - {kind: cube_10, color: green, count: 1}
+  - {kind: lego_1x2, color: red, count: 1}
+  - {kind: d6, color: white, count: 1}
+  - {kind: screw_m6x30, color: steel, count: 1}
+fixtures:
+  - {kind: box_60, color: white, at: [0.36, -0.24]}
+goal:
+  - {what: {}, into: any}
