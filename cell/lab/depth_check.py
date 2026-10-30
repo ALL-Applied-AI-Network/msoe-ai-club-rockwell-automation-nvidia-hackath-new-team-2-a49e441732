@@ -115,6 +115,8 @@ def main() -> None:
     ap.add_argument("--first", default=None,
                     help="quick start: an .npz with the table depth picture (and joints, table/side pictures) taken at "
                          "second 0 by the caller: the safe height from it, then straight into the sweep")
+    ap.add_argument("--hyps", default=None, help="things the language model pointed at (lab/ladder.py writes it when "
+                    "its answer arrives): orbited too")
     ap.add_argument("--record", default=None, help="save every wrist picture and the joint record to this folder")
     ap.add_argument("--angled", action="store_true",
                     help="after the sweep, orbit each thing the table camera sees: the camera on a sphere round it")
@@ -312,10 +314,18 @@ def main() -> None:
             pull.delay = a.delay_ms / 1000
         n_twitch = len(rows)
         scan_part = scan.sweep(q0, tip_mm, speed, segs, start)
-        if a.angled and first is not None:  # then orbit each hypothesis: the camera on a sphere round it, looking at it
-            q_end = np.asarray(scan_part[-1][:6], float)
+        def plan_orbits(q_end):  # orbit each hypothesis: the camera on a sphere round it, looking at it, and back
             extra = []
             hyps = scan.hypotheses(first["depth"], first["joints"], region)
+            if a.hyps and Path(a.hyps).exists():  # the language model's things first; the table camera's not near one
+                llm = [(np.array(h_["xy"]), float(h_["top_mm"])) for h_ in json.loads(Path(a.hyps).read_text())]
+                for k_, (c_, t_) in enumerate(llm):  # its height from the table camera where that saw it
+                    near = [tt for cc, tt in hyps if np.linalg.norm(cc - c_) < 0.03]
+                    if near:
+                        llm[k_] = (c_, max(near))
+                hyps = llm + [(cc, tt) for cc, tt in hyps if all(np.linalg.norm(cc - c_) >= 0.03 for c_, _ in llm)]
+                hyps = hyps[:4]
+                print(f"orbiting {len(hyps)} things: {len(llm)} the language model pointed at")
             for k, (ctr, top) in enumerate(hyps):
                 orb = scan.orbit(q_end, ctr, top, T_fc, min_tip_mm=max(top + 30.0, 60.0), speed=40.0)
                 if not orb:
@@ -326,12 +336,15 @@ def main() -> None:
                                      wpr_of(To[:3, :3]), lifts=(tip_mm, 150.0))
                 if jm is None:
                     continue
-                extra += [list(r) for r in jm] + orb
-                q_end = np.asarray(orb[-1][:6], float)
+                extra += [list(r) for r in jm] + orb + orb[::-1]  # and back the way it came: the arm ends where the
+                q_end = np.asarray(orb[0][:6], float)              # orbit started (clear), never stranded in a twist
                 print(f"orbit {k + 1}: round the thing at ({ctr[0] * 1000:.0f}, {ctr[1] * 1000:.0f}) mm, "
                       f"{top:.0f} mm tall: {len(orb) * P.DT:.0f} s")
-            if extra:
-                scan_part = scan_part + extra + [extra[-1]] * 10
+            return extra + [extra[-1]] * 10 if extra else []
+
+        orbits_pending = bool(a.angled and first is not None and a.hyps)  # after the sweep: the LLM's answer is in
+        if a.angled and first is not None and not a.hyps:
+            scan_part = scan_part + plan_orbits(np.asarray(scan_part[-1][:6], float))
         rows += scan_part
         low = scan.lowest_tip_mm(scan_part)
         print(f"the scan: {len(scan_part) * P.DT:.0f} s, fingertips never lower than {low:.0f} mm (safe height {tip_mm:.0f})")
@@ -397,6 +410,17 @@ def main() -> None:
                                                   mat3x3=(flange_pose(jn) @ T_fc)[:3, :3]))
             rr.log("world/camera", rr.Pinhole(focal_length=cam["fx"], width=cam["size"][0], height=cam["size"][1],
                                               image_plane_distance=0.05))
+            if orbits_pending and moved and last.get("queued") == 0 and still_since and time.time() - still_since > 0.5:
+                orbits_pending = False  # the sweep is done (and the language model has answered): plan the orbits now
+                with pull.lock:
+                    q_here = np.asarray(pull.jq[-1][:6], float)
+                orb_rows = plan_orbits(q_here)
+                if orb_rows:
+                    feed_err.clear()
+                    rows = orb_rows
+                    threading.Thread(target=feeding, daemon=True).start()
+                    still_since = None
+                    continue
             if moved and last.get("queued") == 0:
                 still_since = still_since or time.time()
                 if time.time() - still_since > 2.0 and fwd is not None:

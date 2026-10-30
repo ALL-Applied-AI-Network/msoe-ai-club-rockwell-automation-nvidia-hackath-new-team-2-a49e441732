@@ -10,6 +10,7 @@ token never leaves the Mac.
 from __future__ import annotations
 
 import base64
+import os
 import queue
 import socket
 import subprocess
@@ -22,7 +23,7 @@ import requests
 from calibration.geometry import flange_pose
 from lab.isaaccell import SSH
 
-PORT = 8767
+PORT = int(os.getenv("DEPTH_PORT", "8767"))
 REMOTE = "~/cell-isaac"
 
 
@@ -89,6 +90,8 @@ class DepthLink:
                 link.s.post(link.url + "reset", json=lens, timeout=10).raise_for_status()
                 return link
             except Exception:
+                if PORT != 8767:  # a second (test) service: never restart, a restart kills every depth service
+                    raise
                 deploy(True)
         tunnel()
         link = cls()

@@ -165,6 +165,7 @@ def match(first: dict, objs, img: np.ndarray, near: float = 0.08) -> tuple[dict,
     return {"moves": moves, "names": names, "why": first.get("why"), "see": first.get("say")}, missing
 
 
+LAST_SNAP: dict = {}  # what the last close look measured: centre (m), w, l (mm), angle (deg)
 HOVER_ABOVE_MM = 25.0  # the fingertips this far over the target's top while the wrist camera takes its still picture
 SNAP_MIN_MM = 7.0      # narrower than this in the still picture: only part of it seen
 SNAP_FAR_MM = 25.0     # the picture's object further than this from where depth put it: not trusted
@@ -306,6 +307,7 @@ def snap(c, o, plan, out, say=print, cols=None):
     # the jaws close across a side: the side angle or 90 deg from it, whichever is nearer the planned yaw
     cands = [ang % 180, (ang + 90) % 180]
     yaw = min(cands, key=lambda a_: abs(((a_ - plan.grip.yaw) + 90) % 180 - 90))
+    LAST_SNAP.update(centre=cxy, w=float(w), l=float(l), angle=float(ang))
     g = dataclasses.replace(plan.grip, x=float(cxy[0]), y=float(cxy[1]), yaw=float(yaw))
     return dataclasses.replace(plan, grip=g), (f"{min(w, l):.1f} mm across, moved the aim {shift:.1f} mm, "
                                                f"jaws at {yaw:.0f} deg")
@@ -606,6 +608,21 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
                 a_ = fut.result()
             first.update((a_ or {}).get("json") or {})
             first["_s"] = time.time() - t_
+            try:  # where it pointed, on the table: the scan orbits these too (the table camera misses small cubes)
+                from calibration.geometry import pixel_to_base
+                a0, b0, sc = crop_box(before_img)
+                hy = []
+                for th in first.get("things") or []:
+                    fu, fv = th.get("at", [None, None])
+                    if fu is None:
+                        continue
+                    uv = np.array([[a0[0] + fu * (b0[0] - a0[0]), a0[1] + fv * (b0[1] - a0[1])]]) / sc
+                    xy = pixel_to_base(load()["table"], uv, SURFACE_Z)[0][:2]
+                    big = any(w_ in th.get("name", "").lower() for w_ in ("bin", "box", "cup", "container"))
+                    hy.append({"name": th.get("name"), "xy": [float(xy[0]), float(xy[1])], "top_mm": 55.0 if big else 20.0})
+                (out / "hyps.json").write_text(json.dumps(hy, indent=1))
+            except Exception as e:
+                say(f"  (couldn't place the LLM's things on the table: {e})")
             if first.get("say"):
                 tell(first["say"])
             mv = "; ".join(f"{m.get('thing')} -> {m.get('into') or 'pile ' + str(m.get('pile'))}" for m in first.get("moves") or [])
@@ -630,6 +647,7 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
           ["--first", str(out / "first.npz"), "--speed", str(SWEEP_MM_S), "--delay-ms", str(DELAY_MS)] + ORBITS
     if t.get("mode") == "depth_test":
         cmd += ["--record", str(out / "video")]
+    cmd += ["--hyps", str(out / "hyps.json")]
     p = subprocess.Popen([sys.executable, "-u", "-m", "lab.depth_check", "--no-reset", "--trial", task, *cmd],
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
     lines_, timing = [], {}
@@ -770,14 +788,41 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
                 continue
         cur, q = where(c)
         plan_m = HD.put(o, dest, objs, cols, cur, place)
+        looked = None
+        if not plan_m.ok and ("no grip" in plan_m.why or "doesn't fit" in plan_m.why):
+            # the depth outline says it's too wide for the jaws or the bin: measure it from still pictures first, and
+            # decide with that (a smeared map made a 15 mm cube 40 mm across)
+            tell(f"The depth map says {plan_m.why}; measuring {nm(o.id)} up close before deciding.")
+            from lab import grasp as _gr
+            g0 = _gr.Grip(float(o.centre[0]), float(o.centre[1]), 4.0, 0.0, 0, 0.0)
+            try:
+                looked, why_ = snap(c, o, HD.Plan(True, "", grip=g0, carry_mm=max(o.top_mm + 60.0, 90.0)), out, say,
+                                    cols=cols)
+            except Exception as e:
+                looked, why_ = None, f"{type(e).__name__}: {e}"
+            if looked is not None:
+                cx_, cy_ = LAST_SNAP["centre"]
+                a_ = np.radians(LAST_SNAP["angle"])
+                R_ = np.array([[np.cos(a_), -np.sin(a_)], [np.sin(a_), np.cos(a_)]])
+                half = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]]) * np.array([LAST_SNAP["w"], LAST_SNAP["l"]]) / 2000
+                o.top_footprint = o.footprint = half @ R_.T + [cx_, cy_]  # its outline as the close look measured it
+                o.centre = np.array([cx_, cy_])
+                plan_m = HD.put(o, dest, objs, cols, cur, place)
+                if plan_m.ok:
+                    plan_m = dataclasses.replace(plan_m, grip=looked.grip)
+            else:
+                tell(f"The close look couldn't settle it either ({why_}).")
         if not plan_m.ok:
             tell(f"I can't work out how to pick up {nm(o.id)}: {plan_m.why}.")
             continue
         state("arm", f"hovering over {nm(o.id)} for a still picture")
-        try:
-            snapped, why_ = snap(c, o, plan_m, out, say, cols=cols)
-        except Exception as e:
-            snapped, why_ = None, f"the close look failed ({type(e).__name__}: {e})"
+        if looked is not None:  # already looked, from right over it
+            snapped, why_ = plan_m, f"{min(LAST_SNAP['w'], LAST_SNAP['l']):.1f} mm across (measured up close)"
+        else:
+            try:
+                snapped, why_ = snap(c, o, plan_m, out, say, cols=cols)
+            except Exception as e:
+                snapped, why_ = None, f"the close look failed ({type(e).__name__}: {e})"
         if snapped is None:
             tell(f"I looked closely at {nm(o.id)} and I'm not going down: {why_}.")
             continue
@@ -842,7 +887,18 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
     for x, s_ in lines:
         say(f"  {'PASS' if x else 'FAIL'}  {s_}")
     if real:
-        tell("Done. Look at the table: there's no simulator to check it here.")
+        wanted = len(plan.get("moves") or [])
+        if wanted and not done:
+            ok = False
+            tell(f"I didn't move anything: all {wanted} move{'s' * (wanted != 1)} I planned got stopped (the reasons are "
+                 "above). That's a failure, not a pass.")
+        elif wanted and len(done) < wanted:
+            ok = False
+            tell(f"I did {len(done)} of the {wanted} moves I planned (the reasons for the rest are above). "
+                 "Look at the table to check those.")
+        else:
+            tell(f"Done: {len(done)} move{'s' * (len(done) != 1)}. Look at the table: there's no simulator to check it "
+                 "here.")
     else:
         tell(("Done, and the simulator agrees: " if ok else "Done, but the simulator says it's not right: ") +
              "; ".join(s_ for _, s_ in lines) + ".")
