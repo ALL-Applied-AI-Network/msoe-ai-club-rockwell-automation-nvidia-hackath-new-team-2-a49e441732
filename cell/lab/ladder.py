@@ -169,6 +169,32 @@ SNAP_MIN_MM = 7.0      # narrower than this in the still picture: only part of i
 SNAP_FAR_MM = 25.0     # the picture's object further than this from where depth put it: not trusted
 
 
+PARK = (0.36, -0.05, 150.0)  # fingertips here (m, m, mm up), straight down: a neutral pose between jobs
+
+
+def park(c) -> bool:
+    """The arm to PARK, straight down (after the scan's orbits leave the wrist tilted, possibly at the edge of its
+    reach, where moves planned from it fail). True if it got there."""
+    from calibration.geometry import UF0_Z_MM
+    from calibration.kinematics import DOWN, tool_ik, tool_pose, wpr_of
+    from lab import scan as SC
+    cur, q = where(c)
+    goal = P.uf0(PARK[0], PARK[1], PARK[2])
+    tm = np.array([goal[0], goal[1], goal[2] - UF0_Z_MM]) / 1000
+    try:
+        qg = tool_ik(tm, DOWN, q)
+    except ValueError:
+        return False
+    Tf = tool_pose(q)
+    for lift in (PARK[2], 250.0, 350.0):
+        rows = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tm, DOWN, height_mm=lift)
+        if rows is not None:
+            SC.feed(c, [list(r) for r in rows], lambda: queued_of(c))
+            wait_idle(c)
+            return True
+    return False
+
+
 def queued_of(c) -> int:
     return c._call("GET", "observation", params={"cameras": "wrist", "width": 64, "height": 36, "format": "jpeg"})["queued"]
 
@@ -188,7 +214,7 @@ def snap(c, o, plan, out, say=print, cols=None):
     tm = lambda p_: np.array([p_[0], p_[1], p_[2] - UF0_Z_MM]) / 1000
     z_top = SURFACE_Z + o.top_mm / 1000
 
-    def hover(target):  # the camera over target (base m): fingertips HOVER_ABOVE_MM over its top, clear of neighbours
+    def hover(target, again=True):  # the camera over target (base m): fingertips HOVER_ABOVE_MM over its top, clear of neighbours
         cur, q = where(c)
         tip_xy = np.asarray(target) - SC.cam_offset(q, T_fc)
         near = HD.path_max(cols, HD.column_heights(cols), tip_xy, tip_xy, None, half_mm=30) if cols is not None else 0
@@ -202,7 +228,9 @@ def snap(c, o, plan, out, say=print, cols=None):
             if rows is not None:
                 break
         if rows is None:
-            return False
+            if not again:
+                return False
+            return park(c) and hover(target, again=False)  # from a neutral pose, once
         SC.feed(c, [list(r) for r in rows], lambda: queued_of(c))
         wait_idle(c)
         time.sleep(0.4)  # still
@@ -678,6 +706,9 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
     pic = labelled(before_img, objs)
     cv2.imwrite(str(out / "before.jpg"), cv2.cvtColor(pic, cv2.COLOR_RGB2BGR))
     state("where", f"map done: {len(objs)} things ({sum(o.container for o in objs)} open containers)")
+    state("arm", "back to a neutral pose over the table")
+    if not park(c):
+        say("  (couldn't park the arm after the scan: planning from where it is)")
     if t.get("mode") == "depth_test":
         return depth_looks(c, objs, cols, out, task, t0, say, tell, state, real)
     tell(f"Scan done. The depth map has {_things(objs)}.")

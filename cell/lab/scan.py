@@ -313,8 +313,14 @@ def orbit_at(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 7
         Tt = Tc @ np.linalg.inv(T_tc)
         poses.append((Tt[:3, 3], wpr_of(Tt[:3, :3])))
     rows, p_prev = [], None
+    box = [(lo + 10.0, hi - 10.0) for lo, hi in P.TCP_BOX]  # the cell refuses fingertips outside its box: 10 mm inside
     for tip, wpr in poses:
         if (tip[2] - SURFACE_Z) * 1000 < min_tip_mm:
+            continue
+        t_uf0 = (tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM)
+        if any(not (lo <= v <= hi) for v, (lo, hi) in zip(t_uf0, box)):
+            if rows:
+                break  # the arc ends before it would leave the box (an orbit reached x 146 mm, under the 150 limit)
             continue
         steps = 1 if p_prev is None else max(1, int(np.ceil(np.linalg.norm(tip - p_prev[0]) / (speed / 1000 * P.DT))),
                                              int(np.ceil(np.abs(((wpr - p_prev[1]) + 180) % 360 - 180).max() / 1.0)))
