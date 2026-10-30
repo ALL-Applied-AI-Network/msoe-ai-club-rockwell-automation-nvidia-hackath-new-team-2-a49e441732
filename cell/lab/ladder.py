@@ -189,9 +189,9 @@ def park(c) -> bool:
     for lift in (PARK[2], 250.0, 350.0):
         rows = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tm, DOWN, height_mm=lift)
         if rows is not None:
-            SC.feed(c, [list(r) for r in rows], lambda: queued_of(c))
+            ok_ = SC.feed(c, [list(r) for r in rows], lambda: queued_of(c))
             wait_idle(c)
-            return True
+            return ok_
     return False
 
 
@@ -231,7 +231,9 @@ def snap(c, o, plan, out, say=print, cols=None):
             if not again:
                 return False
             return park(c) and hover(target, again=False)  # from a neutral pose, once
-        SC.feed(c, [list(r) for r in rows], lambda: queued_of(c))
+        if not SC.feed(c, [list(r) for r in rows], lambda: queued_of(c), say=say):
+            wait_idle(c)
+            return False  # (an unsafe pose on the way: not sent)
         wait_idle(c)
         time.sleep(0.4)  # still
         return True
@@ -687,6 +689,8 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
         elif l.startswith("orbit "):
             tell("Circling " + l.split(": ", 1)[1].split(":")[0] + " with the camera pointed at it, to see its sides "
                  "and get its height from many angles.")
+        elif l.startswith("not sending that move"):
+            tell("I skipped part of the scan: " + l.split(": ", 1)[1] + ". Going on with what I've seen.")
         elif l.startswith("stills:"):
             tell("Done looking: " + l.split(":", 1)[1].strip() + ". Each one taken with the arm still, so its pose "
                  "is exact. The GPU box is turning them into a 3D map.")
@@ -809,9 +813,19 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
             say(f"  first pick sent at {timing['t_pick']} s")
         what_ = f"{nm(o.id)} -> " + (nm(dest.id) if dest else "a free spot")
         from lab import scan as SC
-        SC.feed(c, jrows, lambda: c._call("GET", "observation", params={"cameras": "wrist", "width": 64, "height": 36,
-                                                                         "format": "jpeg"})["queued"],
-                each=lambda q: state("arm", f"moving {what_} ({q / 10:.0f} s of motion queued)"))
+        why_bad = next((w for w in map(SC.unsafe, jrows) if w), None)  # a pick goes whole or not at all (never
+        if why_bad:  # stopped part-way with the thing in the fingers)
+            tell(f"I'm not picking up {nm(o.id)}: the move would put {why_bad}. Skipping it.")
+            continue
+        sent_all = SC.feed(c, jrows, lambda: c._call("GET", "observation", params={"cameras": "wrist", "width": 64,
+                                                                                    "height": 36, "format": "jpeg"})["queued"],
+                           each=lambda q: state("arm", f"moving {what_} ({q / 10:.0f} s of motion queued)"), say=say)
+        if not sent_all:
+            wait_idle(c)
+            tell(f"I stopped moving {nm(o.id)} part-way: the next pose would have been unsafe for the arm (too far "
+                 "out, or folding into itself). Skipping it; I'll go on with the rest.")
+            park(c)
+            continue
         wait_idle(c, lambda q: state("arm", f"moving {what_} ({q / 10:.0f} s of motion left)"))
         state("arm", f"done: {what_}")
         done.append(m)

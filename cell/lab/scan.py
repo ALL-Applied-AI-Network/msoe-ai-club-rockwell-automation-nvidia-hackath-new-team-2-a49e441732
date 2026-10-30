@@ -159,10 +159,36 @@ def lowest_tip_mm(rows) -> float:
     return float((tcp[:, 2] - P.TABLE_UF0).min())
 
 
-def feed(c, rows, queued, chunk: int = 40, keep: int = 80, each=None) -> None:
+def unsafe(q) -> str | None:
+    """Why the arm shouldn't be sent to joints q, or None: too far out (or far out and low: the real arm hit itself at
+    509 mm out, 71 mm up, Oct 30), into itself (lab/armcheck's model), or outside the cell's fingertip box."""
+    from lab import armcheck
+    q = np.asarray(q, float)
+    tcp = np.array(P.tcp_rows(np.asarray([[*q[:6], q[6] if len(q) > 6 else 0.0]])))[0]
+    reach = float(np.hypot(tcp[0], tcp[1]))
+    up = float(tcp[2] - P.TABLE_UF0)
+    if reach > REACH_MM + 15:
+        return f"the fingertips {reach:.0f} mm out from the base (the arm hits itself reaching that far)"
+    if reach > FAR_MM + 15 and up < FAR_TIP_MM - 10:
+        return f"the fingertips {reach:.0f} mm out and only {up:.0f} mm up (the arm hit itself reaching far and low)"
+    for k, (lo, hi) in enumerate(P.TCP_BOX):
+        if not lo <= tcp[k] <= hi:
+            return "the fingertips outside the cell's allowed box"
+    why = armcheck.self_problem(armcheck.shapes(q[:6], float(q[6]) if len(q) > 6 else 0.0))
+    return why
+
+
+def feed(c, rows, queued, chunk: int = 40, keep: int = 80, each=None, say=None) -> bool:
     """Post joint rows a chunk at a time as the cell plays them: never more than `keep` queued (the real cell's queue
-    is small: a whole scan at once was refused, "action queue is full"). queued(): how many it has queued now."""
+    is small: a whole scan at once was refused, "action queue is full"). queued(): how many it has queued now.
+    Every row is checked first (unsafe): at the first that isn't safe nothing more is sent (say() says why) and it
+    returns False, so the caller skips that move instead of faulting the arm. True if all were sent."""
     import time
+    bad = next(((k, w) for k, r in enumerate(rows) if (w := unsafe(r))), None)
+    if bad is not None:
+        k, w = bad
+        (say or print)(f"not sending that move: {w}")
+        rows = rows[:k]
     i = 0
     while i < len(rows):
         q = queued()
@@ -178,6 +204,7 @@ def feed(c, rows, queued, chunk: int = 40, keep: int = 80, each=None) -> None:
             if "full" not in str(e):
                 raise
             time.sleep(0.5)
+    return bad is None
 
 
 REACH = ((0.26, 0.53), (-0.36, 0.14))  # the most the scan region (where the camera looks) may grow to, x, y m: the
