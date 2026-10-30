@@ -159,6 +159,13 @@ def lowest_tip_mm(rows) -> float:
     return float((tcp[:, 2] - P.TABLE_UF0).min())
 
 
+# The joints the real arm has run without a fault (4123 poses: the data runs and the scans, Oct 28-30). Outside them
+# it has hit itself twice: 509 mm out and low (J2 62.7, J3 41.7), and folded back near the base on an orbit (J1 57.4,
+# J2 -17.7, J3 -69.0). Its own shape model (lab/armcheck) passed both, so this, measured on the arm, is the guard.
+SAFE_JOINTS = ((-74.0, 42.0), (-10.0, 64.0), (-67.0, 45.0), (-78.0, 56.0), (-86.0, 0.0), (-128.0, 132.0))
+MIN_REACH_MM = 200.0  # the fingertips at least this far from the base's axis (the orbit fault: 188 mm)
+
+
 def unsafe(q) -> str | None:
     """Why the arm shouldn't be sent to joints q, or None: too far out (or far out and low: the real arm hit itself at
     509 mm out, 71 mm up, Oct 30), into itself (lab/armcheck's model), or outside the cell's fingertip box."""
@@ -167,6 +174,11 @@ def unsafe(q) -> str | None:
     tcp = np.array(P.tcp_rows(np.asarray([[*q[:6], q[6] if len(q) > 6 else 0.0]])))[0]
     reach = float(np.hypot(tcp[0], tcp[1]))
     up = float(tcp[2] - P.TABLE_UF0)
+    for k, (lo, hi) in enumerate(SAFE_JOINTS):
+        if not lo <= q[k] <= hi:
+            return f"J{k + 1} at {q[k]:.0f} deg, outside what the arm has run safely ({lo:.0f} to {hi:.0f})"
+    if reach < MIN_REACH_MM:
+        return f"the fingertips only {reach:.0f} mm from the base (the arm folds back into itself)"
     if reach > REACH_MM + 15:
         return f"the fingertips {reach:.0f} mm out from the base (the arm hits itself reaching that far)"
     if reach > FAR_MM + 15 and up < FAR_TIP_MM - 10:
@@ -386,6 +398,8 @@ def orbit_at(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 7
                 tp = tip if p_prev is None else p_prev[0] + (tip - p_prev[0]) * f
                 wp = wpr if p_prev is None else p_prev[1] + (((wpr - p_prev[1]) + 180) % 360 - 180) * f
                 q = ik(tp, wp, q, near=p_prev is not None)
+                if unsafe(q):
+                    raise ValueError("unsafe")  # the arc ends before the arm leaves what it has run safely
                 rows.append([*q.tolist(), 0.0])
         except ValueError:
             if rows:
