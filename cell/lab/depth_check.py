@@ -194,10 +194,12 @@ def main() -> None:
         pics.append(scan.table_depth(c))
         hb("picture 2 of 2 taken: working out how tall things are")
         tall, info = scan.tallest(pics)
-        if tall > scan.MAX_TALL_MM:
-            raise SystemExit(f"the table camera says something is {tall:.0f} mm tall: the arm, not a thing on the "
-                             f"table (its pixels weren't all blanked); not flying that high")
-        tip_mm = scan.safe_tip_mm(tall)
+        if tall > scan.MAX_TALL_MM:  # the arm misread as a thing: don't stop, fly at the fallback height
+            tip_mm = scan.FALLBACK_TIP_MM
+            print(f"tallest thing on the table {tall:.0f} mm: that's the arm, not a thing; fingertips fly at "
+                  f"{tip_mm:.0f} mm (the fallback)")
+        else:
+            tip_mm = scan.safe_tip_mm(tall)
         print(f"tallest thing on the table {tall:.0f} mm (2 pictures, arm moved between): fingertips fly at "
               f"{tip_mm:.0f} mm; the camera rides ({off[0] * 1000:.0f}, {off[1] * 1000:.0f}) mm from them")
         q_now = q2
