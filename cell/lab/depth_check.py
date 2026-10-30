@@ -39,29 +39,13 @@ def tip_m(p):
     return np.array([p[0], p[1], p[2] - UF0_Z_MM]) / 1000
 
 
-def scan_rows(q, start, speed: float, hop: float = 120.0) -> list:
-    """Joint rows along LINES from `start` (UF0 mm) at joints q: hop to each line's start, glide along it."""
-    rows, p, r = [], start, float(DOWN[2])
-    for a, b in LINES:
-        for goal, v in ((P.uf0(*a, CAM_MM), hop), (P.uf0(*b, CAM_MM), speed)):
-            seg = []
-            try:
-                for row in P.line(p, goal, r, r, 0, v):
-                    q = tool_ik(tip_m(row[:3]), row[3:6], q, near=True)
-                    seg.append([*q.tolist(), 0.0])
-            except ValueError:
-                print(f"skipped a leg to {np.round(goal[:2])} mm: out of reach on this wrist branch")
-                break
-            rows += seg
-            p = goal
-    return rows + [rows[-1]] * 10
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--trial", default="sort_cubes")
     ap.add_argument("--no-reset", action="store_true")
-    ap.add_argument("--speed", type=float, default=60.0, help="mm/s along the scan lines")
+    ap.add_argument("--speed", type=float, default=None, help="mm/s along the scan lines (60; --fast: 150)")
+    ap.add_argument("--fast", action="store_true",
+                    help="step 4: the safe height from the table camera, lines over the whole table (lab/scan.py)")
     a = ap.parse_args()
 
     from lab.isaaccell import PORT, IsaacCell, tunnel
@@ -92,24 +76,42 @@ def main() -> None:
     rr.log("world/table", rr.Boxes3D(centers=[[0.42, -0.1, SURFACE_Z - 0.001]], half_sizes=[[0.2, 0.3, 0.001]],
                                      colors=[[235, 235, 235]]), static=True)
 
+    from lab import scan
+    from cell_client import CellClient
+    c = CellClient(url, token="sim")
+    speed = a.speed or (150.0 if a.fast else 60.0)
+    if a.fast:
+        tall, info = scan.tallest(c)
+        tip_mm = scan.safe_tip_mm(tall)
+        segs = None  # set once the start pose is known: the camera's lines, shifted back by its offset
+        print(f"tallest thing on the table {tall:.0f} mm ({info['above_5mm']} depth pixels above 5 mm): "
+              f"fingertips fly at {tip_mm:.0f} mm")
+    else:
+        tip_mm, segs = CAM_MM, LINES
     pull = Pull(url, "sim", inflight=3)
     time.sleep(1.0)
     with pull.lock:
         q_now = np.asarray(pull.jq[-1], float)[:6]
-    start = P.uf0(0.26, -0.30, CAM_MM)
+    if segs is None:
+        mid = P.uf0(0.36, -0.10, tip_mm)
+        off = scan.cam_offset(tool_ik(tip_m(mid), DOWN, q_now), T_fc)
+        segs = scan.for_camera(scan.lines(), off)
+        print(f"the camera rides ({off[0] * 1000:.0f}, {off[1] * 1000:.0f}) mm from the fingertips: lines shifted back")
+    start = P.uf0(*segs[0][0], tip_mm)
     q0 = tool_ik(tip_m(start), DOWN, q_now)
     T = tool_pose(q_now)
-    rows = [list(r) for r in P.joint_move(q_now, T[:3, 3], wpr_of(T[:3, :3]), q0, tip_m(start), DOWN, height_mm=CAM_MM)]
+    rows = [list(r) for r in P.joint_move(q_now, T[:3, 3], wpr_of(T[:3, :3]), q0, tip_m(start), DOWN, height_mm=tip_mm)]
     n_move = len(rows)
     rows += twitch(q0)
     n_twitch = len(rows)
-    rows += scan_rows(q0, start, a.speed)
-    from cell_client import CellClient
-    c = CellClient(url, token="sim")
+    scan_part = scan.sweep(q0, tip_mm, speed, segs, start)
+    rows += scan_part
+    low = scan.lowest_tip_mm(scan_part)
+    print(f"the scan: {len(scan_part) * P.DT:.0f} s, fingertips never lower than {low:.0f} mm (safe height {tip_mm:.0f})")
     for k in range(0, len(rows), 100):
         c.act(rows[k:k + 100], P.DT)
     print(f"motion: {len(rows)} rows, {len(rows) * P.DT:.0f} s of arm time (twitch from {n_move * P.DT:.0f} s to "
-          f"{n_twitch * P.DT:.0f} s, then the scan at {a.speed:.0f} mm/s)")
+          f"{n_twitch * P.DT:.0f} s, then the scan at {speed:.0f} mm/s)")
 
     fwd = None
     t_wall, moved, still_since, tw = time.time(), False, None, None
@@ -159,6 +161,7 @@ def main() -> None:
     res = bench(xyz, objects)
     res["stats"] = {k: g[k] for k in ("frames", "refs", "searched", "points", "something", "nothing", "ms_per_ref")}
     res["wall_s"] = round(time.time() - t_wall)
+    res["scan"] = {"speed_mm_s": speed, "tip_mm": tip_mm, "lowest_tip_mm": round(low, 1), "scan_s": round(len(scan_part) * P.DT, 1)}
     (out / "result.json").write_text(json.dumps(res, indent=1, default=float))
     (out / "grid.json").write_text(json.dumps(g))
     sheet(xyz, objects, str(out / "heights.jpg"))
