@@ -283,6 +283,7 @@ def main() -> None:
         print(f"tallest thing on the table {tall:.0f} mm (2 pictures, arm moved between): fingertips fly at "
               f"{tip_mm:.0f} mm; the camera rides ({off[0] * 1000:.0f}, {off[1] * 1000:.0f}) mm from them")
         q_now = q2
+    segs = [c_ for c_ in (scan.clip_reach(a_, b_) for a_, b_ in segs) if c_ is not None]  # inside the safe reach
     for k_ in range(len(segs)):  # the first line whose start the arm can reach from here
         try:
             go(q_now, segs[k_][0], tip_mm)

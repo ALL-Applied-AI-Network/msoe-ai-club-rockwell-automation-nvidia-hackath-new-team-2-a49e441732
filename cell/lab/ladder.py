@@ -423,6 +423,8 @@ def free_spot(h: np.ndarray, cols: dict, taken: list, near=None) -> np.ndarray |
     gx, gy = np.meshgrid(xs, ys, indexing="ij")
     (a, b), (c, d) = SPOTS
     ok = (gx > a) & (gx < b) & (gy > c) & (gy < d) & (clear >= SPACE_MM / 1000)
+    from lab.scan import FAR_MM
+    ok &= np.hypot(gx, gy) * 1000 <= FAR_MM  # set things down well inside the arm's reach
     room = clear.copy()
     for t in taken:
         dt = np.hypot(gx - t[0], gy - t[1])

@@ -27,6 +27,26 @@ FALLBACK_TIP_MM = 120.0  # when the one picture can't be trusted (the arm misrea
 MAX_TALL_MM = 200.0  # taller than this is the arm misread as a thing (nothing on this table is)
 LINE_GAP = 0.10
 HOP = 150.0  # mm/s between lines
+REACH_MM = 460.0     # fingertips at most this far from the base's axis while looking (the real arm hit itself at 509
+FAR_MM = 420.0       # mm out, 71 mm up, Oct 30): and beyond FAR_MM of reach, at least FAR_TIP_MM up
+FAR_TIP_MM = 90.0
+
+
+def clip_reach(a, b, r_mm: float = REACH_MM):
+    """The part of the fingertip line a -> b (xy, m) within r_mm of the base's axis, or None."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    ts = np.linspace(0, 1, 201)
+    pts = a + (b - a) * ts[:, None]
+    ok = np.hypot(pts[:, 0], pts[:, 1]) * 1000 <= r_mm
+    if not ok.any():
+        return None
+    i0, i1 = np.nonzero(ok)[0][[0, -1]]
+    return tuple(pts[i0]), tuple(pts[i1])
+
+
+def height_at(xy, tip_mm: float) -> float:
+    """The fingertip height to fly at over xy: tip_mm, raised to FAR_TIP_MM far out."""
+    return max(tip_mm, FAR_TIP_MM) if np.hypot(*xy) * 1000 > FAR_MM else tip_mm
 
 
 def table_depth(client) -> tuple[np.ndarray, np.ndarray]:
@@ -112,10 +132,14 @@ def sweep(q, tip_mm: float, speed: float, segs=None, start=None, say=print) -> l
     point `start` (default: the first line's start): hop to each line's start at HOP mm/s, glide along it at `speed`.
     Each row is solved on the same wrist branch as the one before; a leg that can't be is skipped."""
     segs = lines() if segs is None else segs
-    p = P.uf0(*segs[0][0], tip_mm) if start is None else start
+    segs = [c for c in (clip_reach(a, b) for a, b in segs) if c is not None]  # inside the arm's safe reach
+    p = P.uf0(*segs[0][0], height_at(segs[0][0], tip_mm)) if start is None else start
     rows, r = [], float(DOWN[2])
+    # far out the arm must fly higher (the real arm faulted reaching far and low): if any line goes far out, the
+    # whole sweep flies at that height (hops between lines at mixed heights dipped low far out)
+    h = max(max(height_at(a, tip_mm), height_at(b, tip_mm)) for a, b in segs)
     for a, b in segs:
-        for goal, v in ((P.uf0(*a, tip_mm), HOP), (P.uf0(*b, tip_mm), speed)):
+        for goal, v in ((P.uf0(*a, h), HOP), (P.uf0(*b, h), speed)):
             seg = []
             try:
                 for row in P.line(p, goal, r, r, 0, v):
@@ -318,6 +342,11 @@ def orbit_at(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 7
         if (tip[2] - SURFACE_Z) * 1000 < min_tip_mm:
             continue
         t_uf0 = (tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM)
+        rr_ = np.hypot(tip[0], tip[1]) * 1000
+        if rr_ > REACH_MM or (rr_ > FAR_MM and (tip[2] - SURFACE_Z) * 1000 < FAR_TIP_MM):
+            if rows:
+                break  # the arc ends before reaching too far out (or too far and low)
+            continue
         if any(not (lo <= v <= hi) for v, (lo, hi) in zip(t_uf0, box)):
             if rows:
                 break  # the arc ends before it would leave the box (an orbit reached x 146 mm, under the 150 limit)
