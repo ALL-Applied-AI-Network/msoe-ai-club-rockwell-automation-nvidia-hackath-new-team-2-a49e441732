@@ -273,6 +273,23 @@ def _look_rot(R0, z_to):
 
 
 def orbit(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 75.0, say=print) -> list:
+    """The longest orbit (orbit_at) over a few heights on the sphere and both directions round: the arm can't reach
+    every arc (an arc ends where the wrist branch runs out)."""
+    global ORBIT_EL
+    best, keep = [], ORBIT_EL
+    try:
+        for el in (70.0, 62.0, 55.0):
+            ORBIT_EL = el
+            for rev in (False, True):
+                r = orbit_at(q, centre, top_mm, T_fc, min_tip_mm, speed, rev)
+                if len(r) > len(best):
+                    best = r
+    finally:
+        ORBIT_EL = keep
+    return best
+
+
+def orbit_at(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 75.0, rev: bool = False) -> list:
     """Joint rows flying the wrist camera along an arc of a sphere ORBIT_R round the hypothesis (centre xy, at half
     its height), always looking at it: the 10 Hz video sees it from many angles (its height, its sides). Points
     where the fingertips would come below min_tip_mm, or out of reach on this wrist branch, end the arc there."""
@@ -285,7 +302,8 @@ def orbit(q, centre, top_mm: float, T_fc, min_tip_mm: float, speed: float = 75.0
     az0 = np.degrees(np.arctan2(-o[1], -o[0]))  # facing the robot's base
     el = np.radians(ORBIT_EL)
     poses = []
-    for az in np.linspace(az0 - ORBIT_SPAN / 2, az0 + ORBIT_SPAN / 2, 25):
+    azs = np.linspace(az0 - ORBIT_SPAN / 2, az0 + ORBIT_SPAN / 2, 25)
+    for az in (azs[::-1] if rev else azs):
         a = np.radians(az)
         c = o + ORBIT_R * np.array([np.cos(el) * np.cos(a), np.cos(el) * np.sin(a), np.sin(el)])
         Rc = _look_rot(R0, o - c)
