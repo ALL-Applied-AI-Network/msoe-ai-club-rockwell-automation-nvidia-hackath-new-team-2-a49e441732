@@ -304,6 +304,10 @@ def depth_looks(c, objs, cols, out, task, t0, say, tell, state, real) -> dict:
                "depth_centre_mm": (o.centre * 1000).round(1).tolist(), "close_look": why_}
         if snapped is not None:
             rec["look_centre_mm"] = [round(snapped.grip.x * 1000, 1), round(snapped.grip.y * 1000, 1)]
+            import re as _re
+            m_ = _re.search(r"([\d.]+) mm across", why_)
+            rec["look_width_mm"] = float(m_[1]) if m_ else None
+            rec["snaps"] = [f"snap_{o.id}_1.jpg", f"snap_{o.id}_2.jpg"]
         # higher: the camera ~350 mm over it, still; wrist and table depth (the wrist depth camera at its range)
         state("arm", f"still depth pictures over #{o.id}")
         try:

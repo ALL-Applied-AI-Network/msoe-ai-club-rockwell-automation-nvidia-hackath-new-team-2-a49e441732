@@ -289,6 +289,17 @@ def main() -> None:
                 threading.Thread(target=ladder_loop, args=(names,), daemon=True).start()
                 board.add("action", f"ladder: {', '.join(names)}")
                 self._json({"ok": True, "tasks": names})
+            elif self.path == "/depthscore":  # the depth test scored against the real sizes typed in on the page
+                from lab.depth_score import score
+                d = (RUNS / body.get("dir", "")).resolve()
+                if RUNS.resolve() not in d.parents or not (d / "result.json").exists():
+                    return self._json({"error": "no such depth test"}, 404)
+                real = body.get("real") or {}
+                (d / "real.json").write_text(json.dumps(real, indent=1))
+                try:
+                    self._json(score(d, real))
+                except Exception as e:
+                    self._json({"error": f"{type(e).__name__}: {e}"}, 500)
             elif self.path == "/ladder/stop":
                 lad["stop"] = True
                 for n, r in lad["results"].items():
