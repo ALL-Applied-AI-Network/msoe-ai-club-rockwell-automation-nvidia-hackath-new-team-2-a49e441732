@@ -156,7 +156,8 @@ def feed(c, rows, queued, chunk: int = 40, keep: int = 80, each=None) -> None:
             time.sleep(0.5)
 
 
-REACH = ((0.22, 0.53), (-0.40, 0.18))  # the most the scan region may grow to (x, y m): what the arm reaches down-looking
+REACH = ((0.26, 0.53), (-0.36, 0.14))  # the most the scan region (where the camera looks) may grow to, x, y m: the
+# fingertips ride ~96 mm behind the camera in x, so x below 0.26 put them where the arm can't reach (Oct 30)
 
 
 def region_with(depth, joints, region=REGION, min_mm: float = 8.0, grow: float = 0.04) -> tuple:

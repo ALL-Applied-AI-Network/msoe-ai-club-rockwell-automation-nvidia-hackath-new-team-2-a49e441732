@@ -283,6 +283,13 @@ def main() -> None:
         print(f"tallest thing on the table {tall:.0f} mm (2 pictures, arm moved between): fingertips fly at "
               f"{tip_mm:.0f} mm; the camera rides ({off[0] * 1000:.0f}, {off[1] * 1000:.0f}) mm from them")
         q_now = q2
+    for k_ in range(len(segs)):  # the first line whose start the arm can reach from here
+        try:
+            go(q_now, segs[k_][0], tip_mm)
+            segs = segs[k_:]
+            break
+        except SystemExit:
+            print(f"line {k_ + 1}'s start is out of reach: starting from the next")
     start = P.uf0(*segs[0][0], tip_mm)
     if a.stills:  # stop and shoot: the arm still at each spot, so the pose of every picture is exact (no delay)
         pull.stop()
