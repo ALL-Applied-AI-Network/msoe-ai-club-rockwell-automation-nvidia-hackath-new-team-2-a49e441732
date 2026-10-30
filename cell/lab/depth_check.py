@@ -36,6 +36,72 @@ LINES = [((0.26, -0.30), (0.50, -0.30)), ((0.50, -0.20), (0.26, -0.20)), ((0.26,
          ((0.40, -0.30), (0.40, 0.08)), ((0.48, 0.08), (0.48, -0.30))]
 
 
+STOPS_X = (0.30, 0.38, 0.46)                  # where the wrist camera stops (base m): ~80-90 mm apart, so each spot
+STOPS_Y = (-0.27, -0.18, -0.09, 0.00, 0.07)   # on the table is seen from several (the depth service pairs pictures
+CLUSTER = ((0.0, 0.0), (0.025, 0.0), (0.025, 0.025), (0.0, 0.025))  # at each stop, still pictures this far apart: the
+# depth service matches patches between nearby views (stops 80+ mm apart alone gave 94% false matter, Oct 30)
+STOPS = [(x + dx, y + dy) for i, y in enumerate(STOPS_Y)  # 15-120 mm apart)
+         for x in (STOPS_X if i % 2 == 0 else STOPS_X[::-1]) for dx, dy in CLUSTER]
+STILL_HOP = 200.0  # mm/s between stops
+
+
+def still_pic(c, cam, timeout: float = 8.0):
+    """A wrist picture once the arm has stopped: two readings in a row with the same joints and nothing queued
+    (the real arm trails its queue by ~0.8 s, so the queue alone isn't enough). Returns (jpeg bytes, joints)."""
+    import cv2
+    prev = None
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        ob = c.observe(["wrist"], tuple(cam["size"]), "jpeg", 90)
+        j = np.asarray(ob["joints"], float)
+        if prev is not None and ob["queued"] == 0 and np.abs(j[:6] - prev[:6]).max() < 0.02:
+            ok, buf = cv2.imencode(".jpg", cv2.cvtColor(ob["images"]["wrist"], cv2.COLOR_RGB2BGR),
+                                   [cv2.IMWRITE_JPEG_QUALITY, 92])
+            return buf.tobytes(), j
+        prev = j
+        time.sleep(0.12)
+    return None, None
+
+
+def stills_scan(c, link, q, tip_mm, off, T_fc, cam, hb) -> int:
+    """The arm to each of STOPS (the camera's spot; fingertips at tip_mm), a still picture at each, sent to the depth
+    service with its exact pose. Returns how many were taken."""
+    from lab import scan
+    n = 0
+    p = None
+    for k, xy in enumerate(STOPS):
+        tip_xy = np.asarray(xy) - off
+        goal = P.uf0(*tip_xy, tip_mm)
+        if p is None:  # the first: a joint move there (lifted clear)
+            Tf = tool_pose(q)
+            qg = tool_ik(tip_m(goal), DOWN, q)
+            jm = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tip_m(goal), DOWN, height_mm=max(tip_mm, 150.0))
+            rows = [list(r) for r in jm] if jm is not None else []
+            q = qg
+        else:
+            rows = []
+            try:
+                for row in P.line(p, goal, float(DOWN[2]), float(DOWN[2]), 0, STILL_HOP):
+                    q = tool_ik(tip_m(row[:3]), row[3:6], q, near=True)
+                    rows.append([*q.tolist(), 0.0])
+            except ValueError:
+                hb(f"stop {k + 1} of {len(STOPS)} is out of reach: skipped", {"queued": 0, "status": "idle"})
+                continue
+        if rows:
+            scan.feed(c, rows, lambda: c._call("GET", "observation", params={"cameras": "wrist", "width": 64,
+                                                                               "height": 36, "format": "jpeg"})["queued"])
+        p = goal
+        hb(f"stop {k + 1} of {len(STOPS)}: waiting for the arm to be still, then a picture",
+           {"queued": len(rows), "status": "moving"})
+        jpeg, j = still_pic(c, cam)
+        if jpeg is None:
+            hb(f"stop {k + 1}: the arm never settled, no picture", {"queued": 0, "status": "idle"})
+            continue
+        link.send(f"still{k}", time.time(), flange_pose(j[:6]) @ T_fc, jpeg)
+        n += 1
+    return n
+
+
 def tip_m(p):
     return np.array([p[0], p[1], p[2] - UF0_Z_MM]) / 1000
 
@@ -48,6 +114,8 @@ def main() -> None:
     ap.add_argument("--first", default=None,
                     help="quick start: an .npz with the table depth picture (and joints, table/side pictures) taken at "
                          "second 0 by the caller: the safe height from it, then straight into the sweep")
+    ap.add_argument("--stills", action="store_true",
+                    help="stop and shoot: still wrist pictures at a grid of stops instead of a moving sweep")
     ap.add_argument("--short-twitch", action="store_true", help="measure the picture delay with a 4 s wrist twitch")
     ap.add_argument("--delay-ms", type=float, default=None,
                     help="the picture delay, known already (no wrist twitch to measure it)")
@@ -208,81 +276,96 @@ def main() -> None:
               f"{tip_mm:.0f} mm; the camera rides ({off[0] * 1000:.0f}, {off[1] * 1000:.0f}) mm from them")
         q_now = q2
     start = P.uf0(*segs[0][0], tip_mm)
-    r0, q0 = go(q_now, segs[0][0], tip_mm)
-    rows += r0
-    n_move = len(rows)
-    if a.delay_ms is None:
-        rows += twitch(q0, short=a.short_twitch)
+    if a.stills:  # stop and shoot: the arm still at each spot, so the pose of every picture is exact (no delay)
+        pull.stop()
+        fwd, t_wall = None, time.time()
+        low, scan_part = tip_mm, []
+        n_shot = stills_scan(c, link, q_now, tip_mm, off, T_fc, cam, hb)
+        print(f"stills: {n_shot} still pictures from {len(STOPS)} stops in {time.time() - t_wall:.0f} s")
+        t0_ = time.time()
+        while time.time() - t0_ < 30:  # the depth service works through them
+            st = link.stats()
+            hb(f"stills taken: the GPU box is matching them ({st.get('inbox', '?')} waiting)",
+               {"queued": 0, "status": "idle"})
+            if st["inbox"] == 0 and st["waiting"] == 0 and link.q.empty():
+                break
+            time.sleep(1.0)
     else:
-        pull.delay = a.delay_ms / 1000
-    n_twitch = len(rows)
-    scan_part = scan.sweep(q0, tip_mm, speed, segs, start)
-    rows += scan_part
-    low = scan.lowest_tip_mm(scan_part)
-    print(f"the scan: {len(scan_part) * P.DT:.0f} s, fingertips never lower than {low:.0f} mm (safe height {tip_mm:.0f})")
-    with pull.lock:
-        t_sent = pull.last.get("t", 0.0)
-    import threading
-    threading.Thread(target=scan.feed, args=(c, rows, queued), daemon=True).start()  # topped up as it plays
-    print(f"motion: {len(rows)} rows, {len(rows) * P.DT:.0f} s of arm time (twitch from {n_move * P.DT:.0f} s to "
-          f"{n_twitch * P.DT:.0f} s, then the scan at {speed:.0f} mm/s)")
-
-    fwd = None
-    t_wall, moved, still_since, tw = time.time(), False, None, None
-    while time.time() - t_wall < 900:
-        time.sleep(1.0)
-        with pull.lock:
-            last = dict(pull.last)
-            jt, jq = np.asarray(pull.jt), np.asarray(pull.jq)
-        moved |= (last.get("queued") or 0) > 0
-        if fwd is None and moved and a.delay_ms is not None:
-            print(f"picture delay {a.delay_ms:.0f} ms (known); feeding the depth service")
-            fwd = Forward(pull, link, T_fc)
-        if fwd is None and moved:  # the twitch done? measure the picture delay, then start feeding the depth service
-            tw_idx = np.nonzero((np.abs(jq[:, 5] - q0[5]) > 0.5) & (jt >= t_sent + n_move * P.DT - 0.5))[0]
-            tw_s = (n_twitch - n_move) * P.DT  # how long the twitch lasts
-            if len(tw_idx) and jt[-1] - jt[tw_idx[0]] > tw_s + 1.0:
-                in_tw = tw_idx[jt[tw_idx] < jt[tw_idx[0]] + tw_s - 1.0]
-                tw = (jt[in_tw[0]] - 1.0, jt[in_tw[-1]] + 1.0)
-                pull.fit()
-                md = pull.measure_delay(*tw, T_fc, fx=cam["fx"])
-                print(f"picture delay {md['delay_s'] * 1000:.0f} ms (from the twitch, match {md['score']:.2f}); "
-                      f"feeding the depth service")
-                fwd = Forward(pull, link, T_fc)
-        g = link.grid()
-        hb((f"sweeping the table: {g.get('frames', 0)} wrist pictures into the 3D map, "
-            f"{g.get('something', 0)} spots sure to hold something") if fwd is not None else
-           "wiggling the wrist to time the camera", last)
-        rr.set_time("wall_s", duration=time.time() - t_wall)
-        with pull.lock:
-            f_last = pull.frames[-1] if pull.frames else None
-        if f_last is not None:
-            rr.log("cams/wrist", rr.EncodedImage(contents=f_last.jpeg, media_type="image/jpeg"))
-        if g.get("xyz"):
-            rr.log("world/something", rr.Points3D(g["xyz"], colors=g["rgb"], radii=0.001))
-        if "frames" in g:
-          rr.log("stats", rr.TextDocument(
-            f"frames {g['frames']} · reference frames {g['searched']}/{g['refs']} searched · "
-            f"{g['points']} edge points · {g['something']} voxels something · {g['nothing']} nothing · "
-            f"{g['ms_per_ref']} ms per reference frame"))
-        with pull.lock:
-            jn = pull.jq[-1][:6]
-        rr.log("world/camera", rr.Transform3D(translation=(flange_pose(jn) @ T_fc)[:3, 3],
-                                              mat3x3=(flange_pose(jn) @ T_fc)[:3, :3]))
-        rr.log("world/camera", rr.Pinhole(focal_length=cam["fx"], width=cam["size"][0], height=cam["size"][1],
-                                          image_plane_distance=0.05))
-        if moved and last.get("queued") == 0:
-            still_since = still_since or time.time()
-            if time.time() - still_since > 2.0 and fwd is not None:
-                if not pull.stop_ev.is_set():  # the arm is done: no more pictures (a still camera adds nothing, and
-                    pull.stop()                # new frames would keep the depth service's queue from ever emptying)
-                    fwd.flush()
-                    fwd.stop()
-                st = link.stats()
-                if (st["inbox"] == 0 and st["waiting"] == 0 and link.q.empty()) or time.time() - still_since > 25.0:
-                    break
+        r0, q0 = go(q_now, segs[0][0], tip_mm)
+        rows += r0
+        n_move = len(rows)
+        if a.delay_ms is None:
+            rows += twitch(q0, short=a.short_twitch)
         else:
-            still_since = None
+            pull.delay = a.delay_ms / 1000
+        n_twitch = len(rows)
+        scan_part = scan.sweep(q0, tip_mm, speed, segs, start)
+        rows += scan_part
+        low = scan.lowest_tip_mm(scan_part)
+        print(f"the scan: {len(scan_part) * P.DT:.0f} s, fingertips never lower than {low:.0f} mm (safe height {tip_mm:.0f})")
+        with pull.lock:
+            t_sent = pull.last.get("t", 0.0)
+        import threading
+        threading.Thread(target=scan.feed, args=(c, rows, queued), daemon=True).start()  # topped up as it plays
+        print(f"motion: {len(rows)} rows, {len(rows) * P.DT:.0f} s of arm time (twitch from {n_move * P.DT:.0f} s to "
+              f"{n_twitch * P.DT:.0f} s, then the scan at {speed:.0f} mm/s)")
+
+        fwd = None
+        t_wall, moved, still_since, tw = time.time(), False, None, None
+        while time.time() - t_wall < 900:
+            time.sleep(1.0)
+            with pull.lock:
+                last = dict(pull.last)
+                jt, jq = np.asarray(pull.jt), np.asarray(pull.jq)
+            moved |= (last.get("queued") or 0) > 0
+            if fwd is None and moved and a.delay_ms is not None:
+                print(f"picture delay {a.delay_ms:.0f} ms (known); feeding the depth service")
+                fwd = Forward(pull, link, T_fc)
+            if fwd is None and moved:  # the twitch done? measure the picture delay, then start feeding the depth service
+                tw_idx = np.nonzero((np.abs(jq[:, 5] - q0[5]) > 0.5) & (jt >= t_sent + n_move * P.DT - 0.5))[0]
+                tw_s = (n_twitch - n_move) * P.DT  # how long the twitch lasts
+                if len(tw_idx) and jt[-1] - jt[tw_idx[0]] > tw_s + 1.0:
+                    in_tw = tw_idx[jt[tw_idx] < jt[tw_idx[0]] + tw_s - 1.0]
+                    tw = (jt[in_tw[0]] - 1.0, jt[in_tw[-1]] + 1.0)
+                    pull.fit()
+                    md = pull.measure_delay(*tw, T_fc, fx=cam["fx"])
+                    print(f"picture delay {md['delay_s'] * 1000:.0f} ms (from the twitch, match {md['score']:.2f}); "
+                          f"feeding the depth service")
+                    fwd = Forward(pull, link, T_fc)
+            g = link.grid()
+            hb((f"sweeping the table: {g.get('frames', 0)} wrist pictures into the 3D map, "
+                f"{g.get('something', 0)} spots sure to hold something") if fwd is not None else
+               "wiggling the wrist to time the camera", last)
+            rr.set_time("wall_s", duration=time.time() - t_wall)
+            with pull.lock:
+                f_last = pull.frames[-1] if pull.frames else None
+            if f_last is not None:
+                rr.log("cams/wrist", rr.EncodedImage(contents=f_last.jpeg, media_type="image/jpeg"))
+            if g.get("xyz"):
+                rr.log("world/something", rr.Points3D(g["xyz"], colors=g["rgb"], radii=0.001))
+            if "frames" in g:
+              rr.log("stats", rr.TextDocument(
+                f"frames {g['frames']} · reference frames {g['searched']}/{g['refs']} searched · "
+                f"{g['points']} edge points · {g['something']} voxels something · {g['nothing']} nothing · "
+                f"{g['ms_per_ref']} ms per reference frame"))
+            with pull.lock:
+                jn = pull.jq[-1][:6]
+            rr.log("world/camera", rr.Transform3D(translation=(flange_pose(jn) @ T_fc)[:3, 3],
+                                                  mat3x3=(flange_pose(jn) @ T_fc)[:3, :3]))
+            rr.log("world/camera", rr.Pinhole(focal_length=cam["fx"], width=cam["size"][0], height=cam["size"][1],
+                                              image_plane_distance=0.05))
+            if moved and last.get("queued") == 0:
+                still_since = still_since or time.time()
+                if time.time() - still_since > 2.0 and fwd is not None:
+                    if not pull.stop_ev.is_set():  # the arm is done: no more pictures (a still camera adds nothing, and
+                        pull.stop()                # new frames would keep the depth service's queue from ever emptying)
+                        fwd.flush()
+                        fwd.stop()
+                    st = link.stats()
+                    if (st["inbox"] == 0 and st["waiting"] == 0 and link.q.empty()) or time.time() - still_since > 25.0:
+                        break
+            else:
+                still_since = None
     if not pull.stop_ev.is_set():
         pull.stop()
     hb("sweep done: finding objects in the 3D map", {"queued": 0, "status": "idle"})
