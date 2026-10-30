@@ -135,10 +135,27 @@ def lowest_tip_mm(rows) -> float:
     return float((tcp[:, 2] - P.TABLE_UF0).min())
 
 
-def feed(c, rows, queued, chunk: int = 40, keep: int = 80, each=None) -> None:
+def unsafe(q) -> str | None:
+    """Why the arm shouldn't be sent to joints q: the padded self-collision check on the ER-4iA's real meshes
+    (calibration/selfcollide: it flags both of the real arm's Oct 30 faults), or the cell's fingertip box."""
+    from calibration import selfcollide
+    q = np.asarray(q, float)
+    tcp = np.array(P.tcp_rows(np.asarray([[*q[:6], q[6] if len(q) > 6 else 0.0]])))[0]
+    for k, (lo, hi) in enumerate(P.TCP_BOX):
+        if not lo <= tcp[k] <= hi:
+            return "the fingertips outside the cell's allowed box"
+    return selfcollide.problem(q[:6], float(q[6]) if len(q) > 6 else 0.0)
+
+
+def feed(c, rows, queued, chunk: int = 40, keep: int = 80, each=None) -> bool:
     """Post joint rows a chunk at a time as the cell plays them: never more than `keep` queued (the real cell's queue
-    is small: a whole scan at once was refused, "action queue is full"). queued(): how many it has queued now."""
+    is small: a whole scan at once was refused, "action queue is full"). queued(): how many it has queued now.
+    Nothing past the first row that fails the self-collision check (unsafe) is sent: False then."""
     import time
+    bad = next(((k, w) for k, w in enumerate(map(unsafe, rows)) if w), None)
+    if bad is not None:
+        print(f"not sending that move: {bad[1]}", flush=True)
+        rows = rows[:bad[0]]
     i = 0
     while i < len(rows):
         q = queued()
@@ -154,3 +171,4 @@ def feed(c, rows, queued, chunk: int = 40, keep: int = 80, each=None) -> None:
             if "full" not in str(e):
                 raise
             time.sleep(0.5)
+    return bad is None

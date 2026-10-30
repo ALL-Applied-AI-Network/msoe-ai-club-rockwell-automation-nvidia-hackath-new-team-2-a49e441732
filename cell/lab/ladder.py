@@ -684,6 +684,10 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
             say(f"  first pick sent at {timing['t_pick']} s")
         what_ = f"{nm(o.id)} -> " + (nm(dest.id) if dest else "a free spot")
         from lab import scan as SC
+        why_bad = next((w for w in map(SC.unsafe, jrows) if w), None)  # a pick goes whole or not at all
+        if why_bad:
+            tell(f"I'm not picking up {nm(o.id)}: the move would put {why_bad}. Skipping it.")
+            continue
         SC.feed(c, jrows, lambda: c._call("GET", "observation", params={"cameras": "wrist", "width": 64, "height": 36,
                                                                          "format": "jpeg"})["queued"],
                 each=lambda q: state("arm", f"moving {what_} ({q / 10:.0f} s of motion queued)"))
