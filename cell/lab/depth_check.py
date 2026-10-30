@@ -111,24 +111,29 @@ def main() -> None:
 
     rows = []
     if a.fast:  # two table-depth pictures, the arm in two places: how high it's safe to fly
-        Tn = tool_pose(q_now)
-        here = Tn[:2, 3]
-        r1, q1 = go(q_now, here, 250.0)
+        mid = P.uf0(0.36, -0.10, 250.0)
+        off = scan.cam_offset(tool_ik(tip_m(mid), DOWN, q_now), T_fc)
+        segs = scan.for_camera(scan.lines(), off)
+        # the first picture from the corner of the table farthest from the scan's start, so the arm is somewhere
+        # else in each (taken from wherever it happened to be, both could have it in the same place)
+        (x0, x1), (y0, y1) = scan.REGION
+        far = max(scan.for_camera([((x, y), (x, y)) for x in (x0, x1) for y in (y0, y1)], off),
+                  key=lambda s: np.linalg.norm(np.asarray(s[0]) - segs[0][0]))[0]
+        r1, q1 = go(q_now, far, 250.0)
         play(r1)
         pics = [scan.table_depth(c)]
-        mid = P.uf0(0.36, -0.10, 250.0)
-        off = scan.cam_offset(tool_ik(tip_m(mid), DOWN, q1), T_fc)
-        segs = scan.for_camera(scan.lines(), off)
         r2, q2 = go(q1, segs[0][0], 250.0)
         play(r2)
         pics.append(scan.table_depth(c))
         tall, info = scan.tallest(pics)
+        if tall > scan.MAX_TALL_MM:
+            raise SystemExit(f"the table camera says something is {tall:.0f} mm tall: the arm, not a thing on the "
+                             f"table (its pixels weren't all blanked); not flying that high")
         tip_mm = scan.safe_tip_mm(tall)
         print(f"tallest thing on the table {tall:.0f} mm (2 pictures, arm moved between): fingertips fly at "
               f"{tip_mm:.0f} mm; the camera rides ({off[0] * 1000:.0f}, {off[1] * 1000:.0f}) mm from them")
         q_now = q2
     start = P.uf0(*segs[0][0], tip_mm)
-    q0 = tool_ik(tip_m(start), DOWN, q_now)
     r0, q0 = go(q_now, segs[0][0], tip_mm)
     rows += r0
     n_move = len(rows)
@@ -204,9 +209,8 @@ def main() -> None:
     mt = OB.match(found, objects)
     res["rigid"] = {"found": len(found), "missed": mt["missed"], "merged": mt["merged"], "extra": mt["extra"],
                     "objects": mt["objects"]}
-    (out / "objects.json").write_text(json.dumps([{**{k: v for k, v in o.__dict__.items() if k != "cells"},
-                                                   "footprint": o.footprint.tolist(), "centre": o.centre.tolist(),
-                                                   "opening": None if o.opening is None else o.opening.tolist()}
+    (out / "objects.json").write_text(json.dumps([{k: v.tolist() if isinstance(v, np.ndarray) else v
+                                                   for k, v in o.__dict__.items() if k != "cells"}
                                                   for o in found], default=float, indent=1))
     for o in found:
         ring = np.vstack([o.footprint, o.footprint[:1]])
