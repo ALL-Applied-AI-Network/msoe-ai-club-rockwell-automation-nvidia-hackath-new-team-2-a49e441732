@@ -49,6 +49,7 @@ EDGE_STRIDE = 2
 BASE_MM = (15, 120)
 MAX_NBRS = 6
 NBR_TURN_DEG = 15.0
+NBR_WINDOW_S = 2.0
 COARSE_MM = 2.0
 FINE_MM = torch.arange(-2.0, 2.01, 0.5)
 PEAK, MARGIN = 0.8, 0.1
@@ -124,7 +125,10 @@ class Depth:
         dist = np.linalg.norm(c - c[k], axis=1) * 1000
         z = np.array([T[:3, 2] for T in self.T])  # viewing directions: only views within NBR_TURN_DEG are compared
         turn = np.degrees(np.arccos(np.clip(z @ z[k], -1, 1)))  # (a tilted orbit view against a straight-down one
-        cand = np.nonzero((dist >= BASE_MM[0]) & (dist <= BASE_MM[1]) & (turn <= NBR_TURN_DEG))[0]  # made phantoms)
+        cand = np.nonzero((dist >= BASE_MM[0]) & (dist <= BASE_MM[1]) & (turn <= NBR_TURN_DEG)  # made phantoms)
+                          & (np.abs(np.array(self.t) - self.t[k]) <= NBR_WINDOW_S))[0]
+        # (only pictures from the same stretch of motion: a picture-delay error then shifts a pass sideways as a whole
+        # and leaves its heights right; pairing passes that went opposite ways turned the error into wrong heights)
         pick = []
         for i in cand[np.argsort(-dist[cand])]:
             if all(np.linalg.norm(c[i] - c[j]) * 1000 > 10 for j in pick):
