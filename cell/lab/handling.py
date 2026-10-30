@@ -29,6 +29,7 @@ from lab.objects import Obj
 
 TIP_MIN_MM = 2.5   # fingertips at least this far off the table (they drag on it at 1 mm)
 GRIP_ON_MM = 5.0   # at least this much of the fingers on the object
+GRIP_LOW_MM = 4.0  # never grip higher than this (small things: the height reading isn't good enough to aim higher)
 CLEAR_MM = 10.0
 SET_MM = 1.5
 FIT_MM = 1.5  # (4 refused a 34 mm bolt for a 60 mm box, Oct 30: the opening reads a little small)
@@ -50,7 +51,9 @@ class Plan:
 
 
 def grip_height(o: Obj) -> float:
-    return float(max(TIP_MIN_MM, min(o.top_mm / 2 - 1.0, o.top_mm - GRIP_ON_MM)))
+    """Low: the measured height can be off by several mm on the real cell (a 12 mm cube read 19), and fingertips
+    just off the table catch anything at least ~8 mm tall whatever its true height."""
+    return float(max(TIP_MIN_MM, min(o.top_mm / 2 - 1.0, o.top_mm - GRIP_ON_MM, GRIP_LOW_MM)))
 
 
 def column_heights(cols: dict) -> np.ndarray:
