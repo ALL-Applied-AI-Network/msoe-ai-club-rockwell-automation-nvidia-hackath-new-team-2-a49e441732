@@ -132,3 +132,24 @@ def lowest_tip_mm(rows) -> float:
     """The lowest the fingertips go along joint rows (mm above the table)."""
     tcp = np.array(P.tcp_rows(np.asarray(rows)[:, :7]))
     return float((tcp[:, 2] - P.TABLE_UF0).min())
+
+
+def feed(c, rows, queued, chunk: int = 40, keep: int = 80, each=None) -> None:
+    """Post joint rows a chunk at a time as the cell plays them: never more than `keep` queued (the real cell's queue
+    is small: a whole scan at once was refused, "action queue is full"). queued(): how many it has queued now."""
+    import time
+    i = 0
+    while i < len(rows):
+        q = queued()
+        if each:
+            each(q)
+        if q + chunk > keep:
+            time.sleep(0.2)
+            continue
+        try:
+            c.act(rows[i:i + chunk], P.DT)
+            i += chunk
+        except RuntimeError as e:
+            if "full" not in str(e):
+                raise
+            time.sleep(0.5)

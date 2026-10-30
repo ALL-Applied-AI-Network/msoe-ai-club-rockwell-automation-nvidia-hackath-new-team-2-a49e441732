@@ -146,9 +146,12 @@ def main() -> None:
                 last = dict(pull.last)
         print(f"HB\t{where}\t{arm_words(last)}", flush=True)
 
+    def queued():
+        with pull.lock:
+            return pull.last.get("queued") or 0
+
     def play(rows_, where):
-        for k in range(0, len(rows_), 100):
-            c.act(rows_[k:k + 100], P.DT)
+        scan.feed(c, rows_, queued)
         zero = None
         while True:  # until it has played and the arm has settled (the real cell's status says "running" all trial
             time.sleep(0.5)  # long, so: nothing left in the queue for SETTLE_S)
@@ -218,8 +221,8 @@ def main() -> None:
     print(f"the scan: {len(scan_part) * P.DT:.0f} s, fingertips never lower than {low:.0f} mm (safe height {tip_mm:.0f})")
     with pull.lock:
         t_sent = pull.last.get("t", 0.0)
-    for k in range(0, len(rows), 100):
-        c.act(rows[k:k + 100], P.DT)
+    import threading
+    threading.Thread(target=scan.feed, args=(c, rows, queued), daemon=True).start()  # topped up as it plays
     print(f"motion: {len(rows)} rows, {len(rows) * P.DT:.0f} s of arm time (twitch from {n_move * P.DT:.0f} s to "
           f"{n_twitch * P.DT:.0f} s, then the scan at {speed:.0f} mm/s)")
 
