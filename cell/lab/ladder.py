@@ -196,8 +196,11 @@ def snap(c, o, plan, out, say=print, cols=None):
         goal = P.uf0(*tip_xy, tip_h)
         Tf = tool_pose(q)
         qg = tool_ik(tm(goal), DOWN, q)  # (not near: a hover can be far from where the arm is; joint_move bridges it)
-        rows = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tm(goal), DOWN,
-                            height_mm=max(min(plan.carry_mm, tip_h + 30), tip_h))
+        rows = None
+        for lift in (max(min(plan.carry_mm, tip_h + 30), tip_h), 150.0, 250.0):  # lifted higher if the path dips
+            rows = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tm(goal), DOWN, height_mm=max(lift, tip_h))
+            if rows is not None:
+                break
         if rows is None:
             return False
         SC.feed(c, [list(r) for r in rows], lambda: queued_of(c))
