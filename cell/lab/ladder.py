@@ -518,7 +518,7 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
         env |= {"CELL_URL": url, "CELL_TOKEN": token_, **({"CELL_CA": ca_} if ca_ else {})}
     # the 10 Hz video sweep, slow enough that a delay error of tens of ms is only a few mm (150 mm/s smeared the real
     # cube: the 4 s twitch's delay matched at 0.31), the full 11 s twitch to measure the delay
-    cmd = ["--first", str(out / "first.npz"), "--speed", str(REAL_SWEEP_MM_S)] if real else \
+    cmd = ["--first", str(out / "first.npz"), "--speed", str(REAL_SWEEP_MM_S), "--angled"] if real else \
           ["--first", str(out / "first.npz"), "--speed", str(SWEEP_MM_S), "--delay-ms", str(DELAY_MS)]
     p = subprocess.Popen([sys.executable, "-u", "-m", "lab.depth_check", "--no-reset", "--trial", task, *cmd],
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)

@@ -114,6 +114,8 @@ def main() -> None:
     ap.add_argument("--first", default=None,
                     help="quick start: an .npz with the table depth picture (and joints, table/side pictures) taken at "
                          "second 0 by the caller: the safe height from it, then straight into the sweep")
+    ap.add_argument("--angled", action="store_true",
+                    help="after the sweep, orbit each thing the table camera sees: the camera on a sphere round it")
     ap.add_argument("--stills", action="store_true",
                     help="stop and shoot: still wrist pictures at a grid of stops instead of a moving sweep")
     ap.add_argument("--short-twitch", action="store_true", help="measure the picture delay with a 4 s wrist twitch")
@@ -238,8 +240,12 @@ def main() -> None:
     if first is not None:  # quick start: one table-depth picture (from the caller), straight into the sweep
         mid = P.uf0(0.36, -0.10, 250.0)
         off = scan.cam_offset(tool_ik(tip_m(mid), DOWN, q_now), T_fc)
-        segs = scan.for_camera(scan.lines(), off)
-        tall, _ = scan.tallest([(scan.blank_arm(first["depth"], first["joints"]), first["joints"])])
+        region = scan.region_with(first["depth"], first["joints"])
+        if region != scan.REGION:
+            print(f"scan region grown to cover what the table camera sees: x {region[0][0] * 1000:.0f}-"
+                  f"{region[0][1] * 1000:.0f}, y {region[1][0] * 1000:.0f}-{region[1][1] * 1000:.0f} mm")
+        segs = scan.for_camera(scan.lines(region), off)
+        tall, _ = scan.tallest([(scan.blank_arm(first["depth"], first["joints"]), first["joints"])], region)
         if tall > scan.MAX_TALL_MM:
             tip_mm = scan.FALLBACK_TIP_MM
             print(f"tallest thing on the table {tall:.0f} mm: that's the arm, not a thing; fingertips fly at "
@@ -300,6 +306,27 @@ def main() -> None:
             pull.delay = a.delay_ms / 1000
         n_twitch = len(rows)
         scan_part = scan.sweep(q0, tip_mm, speed, segs, start)
+        if a.angled and first is not None:  # then orbit each hypothesis: the camera on a sphere round it, looking at it
+            q_end = np.asarray(scan_part[-1][:6], float)
+            extra = []
+            hyps = scan.hypotheses(first["depth"], first["joints"], region)
+            for k, (ctr, top) in enumerate(hyps):
+                orb = scan.orbit(q_end, ctr, top, T_fc, min_tip_mm=max(top + 30.0, 60.0), speed=40.0)
+                if not orb:
+                    continue
+                Tf = tool_pose(q_end)
+                q_o = np.asarray(orb[0][:6], float)
+                To = tool_pose(q_o)
+                jm = P.joint_move(q_end, Tf[:3, 3], wpr_of(Tf[:3, :3]), q_o, To[:3, 3], wpr_of(To[:3, :3]),
+                                  height_mm=tip_mm)
+                if jm is None:
+                    continue
+                extra += [list(r) for r in jm] + orb
+                q_end = np.asarray(orb[-1][:6], float)
+                print(f"orbit {k + 1}: round the thing at ({ctr[0] * 1000:.0f}, {ctr[1] * 1000:.0f}) mm, "
+                      f"{top:.0f} mm tall: {len(orb) * P.DT:.0f} s")
+            if extra:
+                scan_part = scan_part + extra + [extra[-1]] * 10
         rows += scan_part
         low = scan.lowest_tip_mm(scan_part)
         print(f"the scan: {len(scan_part) * P.DT:.0f} s, fingertips never lower than {low:.0f} mm (safe height {tip_mm:.0f})")
