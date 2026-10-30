@@ -161,7 +161,7 @@ def match(first: dict, objs, img: np.ndarray, near: float = 0.08) -> tuple[dict,
     return {"moves": moves, "names": names, "why": first.get("why"), "see": first.get("say")}, missing
 
 
-HOVER_ABOVE_MM = 45.0  # the fingertips this far over the target's top while the wrist camera takes its still picture
+HOVER_ABOVE_MM = 25.0  # the fingertips this far over the target's top while the wrist camera takes its still picture
 SNAP_MIN_MM = 7.0      # narrower than this in the still picture: only part of it seen
 SNAP_FAR_MM = 25.0     # the picture's object further than this from where depth put it: not trusted
 
@@ -170,72 +170,108 @@ def queued_of(c) -> int:
     return c._call("GET", "observation", params={"cameras": "wrist", "width": 64, "height": 36, "format": "jpeg"})["queued"]
 
 
-def snap(c, o, plan, out, say=print):
-    """Hover and snap: the wrist camera straight over the target, the arm still, one picture; the object found by
-    colour near where depth put it, its outline on the plane of its top -> its true centre, angle and width. No timing
-    guess (nothing moves while the picture is taken). Returns (plan with the grip re-aimed, None) or (None, why)."""
+def snap(c, o, plan, out, say=print, cols=None):
+    """Hover and snap: the wrist camera straight over the target, the arm still, a picture; the object found by
+    colour near where depth put it, its outline (edge at half contrast) on the plane of its top -> its centre, angle
+    and width. Then a second look with the camera dead over that centre (no side faces in view), which is the one
+    used. No timing guess: nothing moves while a picture is taken. Returns (plan with the grip re-aimed, why) or
+    (None, why)."""
     import dataclasses
-    from calibration.geometry import flange_pose
+    from calibration.geometry import UF0_Z_MM, flange_pose, project
     from calibration.kinematics import DOWN, tool_ik, tool_pose, wpr_of
     from lab import scan as SC
     from lab.scene3d import cameras, rays_to_plane
     cam, T_fc, _ = cameras(None)
-    cur, q = where(c)
-    off = SC.cam_offset(q, T_fc)
-    tip_h = max(SC.MIN_TIP_MM - 16, o.top_mm + HOVER_ABOVE_MM)
-    xy = np.array([plan.grip.x, plan.grip.y]) - off
-    from calibration.geometry import UF0_Z_MM
     tm = lambda p_: np.array([p_[0], p_[1], p_[2] - UF0_Z_MM]) / 1000
-    goal = P.uf0(*xy, tip_h)
-    Tf = tool_pose(q)
-    qg = tool_ik(tm(goal), DOWN, q)
-    rows = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tm(goal), DOWN, height_mm=max(plan.carry_mm, tip_h))
-    if rows is None:
-        return None, "no way to hover over it from here"
-    SC.feed(c, [list(r) for r in rows], lambda: queued_of(c))
-    wait_idle(c)
-    time.sleep(0.4)  # still
-    ob = c.observe(["wrist"], tuple(cam["size"]), "png")
-    img, j = ob["images"]["wrist"], np.asarray(ob["joints"], float)
-    camd = dict(cam, T=flange_pose(j[:6]) @ T_fc)
     z_top = SURFACE_Z + o.top_mm / 1000
-    from calibration.geometry import project
-    u0, v0 = project(camd, [[plan.grip.x, plan.grip.y, z_top]])[0]
-    r_px = float(np.hypot(*(project(camd, [[plan.grip.x + 0.03, plan.grip.y, z_top]])[0] - (u0, v0)))) + 5  # 30 mm
-    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB).astype(float)
-    med = np.median(lab.reshape(-1, 3), 0)  # the table (most of the picture)
-    d = np.sqrt(((lab[..., 0] - med[0]) * 0.5) ** 2 + (lab[..., 1] - med[1]) ** 2 + (lab[..., 2] - med[2]) ** 2)
-    yy, xx = np.mgrid[:img.shape[0], :img.shape[1]]
-    mask = ((d > 22) & (np.hypot(xx - u0, yy - v0) < r_px)).astype(np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    n, lab_, st, cen = cv2.connectedComponentsWithStats(mask)
-    shot = img.copy()
-    cv2.circle(shot, (int(u0), int(v0)), int(r_px), (255, 255, 0), 1)
-    if n <= 1:
-        cv2.imwrite(str(out / f"snap_{o.id}.jpg"), cv2.cvtColor(shot, cv2.COLOR_RGB2BGR))
+
+    def hover(target):  # the camera over target (base m): fingertips HOVER_ABOVE_MM over its top, clear of neighbours
+        cur, q = where(c)
+        tip_xy = np.asarray(target) - SC.cam_offset(q, T_fc)
+        near = HD.path_max(cols, HD.column_heights(cols), tip_xy, tip_xy, None, half_mm=30) if cols is not None else 0
+        tip_h = max(o.top_mm + HOVER_ABOVE_MM, near + 15.0)
+        goal = P.uf0(*tip_xy, tip_h)
+        Tf = tool_pose(q)
+        qg = tool_ik(tm(goal), DOWN, q, near=True)
+        rows = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tm(goal), DOWN,
+                            height_mm=max(min(plan.carry_mm, tip_h + 30), tip_h))
+        if rows is None:
+            return False
+        SC.feed(c, [list(r) for r in rows], lambda: queued_of(c))
+        wait_idle(c)
+        time.sleep(0.4)  # still
+        return True
+
+    def look(target, k_):
+        ob = c.observe(["wrist"], tuple(cam["size"]), "png")
+        img, j = ob["images"]["wrist"], np.asarray(ob["joints"], float)
+        camd = dict(cam, T=flange_pose(j[:6]) @ T_fc)
+        u0, v0 = project(camd, [[*target, z_top]])[0]
+        r_px = float(np.hypot(*(project(camd, [[target[0] + 0.03, target[1], z_top]])[0] - (u0, v0)))) + 5  # 30 mm
+        lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB).astype(float)
+        med = np.median(lab.reshape(-1, 3), 0)  # the table (most of the picture)
+        d = np.sqrt(((lab[..., 0] - med[0]) * 0.5) ** 2 + (lab[..., 1] - med[1]) ** 2 + (lab[..., 2] - med[2]) ** 2)
+        yy, xx = np.mgrid[:img.shape[0], :img.shape[1]]
+        win = np.hypot(xx - u0, yy - v0) < r_px
+        shot = img.copy()
+        cv2.circle(shot, (int(u0), int(v0)), int(r_px), (255, 255, 0), 1)
+        save = lambda: cv2.imwrite(str(out / f"snap_{o.id}_{k_}.jpg"), cv2.cvtColor(shot, cv2.COLOR_RGB2BGR))
+
+        def blob(thr):
+            m = cv2.morphologyEx(((d > thr) & win).astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+            n, lab_, st, cen = cv2.connectedComponentsWithStats(m)
+            if n <= 1:
+                return None
+            i = 1 + int(np.argmin([np.hypot(*(cen[i_] - (u0, v0))) - 0.001 * st[i_, cv2.CC_STAT_AREA] for i_ in range(1, n)]))
+            return lab_ == i
+        b = blob(22.0)
+        if b is None:
+            save()
+            return None
+        core = cv2.erode(b.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
+        if core.any():  # the edge where the colour is halfway between table and object (not the blurred rim)
+            b2 = blob(max(22.0, 0.5 * float(np.median(d[core]))))
+            b = b2 if b2 is not None else b
+        cnt, _ = cv2.findContours(b.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cnt = max(cnt, key=cv2.contourArea)
+        pts = cnt.reshape(-1, 2).astype(float)
+        c_px = pts.mean(0)
+        pts = pts + 0.5 * np.sign(c_px - pts)  # boundary pixels' centres sit half a pixel outside the edge
+        xyz = rays_to_plane(camd, pts, z_top)
+        (cx, cy), (w, l), ang = cv2.minAreaRect((xyz[:, :2] * 1000).astype(np.float32))
+        cv2.drawContours(shot, [cnt], -1, (0, 255, 0), 1)
+        save()
+        return np.array([cx, cy]) / 1000, (w, l), ang
+
+    if not hover((plan.grip.x, plan.grip.y)):
+        return None, "no way to hover over it from here"
+    m1 = look((plan.grip.x, plan.grip.y), 1)
+    if m1 is None:
         return None, "nothing stands out from the table where depth put it"
-    k = 1 + int(np.argmin([np.hypot(*(cen[i] - (u0, v0))) - 0.001 * st[i, cv2.CC_STAT_AREA] for i in range(1, n)]))
-    cnt, _ = cv2.findContours((lab_ == k).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    pts = cnt[0].reshape(-1, 2).astype(float)
-    xyz = rays_to_plane(camd, pts, z_top)
-    (cx, cy), (w, l), ang = cv2.minAreaRect((xyz[:, :2] * 1000).astype(np.float32))
-    cv2.drawContours(shot, cnt, -1, (0, 255, 0), 2)
-    cv2.imwrite(str(out / f"snap_{o.id}.jpg"), cv2.cvtColor(shot, cv2.COLOR_RGB2BGR))
-    shift = float(np.hypot(cx / 1000 - plan.grip.x, cy / 1000 - plan.grip.y) * 1000)
-    say(f"  snap #{o.id}: {w:.1f} x {l:.1f} mm at ({cx:.0f}, {cy:.0f}) mm, angle {ang:.0f} deg, "
-        f"{shift:.1f} mm from the depth estimate")
+    shift = float(np.linalg.norm(m1[0] - (plan.grip.x, plan.grip.y)) * 1000)
     if shift > SNAP_FAR_MM:
         return None, f"what I see is {shift:.0f} mm from where depth put it: not sure it's the same thing"
-    if min(w, l) < SNAP_MIN_MM:  # a sliver of it: the look didn't see the whole thing (the search circle cut it)
+    m = m1  # the second look, the camera dead over it: the top face only
+    if hover(m1[0]):
+        m2 = look(m1[0], 2)
+        if m2 is not None and np.linalg.norm(m2[0] - m1[0]) * 1000 < 10:
+            m = m2
+    (cxy, (w, l), ang) = m
+    shift = float(np.linalg.norm(cxy - (plan.grip.x, plan.grip.y)) * 1000)
+    say(f"  snap #{o.id}: look 1 {m1[1][0]:.1f} x {m1[1][1]:.1f} mm; " + ("look 2 " if m is not m1 else "(no look 2) ") +
+        f"{w:.1f} x {l:.1f} mm at ({cxy[0] * 1000:.0f}, {cxy[1] * 1000:.0f}) mm, angle {ang:.0f} deg, "
+        f"{shift:.1f} mm from the depth estimate")
+    if min(w, l) < SNAP_MIN_MM:  # a sliver of it: the look didn't see the whole thing
         return None, f"I only see {min(w, l):.0f} mm of it: not a clear enough look"
     jaw_room = 20.0 - 2 * 2.0  # the open gap less the clearance each side (lab/grasp.GAP, CLEAR)
     if min(w, l) > jaw_room:
-        return None, f"it's {min(w, l):.0f} mm across: too wide for the jaws ({jaw_room:.0f} mm with room to spare)"
+        return None, f"it's {min(w, l):.1f} mm across: too wide for the jaws ({jaw_room:.0f} mm with room to spare)"
     # the jaws close across a side: the side angle or 90 deg from it, whichever is nearer the planned yaw
     cands = [ang % 180, (ang + 90) % 180]
     yaw = min(cands, key=lambda a_: abs(((a_ - plan.grip.yaw) + 90) % 180 - 90))
-    g = dataclasses.replace(plan.grip, x=cx / 1000, y=cy / 1000, yaw=float(yaw))
-    return dataclasses.replace(plan, grip=g), f"{min(w, l):.0f} mm across, moved the aim {shift:.1f} mm, jaws at {yaw:.0f} deg"
+    g = dataclasses.replace(plan.grip, x=float(cxy[0]), y=float(cxy[1]), yaw=float(yaw))
+    return dataclasses.replace(plan, grip=g), (f"{min(w, l):.1f} mm across, moved the aim {shift:.1f} mm, "
+                                               f"jaws at {yaw:.0f} deg")
 
 
 def labelled(img: np.ndarray, objs) -> np.ndarray:
@@ -614,7 +650,7 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
             continue
         state("arm", f"hovering over {nm(o.id)} for a still picture")
         try:
-            snapped, why_ = snap(c, o, plan_m, out, say)
+            snapped, why_ = snap(c, o, plan_m, out, say, cols=cols)
         except Exception as e:
             snapped, why_ = None, f"the close look failed ({type(e).__name__}: {e})"
         if snapped is None:
