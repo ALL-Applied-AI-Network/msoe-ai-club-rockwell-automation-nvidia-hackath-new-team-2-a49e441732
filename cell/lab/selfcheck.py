@@ -56,9 +56,20 @@ def main() -> None:
     ap.add_argument("run", type=Path)
     ap.add_argument("--delay-ms", type=float, default=140.0)
     ap.add_argument("--port", type=int, default=8768)
+    ap.add_argument("--calib", type=Path, default=None, help="a refined camera calibration (lab/calib_video.py)")
+    ap.add_argument("--times", type=Path, default=None, help="per-picture solved times (lab/frame_times.py): no delay")
     a = ap.parse_args()
     cam, T_fc, _ = cameras(None)
+    if a.calib:
+        cv_ = json.loads(a.calib.read_text())
+        T_fc, cam = np.array(cv_["T_flange_cam"]), dict(cam, fx=cv_["fx_848"])
     jt, jq, frames = load(a.run)
+    if a.times:  # each picture at its own solved moment
+        tm = json.loads(a.times.read_text())["times"]
+        for f in frames:
+            if str(f["path"]) in tm:
+                f["t"] = tm[str(f["path"])]
+        a.delay_ms = 0.0
     halves = {"A (passes along y)": [f for f in frames if f["phase"] == "line_y"],
               "B (along x + tilted)": [f for f in frames if f["phase"] != "line_y"]}
     link = DepthLink(port=a.port)
@@ -105,7 +116,8 @@ def main() -> None:
                           "container_A": o.container, "container_B": oB[j].container})
     res["objects"] = {"A": len(oA), "B": len(oB), "matched": len(pairs), "pairs": pairs,
                       "top_diff_median_mm": round(float(np.median([abs(p["top_diff_mm"]) for p in pairs])), 1) if pairs else None}
-    (a.run / "selfcheck.json").write_text(json.dumps(res, indent=1, default=float))
+    tag = ("_solved" if a.times else "") + ("_calib" if a.calib else "")
+    (a.run / f"selfcheck{tag}.json").write_text(json.dumps(res, indent=1, default=float))
     diff = np.full(hA.shape, np.nan)
     diff[both] = np.abs(hA - hB)[both]
     dimg = cv2.applyColorMap((np.clip(np.nan_to_num(diff, nan=0) / 10, 0, 1) * 255).astype(np.uint8), cv2.COLORMAP_INFERNO)
@@ -117,7 +129,7 @@ def main() -> None:
         img = cv2.resize(np.rot90(img), None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
         cv2.putText(img, label, (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         tiles.append(img)
-    cv2.imwrite(str(a.run / "selfcheck.jpg"), np.hstack(tiles))
+    cv2.imwrite(str(a.run / f"selfcheck{tag}.jpg"), np.hstack(tiles))
     print(json.dumps({k: v for k, v in res.items() if k != "objects"}, indent=1))
     print("objects:", {k: v for k, v in res["objects"].items() if k != "pairs"})
 

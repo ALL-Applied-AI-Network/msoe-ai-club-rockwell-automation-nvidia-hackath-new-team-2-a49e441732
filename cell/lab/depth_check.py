@@ -342,7 +342,14 @@ def main() -> None:
         with pull.lock:
             t_sent = pull.last.get("t", 0.0)
         import threading
-        threading.Thread(target=scan.feed, args=(c, rows, queued), daemon=True).start()  # topped up as it plays
+        feed_err = []
+
+        def feeding():
+            try:
+                scan.feed(c, rows, queued)
+            except Exception as e:  # the cell refused (a fault, the trial over): the scan can't go on
+                feed_err.append(f"{type(e).__name__}: {e}")
+        threading.Thread(target=feeding, daemon=True).start()  # topped up as it plays
         print(f"motion: {len(rows)} rows, {len(rows) * P.DT:.0f} s of arm time (twitch from {n_move * P.DT:.0f} s to "
               f"{n_twitch * P.DT:.0f} s, then the scan at {speed:.0f} mm/s)")
 
@@ -354,6 +361,10 @@ def main() -> None:
                 last = dict(pull.last)
                 jt, jq = np.asarray(pull.jt), np.asarray(pull.jq)
             moved |= (last.get("queued") or 0) > 0
+            if feed_err:
+                raise SystemExit(f"the cell refused the scan's moves: {feed_err[0]}")
+            if not moved and time.time() - t_wall > 20.0:
+                raise SystemExit("the arm hasn't started moving in 20 s: is a trial running on the cell?")
             if fwd is None and moved and a.delay_ms is not None:
                 print(f"picture delay {a.delay_ms:.0f} ms (known); feeding the depth service")
                 fwd = Forward(pull, link, T_fc)

@@ -244,6 +244,9 @@ def main() -> None:
                 board.add("action", f"stop: {msg}")
                 self._json({"msg": msg})
             elif self.path == "/reset":
+                if lad["running"]:  # Clear stops a task too: the ladder after this one, its scan now
+                    lad["stop"] = True
+                    subprocess.run(["pkill", "-f", "lab.depth_check"], capture_output=True)
                 msg = robot.reset()
                 board.reset()
                 chat.history.clear()
