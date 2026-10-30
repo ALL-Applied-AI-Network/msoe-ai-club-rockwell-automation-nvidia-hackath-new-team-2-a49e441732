@@ -105,13 +105,20 @@ def main() -> None:
             chat.banner.update(phase="working", headline=f"Ladder: {n}")
             board.add("status", json.dumps(chat.banner))
             say = lambda line, n=n: board.add("motion", line.strip())
-            try:
-                r = LD.run(n, lad["root"] / n, say=say, rerun_to=robot.viewer_uri)
-            except Exception as e:
-                r = {"task": n, "ok": False, "why": f"{type(e).__name__}: {e}"}
-                say(f"  crashed: {r['why']}")
+            for attempt in (1, 2):
+                try:
+                    r = LD.run(n, lad["root"] / (n if attempt == 1 else n + "_retry"), say=say, rerun_to=robot.viewer_uri)
+                    break
+                except Exception as e:
+                    r = {"task": n, "ok": False, "why": f"{type(e).__name__}: {e}"}
+                    say(f"  crashed: {r['why']}")
+                    if attempt == 2 or "Connection" not in r["why"]:
+                        break
+                    # the Isaac app on the GPU box sometimes quits by itself (no error in its log): start it again
+                    say("  the Isaac cell stopped answering: restarting it on the GPU box, then this task again")
+                    subprocess.run(["zsh", str(HERE.parent / "isaac" / "restart.sh")], capture_output=True, timeout=600)
             r["state"] = "pass" if r.get("ok") else "fail"
-            r["dir"] = str((lad["root"] / n).relative_to(RUNS))
+            r["dir"] = str((lad["root"] / (n if attempt == 1 else n + "_retry")).relative_to(RUNS))
             lad["results"][n] = r
         lad["running"] = None
         done = [r for r in lad["results"].values() if r.get("state") in ("pass", "fail")]

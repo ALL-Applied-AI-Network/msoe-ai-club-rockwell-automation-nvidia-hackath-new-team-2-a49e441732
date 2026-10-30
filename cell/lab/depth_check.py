@@ -72,6 +72,9 @@ def main() -> None:
             rr.spawn(connect=False)
         except Exception:
             rr.spawn()
+    import rerun.blueprint as rrb
+    rr.send_blueprint(rrb.Blueprint(rrb.Spatial3DView(origin="world", name="the table: depth evidence, found objects"),
+                                    collapse_panels=True))  # just the 3D view: no source tree, selection or stats panels
     rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
     for name, m in objects.items():
         e = m.edges_unique
@@ -219,11 +222,12 @@ def main() -> None:
     for o in found:
         ring = np.vstack([o.footprint, o.footprint[:1]])
         z = SURFACE_Z + o.top_mm / 1000
-        rr.log(f"world/objects/{o.id}", rr.LineStrips3D([np.c_[ring, np.full(len(ring), z)],
-                                                          np.c_[ring, np.full(len(ring), SURFACE_Z)]],
-                                                         colors=[[40, 200, 90] if not o.container else [230, 150, 30]],
-                                                         radii=0.0008, labels=[f"#{o.id} {'container' if o.container else 'solid'} "
-                                                                               f"{o.top_mm:.0f} mm"] * 2), static=True)
+        col = [[40, 200, 90] if not o.container else [230, 150, 30]]
+        rr.log(f"world/objects/{o.id}", rr.LineStrips3D([np.c_[ring, np.full(len(ring), z)]], colors=col, radii=0.0008,
+                                                         labels=[f"#{o.id} {'container' if o.container else 'solid'} "
+                                                                 f"{o.top_mm:.0f} mm"]), static=True)
+        rr.log(f"world/objects/{o.id}/base", rr.LineStrips3D([np.c_[ring, np.full(len(ring), SURFACE_Z)]], colors=col,
+                                                              radii=0.0005), static=True)
     print(f"rigid objects: {len(found)} found; missed {mt['missed']}; merged {mt['merged']}; extra {mt['extra']}")
     for k, v in mt["objects"].items():
         print(f"  {k:22} -> #{v['found']}  top {v['top_mm']} (true {v['true_top_mm']})  "
