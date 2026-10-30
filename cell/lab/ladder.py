@@ -195,7 +195,7 @@ def snap(c, o, plan, out, say=print, cols=None):
         tip_h = max(o.top_mm + HOVER_ABOVE_MM, near + 15.0)
         goal = P.uf0(*tip_xy, tip_h)
         Tf = tool_pose(q)
-        qg = tool_ik(tm(goal), DOWN, q, near=True)
+        qg = tool_ik(tm(goal), DOWN, q)  # (not near: a hover can be far from where the arm is; joint_move bridges it)
         rows = P.joint_move(q, Tf[:3, 3], wpr_of(Tf[:3, :3]), qg, tm(goal), DOWN,
                             height_mm=max(min(plan.carry_mm, tip_h + 30), tip_h))
         if rows is None:
@@ -228,9 +228,19 @@ def snap(c, o, plan, out, say=print, cols=None):
             i = 1 + int(np.argmin([np.hypot(*(cen[i_] - (u0, v0))) - 0.001 * st[i_, cv2.CC_STAT_AREA] for i_ in range(1, n)]))
             return lab_ == i
         b = blob(22.0)
-        if b is None:
-            save()
-            return None
+        if b is None:  # nothing differs in colour (a grey part on a light table): its outline from edges, filled
+            g_ = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            e_ = cv2.dilate(cv2.Canny(g_, 20, 60), np.ones((3, 3), np.uint8)) & win.astype(np.uint8) * 255
+            ff = e_.copy()
+            cv2.floodFill(ff, np.zeros((ff.shape[0] + 2, ff.shape[1] + 2), np.uint8), (0, 0), 255)
+            filled = (e_ > 0) | (ff == 0)
+            n_, lab2, st2, cen2 = cv2.connectedComponentsWithStats(filled.astype(np.uint8))
+            if n_ <= 1:
+                save()
+                return None
+            i_ = 1 + int(np.argmin([np.hypot(*(cen2[i] - (u0, v0))) - 0.001 * st2[i, cv2.CC_STAT_AREA] for i in range(1, n_)]))
+            b = lab2 == i_
+            d = np.where(b, 99.0, 0.0)  # (no half-contrast step for an edge outline)
         core = cv2.erode(b.astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
         if core.any():  # the edge where the colour is halfway between table and object (not the blurred rim)
             b2 = blob(max(22.0, 0.5 * float(np.median(d[core]))))
@@ -474,7 +484,7 @@ def check(goals: list, truth: dict, before: dict, after: dict) -> list:
             for i in range(len(ks)):
                 for j in range(i + 1, len(ks)):
                     d = np.linalg.norm(mids[ks[i]] - mids[ks[j]]) * 1000
-                    if d < 2 * PILE_MM:
+                    if d < 1.3 * PILE_MM:  # (piles 84 mm apart were plainly separate piles)
                         ok = False
                         notes.append(f"{ks[i]} and {ks[j]} piles only {d:.0f} mm apart")
             out.append((ok, f"{label} in {'a pile' if g.get('pile') else 'piles by ' + g['piles_by']}: " + "; ".join(notes)))

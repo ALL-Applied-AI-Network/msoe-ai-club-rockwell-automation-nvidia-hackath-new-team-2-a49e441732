@@ -71,8 +71,8 @@ def tunnel() -> None:
 
 
 class DepthLink:
-    def __init__(self):
-        self.url = f"http://127.0.0.1:{PORT}/"
+    def __init__(self, port: int = PORT):  # (another port: a second depth service, e.g. 8768 for offline work)
+        self.url = f"http://127.0.0.1:{port}/"
         self.s = requests.Session()
         self.q: queue.Queue = queue.Queue()
         self.sent = 0

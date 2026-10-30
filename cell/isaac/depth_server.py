@@ -50,6 +50,7 @@ BASE_MM = (15, 120)
 MAX_NBRS = 6
 NBR_TURN_DEG = 15.0
 NBR_WINDOW_S = 2.0
+APERTURE_PX = 3.0
 COARSE_MM = 2.0
 FINE_MM = torch.arange(-2.0, 2.01, 0.5)
 PEAK, MARGIN = 0.8, 0.1
@@ -200,6 +201,22 @@ class Depth:
         def at_height(h_mm):  # h_mm (N, H) -> points (N, H, 3)
             z = SURFACE_Z + h_mm / 1000
             return o + ray[:, None, :] * ((z - o[2]) / ray[:, None, 2:3].squeeze(-1))[..., None]
+
+        # the aperture: an edge lying along the way its image moves with height looks the same at every height. Keep
+        # only edge points whose image moves at least APERTURE_PX across the edge, in some neighbour, from 0 to 40 mm
+        # up (the table's straight tape seam came out 15-20 mm high without this, real data run Oct 30)
+        P01 = at_height(torch.tensor([[0.0, 40.0]], device=DEV).expand(len(uv), -1))
+        across = torch.zeros(len(uv), device=DEV)
+        for j in nb:
+            q, _ = self.project(self.T[j], P01)
+            across = torch.maximum(across, ((q[:, 1] - q[:, 0]) * nrm0).sum(-1).abs())
+        keep = (across >= APERTURE_PX).cpu().numpy()
+        if not keep.all():
+            idx = np.nonzero(keep)[0]
+            us, vs, gx, gy = us[idx], vs[idx], gx[idx], gy[idx]
+            uv, nrm0, ray = uv[idx], nrm0[idx], ray[idx]
+        if len(us) == 0:
+            return np.zeros((0, 3)), np.zeros(0), np.zeros((0, 3), np.uint8), {"edges": 0, "kept": 0, "nbrs": len(nb)}
 
         def score(ref_p, nrm, h_mm):
             P = at_height(h_mm)
