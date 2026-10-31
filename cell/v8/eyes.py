@@ -325,6 +325,26 @@ class Eyes:
             out.append(Box(np.array([c[0], c[1], c[2]]), 0.0, half, f"blob #{b.id}"))
         return out
 
+    def home(self) -> None:
+        """The un-cornering reflex: plain joint interpolation back to HOME, a configuration every
+        plan can start from. The branch-keeping planner can corner itself (a j2/j4 squeeze, or a
+        flight the cell refused mid-path leaves the arm stranded): from HOME it never does."""
+        from calibration.kinematics import HOME
+        from lab import armcheck
+        from lab.scan import unsafe
+        q0 = np.asarray(self.cell.observe(cams=())["joints"], float)[:6]
+        tgt = np.asarray(HOME, float)[:6]
+        n = max(10, int(np.abs(tgt - q0).max() / 3.0))
+        rows = [[*(q0 + (tgt - q0) * k / n).tolist(), 0.0] for k in range(1, n + 1)]
+        rep = armcheck.check_joints(np.asarray(rows)[:, :6], 0.0)
+        if not rep.ok:
+            raise RuntimeError(f"can't even get home: {rep.problem}")
+        for k, r in enumerate(rows):
+            if k % 2 == 0 and (why := unsafe(np.asarray(r, float))):
+                raise RuntimeError(f"can't even get home: {why}")
+        print("home: un-cornering, re-planning from the home pose", flush=True)
+        self.cell.play(np.asarray(rows, float), kind="joints")
+
     def _fly_cam(self, eye: np.ndarray, target: np.ndarray) -> None:
         """Put the WRIST CAMERA at eye, looking at target - the datarun's proven way: planned in
         JOINT space (tcp rows to tilted poses make the wrist writhe near J5=0 and the controller
@@ -333,7 +353,14 @@ class Eyes:
         from calibration.kinematics import tool_ik, tool_pose
         from lab import armcheck
         from lab import primitives as P
-        tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])   # ValueError = the caller's verdict
+        tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])   # an illegal POSE: homing can't help
+        try:
+            self._fly_rows(tip, wpr, eye)
+        except (ValueError, RuntimeError):
+            self.home()                       # cornered or stranded: the reflex, then once more
+            self._fly_rows(tip, wpr, eye)
+
+    def _fly_rows(self, tip: np.ndarray, wpr: np.ndarray, eye: np.ndarray) -> None:
         q_now = np.asarray(self.cell.observe(cams=())["joints"], float)[:6]
         q = tool_ik(tip, wpr, q_now)
         T_now = tool_pose(q_now)
@@ -457,6 +484,10 @@ class Eyes:
     def look_at(self, x_mm: float, y_mm: float) -> str:
         """Move the head: hover the camera over that table point (top-down first, a 50-degree
         tilt from the base side when straight-down is out of reach), then look."""
+        from lab import primitives as P
+        if not P.reachable(x_mm / 1000.0, y_mm / 1000.0):
+            return (f"({x_mm:.0f}, {y_mm:.0f}) is outside my reach (about 550 mm from the base, "
+                    "and inside the table bounds): pick a nearer point")
         tgt = np.array([x_mm / 1000.0, y_mm / 1000.0, SURFACE_Z + 0.01])
         el = np.radians(50.0)
         az = np.arctan2(tgt[1], tgt[0]) + np.pi
@@ -601,6 +632,13 @@ class Eyes:
     def _grasp_rows(self, b: Blob, at_mm: tuple[float, float], place_mm: tuple[float, float],
                     travel_mm: float, drop_mm: float | None):
         """Slide-in first, top pick as fallback; planned in joint space on the proven path."""
+        try:
+            return self._plan_grasp(b, at_mm, place_mm, travel_mm, drop_mm)
+        except ValueError:
+            self.home()                       # cornered: the reflex, then plan once more from HOME
+            return self._plan_grasp(b, at_mm, place_mm, travel_mm, drop_mm)
+
+    def _plan_grasp(self, b: Blob, at_mm, place_mm, travel_mm: float, drop_mm: float | None):
         from calibration.kinematics import tcp_uf0
         from lab import armcheck
         from lab import moves as MV
