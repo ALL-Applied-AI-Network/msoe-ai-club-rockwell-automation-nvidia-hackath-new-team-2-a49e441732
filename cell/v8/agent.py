@@ -81,7 +81,10 @@ class Mind:
             if ctx.deps.eyes is None:
                 return "no cell is connected: there is nothing to look at"
             ctx.deps.say("(looking from here)")
-            r = ctx.deps.eyes.look()
+            try:
+                r = ctx.deps.eyes.look()
+            except RuntimeError as e:
+                return str(e)
             ctx.deps.say("(" + r.split("\n")[0] + ")")
             return r
 
@@ -92,7 +95,10 @@ class Mind:
             if ctx.deps.eyes is None:
                 return "no cell is connected: there is nothing to scan"
             ctx.deps.say("(scanning the table from above)")
-            r = ctx.deps.eyes.scan()
+            try:
+                r = ctx.deps.eyes.scan()
+            except RuntimeError as e:
+                return str(e)
             ctx.deps.say("(" + r.split("\n")[0] + ")")
             return r
 
@@ -227,7 +233,10 @@ class Mind:
             if ctx.deps.eyes is None:
                 return "no cell is connected: there is nothing to look at"
             ctx.deps.say(f"(flying to look at ({x_mm:.0f}, {y_mm:.0f}))")
-            r = ctx.deps.eyes.look_at(x_mm, y_mm)
+            try:
+                r = ctx.deps.eyes.look_at(x_mm, y_mm)
+            except RuntimeError as e:
+                return str(e)
             ctx.deps.say("(" + r.split("\n")[0] + ")")
             return r
 
@@ -238,7 +247,10 @@ class Mind:
             if ctx.deps.eyes is None:
                 return "no cell is connected: there is nothing to inspect"
             ctx.deps.say(f"(inspecting blob #{blob}: three vantages)")
-            r = ctx.deps.eyes.inspect(blob)
+            try:
+                r = ctx.deps.eyes.inspect(blob)
+            except RuntimeError as e:
+                return str(e)
             ctx.deps.say("(" + r.split("\n")[-1] + ")")
             return r
 

@@ -77,17 +77,41 @@ def main() -> None:
     def wipe() -> None:
         """Reset and Clear both mean ALL of it: the mind's memory, the chat, the blobs, the viewer.
         A fresh start that remembers old views isn't fresh (they lump into the new world)."""
+        if st["eyes"] is not None:
+            st["eyes"].stop_now = True    # the running job halts at its next motion gate
         mind.forget()
         st["chat"] = []
         v8view.clear()
         if st["cell"] is not None and st["mode"] == "sim":
             st["eyes"] = Eyes(st["cell"], vw)
 
+    def staged(trial_name: str):
+        """Build a trial's scene with every object pulled INSIDE the arm's envelope: a test that
+        stages its own bin out of reach isn't testing the robot, it's testing the furniture."""
+        import numpy as np
+        from lab import primitives as P
+        from lab.trial import build as build_scene
+        sim = build_scene(LD.load_trial(trial_name), 0)
+        moved = 0
+        for inst in sim.instances:
+            x, y = float(inst.pos[0]), float(inst.pos[1])
+            r = float(np.hypot(x, y)) * 1000
+            if r > 440:
+                s = 435.0 / r
+                inst.pos[0], inst.pos[1] = x * s, y * s
+                moved += 1
+        for a in sim.instances:          # clamped things must not land on each other
+            for b_ in sim.instances:
+                if a.id < b_.id and np.hypot(a.pos[0] - b_.pos[0], a.pos[1] - b_.pos[1]) < 0.035:
+                    b_.pos[1] += 0.04 if b_.pos[1] >= a.pos[1] else -0.04
+        if moved:
+            say(f"staging: pulled {moved} thing(s) inside the reach ring")
+        return sim
+
     def connect_sim() -> str:
         from lab.isaaccell import IsaacCell
-        from lab.trial import build as build_scene, load_trial
         with lock:
-            st["cell"] = IsaacCell(build_scene(load_trial("chat_table"), 0))
+            st["cell"] = IsaacCell(staged("chat_table"))
             st["mode"] = "sim"
             st["eyes"] = Eyes(st["cell"], vw)
             v8view.setup()
@@ -231,9 +255,10 @@ def main() -> None:
                     if t is None:
                         return self._json({"error": f"no task {name!r}"}, 404)
                     from lab.isaaccell import IsaacCell
-                    from lab.trial import build as build_scene
+                    if st["eyes"] is not None:
+                        st["eyes"].stop_now = True
                     with lock:
-                        st["cell"] = IsaacCell(build_scene(LD.load_trial(name), 0))
+                        st["cell"] = IsaacCell(staged(name))
                         st["mode"] = "sim"
                         st["eyes"] = Eyes(st["cell"], vw)
                     mind.forget()

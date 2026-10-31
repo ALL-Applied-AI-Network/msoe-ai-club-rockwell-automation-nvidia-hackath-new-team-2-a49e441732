@@ -163,6 +163,7 @@ class Eyes:
         self.blobs: list[Blob] = []
         self._ids = itertools.count(1)
         self._shots = itertools.count(1)
+        self.stop_now = False     # reset/clear flips this on the OLD eyes: the running job halts
         from lab import primitives as P
         # the coverage ledger: which patch of the REACHABLE table surface some shot has actually
         # framed. What was never in any frame has never been looked at - and un-looked-at table is
@@ -345,11 +346,16 @@ class Eyes:
         print("home: un-cornering, re-planning from the home pose", flush=True)
         self.cell.play(np.asarray(rows, float), kind="joints")
 
+    def _check_stop(self) -> None:
+        if self.stop_now:
+            raise RuntimeError("stopped: Joel reset the session - this job is over")
+
     def _fly_cam(self, eye: np.ndarray, target: np.ndarray) -> None:
         """Put the WRIST CAMERA at eye, looking at target - the datarun's proven way: planned in
         JOINT space (tcp rows to tilted poses make the wrist writhe near J5=0 and the controller
         refuses them - joint_move's own docstring), armchecked, then sent. Works on the Isaac twin
         and the real cell alike (P.send speaks both). Verifies arrival from observed joints."""
+        self._check_stop()
         tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])   # an illegal POSE: homing can't help
         try:
             self._fly_rows(tip, wpr, eye)
@@ -639,6 +645,7 @@ class Eyes:
             return self._plan_grasp(b, at_mm, place_mm, travel_mm, drop_mm)
 
     def _plan_grasp(self, b: Blob, at_mm, place_mm, travel_mm: float, drop_mm: float | None):
+        self._check_stop()
         from calibration.kinematics import tcp_uf0
         from lab import armcheck
         from lab import moves as MV
