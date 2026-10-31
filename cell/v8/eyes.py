@@ -521,3 +521,206 @@ class Eyes:
 
     def state(self) -> str:
         return "\n".join(b.summary(self.grid) for b in self.blobs) or "nothing known yet"
+
+    # ---------------- hands: three motions, checks are the only authority ----------------
+    # grab_to and drop_into move GRASPABLE things (narrow side fits the jaws), slide-in first
+    # (descend into proven-empty space beside it, slide until it sits between the fingers: a miss
+    # is a non-event, not a fault), top pick only when no side is clear. The world model updates
+    # ONLY on what the verification looks found - never on what the motion intended.
+
+    GRASP_MM = 16.0   # the widest narrow-side the jaws take (pens, bolts, small blocks)
+
+    def yaw_of(self, b: Blob) -> float:
+        """The hull footprint's long axis (rad): a slide must come at a pen broadside."""
+        p = self.grid.pts[b.keep][:, :2]
+        if len(p) < 3:
+            return 0.0
+        _, _, vt = np.linalg.svd(p - p.mean(0))
+        return float(np.arctan2(vt[0, 1], vt[0, 0]))
+
+    def grip_mm(self, b: Blob) -> float:
+        """How wide the hull is across its NARROW side: what the jaws would have to swallow."""
+        p = self.grid.pts[b.keep][:, :2]
+        if len(p) < 3:
+            return 999.0
+        q = p - p.mean(0)
+        _, _, vt = np.linalg.svd(q)
+        return float(np.ptp(q @ vt[1])) * 1000 + VOX * 1000
+
+    def _hover(self, x_mm: float, y_mm: float) -> None:
+        """The camera above a point, top-down first, tilted fallback (same family as look_at)."""
+        tgt = np.array([x_mm / 1000.0, y_mm / 1000.0, SURFACE_Z + 0.01])
+        el, az = np.radians(50.0), np.arctan2(tgt[1], tgt[0]) + np.pi
+        last: Exception | None = None
+        for eye in [tgt + np.array([0.0, 0.0, 0.25]),
+                    tgt + 0.28 * np.array([np.cos(az) * np.cos(el), np.sin(az) * np.cos(el), np.sin(el)])]:
+            try:
+                self._fly_cam(eye, tgt)
+                return
+            except (ValueError, RuntimeError) as e:
+                last = e
+        raise ValueError(f"can't get the camera over ({x_mm:.0f}, {y_mm:.0f}): {last}")
+
+    def _spot_masks(self, x_mm: float, y_mm: float) -> list[tuple[float, float]]:
+        """Fly over a point and answer the binary question factory: where are SAM's things near
+        here, in mm? Verification only - these shots never carve (updates come from verdicts)."""
+        from calibration.geometry import pixel_to_base
+        self._hover(x_mm, y_mm)
+        img, j = self._grab()
+        shot = self._see(img, j)
+        cam = self.cams["wrist"]
+        w, h = cam["size"]
+        out = []
+        for m in shot.masks:
+            vs, us = np.nonzero(m["mask"])
+            mh, mw = m["mask"].shape
+            p = pixel_to_base(cam, (us.mean() * w / mw, vs.mean() * h / mh), joints=j)
+            out.append((float(p[0]) * 1000, float(p[1]) * 1000))
+        return out
+
+    def _translate(self, b: Blob, to_mm: tuple[float, float]) -> None:
+        """A CONFIRMED move teleports the rigid hull in the model: bookkeeping after the verdict,
+        never a prediction (Joel: update on validation, not on movement)."""
+        p = self.grid.pts[b.keep]
+        c = p[:, :2].mean(0) * 1000
+        dx = int(round((to_mm[0] - c[0]) / 1000 / VOX))
+        dy = int(round((to_mm[1] - c[1]) / 1000 / VOX))
+        vol = np.roll(b.keep.reshape(self.grid.shape), (dx, dy), axis=(0, 1))
+        if dx > 0:
+            vol[:dx] = False
+        elif dx < 0:
+            vol[dx:] = False
+        if dy > 0:
+            vol[:, :dy] = False
+        elif dy < 0:
+            vol[:, dy:] = False
+        b.keep = vol.ravel()
+        if self.view:
+            self.view.blobs(self.blobs, self.grid)
+
+    def _grasp_rows(self, b: Blob, at_mm: tuple[float, float], place_mm: tuple[float, float],
+                    travel_mm: float, drop_mm: float | None):
+        """Slide-in first, top pick as fallback; planned in joint space on the proven path."""
+        from calibration.kinematics import tcp_uf0
+        from lab import armcheck
+        from lab import moves as MV
+        cur_q = np.asarray(self.cell.observe(cams=())["joints"], float)
+        cur = tcp_uf0(cur_q)
+        jaw = float(np.degrees(self.yaw_of(b)) + 90.0)
+        at = (at_mm[0] / 1000.0, at_mm[1] / 1000.0)
+        place = (place_mm[0] / 1000.0, place_mm[1] / 1000.0)
+        length = max(1.0, max(float(np.ptp(self.grid.pts[b.keep][:, 0])),
+                              float(np.ptp(self.grid.pts[b.keep][:, 1]))) * 1000)
+
+        rounds = []              # every OTHER believed thing as a keep-out circle for the slide entry
+        for o in self._others(b):
+            po = self.grid.pts[o.keep]
+            rad = max(float(np.ptp(po[:, 0])), float(np.ptp(po[:, 1]))) * 500 + 20
+            rounds.append((float(po[:, 0].mean()) * 1000, float(po[:, 1].mean()) * 1000, rad))
+
+        def clear(xy) -> bool:   # the slide's entry point must be free of every other believed thing
+            return all(np.hypot(xy[0] * 1000 - ox, xy[1] * 1000 - oy) > orad for ox, oy, orad in rounds)
+
+        rows, how = MV.push_grasp(cur, at, jaw, length, place, travel_mm, drop_mm, clear)
+        if not rows:
+            rows, how = MV.pick_top(cur, at, jaw, place, travel_mm, drop_mm), f"top pick (slide: {how})"
+        else:
+            how = "slide-in grasp"
+        rep = armcheck.check(rows, cur_q, obstacles=self._obstacles_except(b))
+        if not rep.ok:
+            raise ValueError(f"the move fails the arm check: {rep.problem}")
+        jrows, why = MV.joints(rows, cur_q)
+        if jrows is None:
+            raise ValueError(f"no safe joint path: {why}")
+        return jrows, how
+
+    def _others(self, b: Blob):
+        return [o for o in self.blobs if o.id != b.id and o.keep.any()]
+
+    def _obstacles_except(self, b: Blob) -> list:
+        from lab.armcheck import Box
+        out = []
+        for o in self._others(b):
+            p = self.grid.pts[o.keep]
+            c = (p.min(0) + p.max(0)) / 2
+            half = (p.max(0) - p.min(0)) / 2 + 0.005
+            out.append(Box(np.array([c[0], c[1], c[2]]), 0.0, half, f"blob #{o.id}"))
+        return out
+
+    def grab_to(self, blob_id: int, x_mm: float, y_mm: float) -> str:
+        b = next((b for b in self.blobs if b.id == blob_id), None)
+        if b is None:
+            return f"there is no blob #{blob_id}"
+        gw = self.grip_mm(b)
+        if gw > self.GRASP_MM:
+            return (f"blob #{blob_id} is {gw:.0f} mm across its narrow side; the jaws take about "
+                    f"{self.GRASP_MM:.0f} mm. It can be labeled and used as a container, never moved.")
+        for o in self._others(b):   # the destination must be clear of everything we believe in
+            p = self.grid.pts[o.keep]
+            if np.hypot(p[:, 0].mean() * 1000 - x_mm, p[:, 1].mean() * 1000 - y_mm) < \
+               (max(np.ptp(p[:, 0]), np.ptp(p[:, 1])) * 1000 + gw) / 2 + 25:
+                return (f"({x_mm:.0f}, {y_mm:.0f}) is too close to blob #{o.id}: pick an empty spot "
+                        "at least ~25 mm clear of everything")
+        c = b.centre(self.grid)
+        sx, sy = c[0] * 1000, c[1] * 1000
+        cents = self._spot_masks(sx, sy)                      # fresh fix + the neighbour count
+        near = sorted((h for h in cents if np.hypot(h[0] - sx, h[1] - sy) < 35),
+                      key=lambda h: np.hypot(h[0] - sx, h[1] - sy))
+        n_before = sum(np.hypot(h[0] - sx, h[1] - sy) < 55 for h in cents)
+        if not near:
+            return f"blob #{blob_id} is NOT at ({sx:.0f}, {sy:.0f}) any more: look there before moving it"
+        gx, gy = near[0]
+        jrows, how = self._grasp_rows(b, (gx, gy), (x_mm, y_mm), 120.0, None)
+        print(f"grab: blob #{blob_id} ({gx:.0f}, {gy:.0f}) -> ({x_mm:.0f}, {y_mm:.0f}), {how}, "
+              f"{len(jrows)} rows", flush=True)
+        self.cell.play(np.asarray(jrows, float), kind="joints")
+        # the verdicts - and ONLY the verdicts - update the world
+        found = [h for h in self._spot_masks(x_mm, y_mm) if np.hypot(h[0] - x_mm, h[1] - y_mm) < 45]
+        if not found:
+            return (f"MISS: nothing found at ({x_mm:.0f}, {y_mm:.0f}) after the {how}. "
+                    f"Blob #{blob_id} should still be near ({gx:.0f}, {gy:.0f}): look, then retry.")
+        n_after = sum(np.hypot(h[0] - sx, h[1] - sy) < 55 for h in self._spot_masks(sx, sy))
+        self._translate(b, found[0])
+        src = ("the old spot is clear" if n_after == 0 else
+               f"{n_after} thing(s) still near the old spot (was {n_before})" +
+               ("" if n_after < n_before else " - the count did NOT drop: maybe a neighbour was moved instead"))
+        return (f"moved blob #{blob_id} with a {how}: confirmed at ({found[0][0]:.0f}, {found[0][1]:.0f}); {src}")
+
+    def drop_into(self, blob_id: int, container_id: int):
+        """Carry a graspable thing above an open-top container and let go; returns the story so far
+        plus the straight-down wrist shot for the yes/no glance (the caller asks the VLM)."""
+        b = next((x for x in self.blobs if x.id == blob_id), None)
+        cont = next((x for x in self.blobs if x.id == container_id), None)
+        if b is None or cont is None:
+            return f"no such blob (#{blob_id} or #{container_id})", None
+        gw = self.grip_mm(b)
+        if gw > self.GRASP_MM:
+            return f"blob #{blob_id} is too wide to grasp ({gw:.0f} mm): it cannot be put anywhere", None
+        pc = self.grid.pts[cont.keep]
+        cx, cy = pc[:, 0].mean() * 1000, pc[:, 1].mean() * 1000
+        top = (pc[:, 2].max() - SURFACE_Z) * 1000
+        c = b.centre(self.grid)
+        sx, sy = c[0] * 1000, c[1] * 1000
+        near = sorted((h for h in self._spot_masks(sx, sy) if np.hypot(h[0] - sx, h[1] - sy) < 35),
+                      key=lambda h: np.hypot(h[0] - sx, h[1] - sy))
+        if not near:
+            return f"blob #{blob_id} is NOT at ({sx:.0f}, {sy:.0f}) any more: look before moving it", None
+        jrows, how = self._grasp_rows(b, near[0], (cx, cy), max(130.0, top + 60.0), drop_mm=top + 15.0)
+        print(f"drop: blob #{blob_id} -> into #{container_id} at ({cx:.0f}, {cy:.0f}), {how}", flush=True)
+        self.cell.play(np.asarray(jrows, float), kind="joints")
+        self._hover(cx, cy)
+        img, _ = self._grab()
+        return f"dropped with a {how} above blob #{container_id} (top {top:.0f} mm)", img
+
+    def confirm_into(self, blob_id: int, container_id: int, inside: bool) -> None:
+        b = next((x for x in self.blobs if x.id == blob_id), None)
+        cont = next((x for x in self.blobs if x.id == container_id), None)
+        if b is None or cont is None:
+            return
+        if inside:
+            pc = self.grid.pts[cont.keep]
+            self._translate(b, (pc[:, 0].mean() * 1000, pc[:, 1].mean() * 1000))
+            b.name = (b.name or "blob") if "(in #" in (b.name or "") else \
+                     f"{b.name or 'blob'} (in #{container_id})"
+        if self.view:
+            self.view.blobs(self.blobs, self.grid)

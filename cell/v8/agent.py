@@ -37,8 +37,16 @@ not something to report - it is something to go settle by inspecting. An empty o
 means move and look again; looking costs nothing and you can look anywhere. Keep going until more
 looking would not change your answer, then say what you measured and what remains unknowable.
 
-Your limits, stated plainly when they matter: you cannot touch or move anything on the table -
-only your head moves. Your own eyes never recognize things; a blob stays an anonymous shape until
+You also have HANDS now, within hard limits you respect without being reminded: grab_to moves one
+GRASPABLE thing (its narrow side must fit the ~16 mm jaws: pens, bolts, small blocks) to an empty
+spot, sliding in from a clear side so small errors forgive themselves; put_in drops a graspable
+thing into an open-top container. Things too wide to grasp (bins, cups, trays) are terrain: label
+them, put things INTO them, never try to move them. The scene is static except for what YOU move.
+Every move is verified by looking, the model updates only on what the checks found, and a MISS is
+normal, not a failure: the object is still where it was, so look and try again. When sorting, the
+default is tidy piles on empty table, spaced well apart; when bins or cups are present, or Joel
+says to use them, sort into those instead.
+Your own eyes never recognize things; a blob stays an anonymous shape until
 the label tool reads a name off its closest photo, and a tight hull makes that name trustworthy. The table spans x 200..780 mm, y -360..360 mm, base at (0, 0), center near (480, 0).
 Joel sees a short line for every tool call as you work, so narrate sparsely and never pad. Report
 measurements, never imagination. Be direct and brief. You remember the whole conversation."""
@@ -117,6 +125,49 @@ class Mind:
             ctx.deps.say(f"(blob #{blob} looks like: {b.name})")
             return f"blob #{blob} is labeled: {b.name}" + (", flat on the table (a marking, not a thing)"
                                                            if flat else "")
+
+        @self.agent.tool
+        def grab_to(ctx: RunContext[Deps], blob: int, x_mm: float, y_mm: float) -> str:
+            """Pick up graspable blob <blob> (slide-in grasp; top pick only if no side is clear)
+            and set it down at the empty table point (x_mm, y_mm). The move is verified by looking:
+            you are told what was FOUND at the destination and at the old spot, and the world model
+            updates only from that. A MISS leaves the object where it was - look, then retry."""
+            if ctx.deps.eyes is None:
+                return "no cell is connected"
+            ctx.deps.say(f"(grabbing blob #{blob} to ({x_mm:.0f}, {y_mm:.0f}))")
+            try:
+                r = ctx.deps.eyes.grab_to(blob, x_mm, y_mm)
+            except (ValueError, RuntimeError) as e:
+                r = f"the move was refused: {e}"
+            ctx.deps.say("(" + r.split("\n")[0] + ")")
+            return r
+
+        @self.agent.tool
+        def put_in(ctx: RunContext[Deps], blob: int, container: int) -> str:
+            """Drop graspable blob <blob> into open-top container blob <container> (a bin, a cup):
+            carry it above the container's measured top, let go, gravity does the rest, and a
+            straight-down glance answers whether it is inside. The model updates on that answer."""
+            if ctx.deps.eyes is None:
+                return "no cell is connected"
+            ctx.deps.say(f"(dropping blob #{blob} into #{container})")
+            try:
+                story, img = ctx.deps.eyes.drop_into(blob, container)
+            except (ValueError, RuntimeError) as e:
+                return f"the move was refused: {e}"
+            if img is None:
+                return story
+            from lab import vlm
+            g = vlm.ask_image(img, f"Looking straight down at a container on a robot workcell table. "
+                              f"Is there a small object inside it (not beside it)? "
+                              'Answer JSON only: {"inside": true or false}',
+                              model=os.getenv("V8_LABEL_VLM", "openrouter/openai/gpt-6.1-terra"),
+                              think=False)
+            inside = bool(((g or {}).get("json") or {}).get("inside"))
+            ctx.deps.eyes.confirm_into(blob, container, inside)
+            verdict = "the glance confirms it is INSIDE" if inside else \
+                      "the glance does NOT see it inside: it may have bounced out - look around the container"
+            ctx.deps.say(f"({verdict})")
+            return f"{story}; {verdict}"
 
         @self.agent.tool
         def look_at(ctx: RunContext[Deps], x_mm: float, y_mm: float) -> str:
