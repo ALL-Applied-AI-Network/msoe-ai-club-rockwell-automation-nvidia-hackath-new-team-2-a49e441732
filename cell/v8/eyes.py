@@ -647,7 +647,9 @@ class Eyes:
     # is a non-event, not a fault), top pick only when no side is clear. The world model updates
     # ONLY on what the verification looks found - never on what the motion intended.
 
-    GRASP_MM = 16.0   # the widest narrow-side the jaws take (pens, bolts, small blocks)
+    GRASP_MM = 24.0   # the widest MEASURED narrow-side worth trying: real carves run 4-8 mm fat
+                      # (mask edges + dilation + hull slack; 15 mm cubes measured 16-20 on Oct 30),
+                      # so this is jaw capacity plus known inflation - the slide forgives the rest
 
     def yaw_of(self, b: Blob) -> float:
         """The hull footprint's long axis (rad): a slide must come at a pen broadside."""
