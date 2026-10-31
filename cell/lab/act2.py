@@ -182,6 +182,48 @@ def look_at(c, thing, xy, out, tell, say, k):
     return s
 
 
+def _rect(centre, angle_deg, size_mm, grow_mm=0.0):
+    """The corners (base m) of a thing's outline: centre, the long side's angle, (long, short) mm, grown by grow_mm."""
+    a = np.radians(angle_deg)
+    u, v = np.array([np.cos(a), np.sin(a)]), np.array([-np.sin(a), np.cos(a)])
+    L, W = (size_mm[0] / 2 + grow_mm) / 1000, (size_mm[1] / 2 + grow_mm) / 1000
+    c = np.asarray(centre, float)
+    return np.array([c + u * L + v * W, c - u * L + v * W, c - u * L - v * W, c + u * L - v * W])
+
+
+def _overlap(a, b) -> bool:
+    """Two convex outlines overlap (separating-axis test)."""
+    for poly in (a, b):
+        for i in range(len(poly)):
+            e = poly[(i + 1) % len(poly)] - poly[i]
+            n = np.array([-e[1], e[0]])
+            pa, pb = a @ n, b @ n
+            if pa.max() < pb.min() or pb.max() < pa.min():
+                return False
+    return True
+
+
+GAP_MM = 15.0           # a thing set down keeps this much clear of everything else
+UNSEEN_MM = 45.0        # a thing not yet looked at is taken as this big round its point
+REACH_SET_MM = 420.0    # set things down within this of the base (lab/scan.FAR_MM)
+
+
+def free_spot(want, angle_deg, size_mm, taken, step=0.01, far=0.20):
+    """The spot nearest `want` (base m) where a thing of size_mm, set down at angle_deg, clears every outline in
+    `taken` by GAP_MM, within reach: searched outward in rings. None if there's none within `far`."""
+    want = np.asarray(want, float)
+    for rr in np.arange(0.0, far + 1e-9, step):
+        n = 1 if rr == 0 else max(8, int(2 * np.pi * rr / step))
+        for k in range(n):
+            p = want + rr * np.array([np.cos(2 * np.pi * k / n), np.sin(2 * np.pi * k / n)])
+            if np.hypot(*p) * 1000 > REACH_SET_MM or p[0] < 0.25:
+                continue
+            me = _rect(p, angle_deg, size_mm, GAP_MM)
+            if not any(_overlap(me, o) for o in taken):
+                return p
+    return None
+
+
 def run_v2(c, t, out, before_img, look_pic, crop_box, say, tell, state, real=None, rerun_to=None) -> dict:
     from concurrent.futures import ThreadPoolExecutor
     from lab import vlm
@@ -222,6 +264,7 @@ def run_v2(c, t, out, before_img, look_pic, crop_box, say, tell, state, real=Non
                                        for m in moves_))
     seen: dict = {}
     done = []
+    placed: dict = {}   # name -> outline where it was set down this run
     for k, m in enumerate(moves_):
         th = things.get(m.get("thing"))
         if th is None or th["name"] not in xy_of:
@@ -250,7 +293,22 @@ def run_v2(c, t, out, before_img, look_pic, crop_box, say, tell, state, real=Non
             rim = (ds.top_mm if ds is not None and ds.top_mm else 50.0)
             drop = max(rim, 30.0) + 10.0
         elif m.get("to"):
-            place = to_table(m["to"], before_img, crop_box)
+            # the language model's spot is a suggestion: the nearest spot where this thing, as measured and at the angle
+            # it will land, clears everything on the table (looked at, not yet looked at, set down this run)
+            want = to_table(m["to"], before_img, crop_box)
+            taken = list(placed.values())
+            for n_, v in seen.items():
+                if n_ != th["name"] and n_ not in placed:
+                    taken.append(_rect(v.centre, v.angle_deg, v.size_mm))
+            for n_, xy_ in xy_of.items():
+                if n_ != th["name"] and n_ not in seen and n_ not in placed:
+                    taken.append(_rect(xy_, 0.0, (2 * UNSEEN_MM, 2 * UNSEEN_MM)))
+            place = free_spot(want, s.angle_deg, s.size_mm, taken)
+            if place is None:
+                tell(f"I can't find a clear spot near where the {th['name']} should go. Skipping it.")
+                continue
+            if np.linalg.norm(place - want) > 0.005:
+                say(f"  spot for the {th['name']}: moved {np.linalg.norm(place - want) * 1000:.0f} mm from the suggested one to be clear of the rest")
         elif m.get("push_to"):
             place = to_table(m["push_to"], before_img, crop_box)
         else:
@@ -290,4 +348,6 @@ def run_v2(c, t, out, before_img, look_pic, crop_box, say, tell, state, real=Non
             continue
         wait_still(c)
         done.append(m)
+        if m.get("to"):  # where it now lies (the jaws keep its angle)
+            placed[th["name"]] = _rect(place, s.angle_deg, s.size_mm)
     return {"plan": plan, "moves_done": done, "seconds": round(time.time() - t0)}
