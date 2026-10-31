@@ -97,8 +97,6 @@ def main() -> None:
     def lane(name, text):
         lad["lanes"][name] = {"text": text, "t": time.time()}
 
-    custom: dict = {}  # typed instructions: task name -> its trial (look and act, the table as it is)
-
     def ladder_loop(names):
         lad["root"] = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_ladder"
         lad["stop"] = False
@@ -107,13 +105,11 @@ def main() -> None:
                 break
             lad["running"] = n
             lad["results"][n] = {"state": "running"}
-            tr = custom.get(n) or LD.load_trial(n)
-            chat.banner.update(phase="working", headline=tr["instruction"])
+            chat.banner.update(phase="working", headline=LD.load_trial(n)["instruction"])
             board.add("status", json.dumps(chat.banner))
             say = lambda line: board.add("log", line.strip())
             tell = lambda text: board.add("robot", text)
-            if n not in custom:  # (a typed one is already on the page)
-                board.add("you", tr["instruction"])
+            board.add("you", LD.load_trial(n)["instruction"])
             lad["lanes"], lad["t0"] = {}, time.time()
             for attempt in (1, 2):
                 try:
@@ -122,8 +118,8 @@ def main() -> None:
                         cl = robot.cell.client
                         real = (robot.cell.url, cl.s.headers["Authorization"].split(" ", 1)[1],
                                 cl.s.verify if isinstance(cl.s.verify, str) else None)
-                    r = LD.run(n, lad["root"] / (n if attempt == 1 else n + "_retry"), say=say, rerun_to=task_uri,
-                               tell=tell, state=lane, real=real, trial=custom.get(n))
+                    r = LD.run(n, lad["root"] / (n if attempt == 1 else n + "_retry"), say=say, rerun_to=robot.viewer_uri,
+                               tell=tell, state=lane, real=real)
                     break
                 except Exception as e:
                     r = {"task": n, "ok": False, "why": f"{type(e).__name__}: {e}"}
@@ -140,15 +136,7 @@ def main() -> None:
         done = [r for r in lad["results"].values() if r.get("state") in ("pass", "fail")]
         chat.banner.update(phase="done", headline=f"Ladder: {sum(r['state'] == 'pass' for r in done)}/{len(done)} passed")
         board.add("status", json.dumps(chat.banner))
-    # the page's viewer shows the tasks only (each task's scan or looks), on a server of its own: not the old chat
-    # robot's recording, which still lives on robot.viewer_uri for the older tools
-    import rerun as rr
-    TASK_GRPC, TASK_WEB = 9877, 9091
-    task_rec = rr.RecordingStream("tasks")
-    task_rec.set_sinks(rr.GrpcServerSink(bind_ip="127.0.0.1", port=TASK_GRPC))
-    task_uri = f"rerun+http://127.0.0.1:{TASK_GRPC}/proxy"
-    rr.serve_web_viewer(web_port=TASK_WEB, open_browser=False, connect_to=task_uri)
-    viewer = f"http://127.0.0.1:{TASK_WEB}/?url={quote(task_uri, safe='')}"
+    viewer = f"http://127.0.0.1:9090/?url={quote(robot.viewer_uri, safe='')}"
     board.add("system", "Ready. The Isaac window on the GPU box is the real world; the right side here is what I think.")
 
     class H(BaseHTTPRequestHandler):
@@ -194,9 +182,7 @@ def main() -> None:
                         out.append(f"{n_} {col}{w}{'s' * (n_ > 1)}")
                     return ", ".join(out)
                 self._json({"tasks": [{"name": n, "instruction": LD.load_trial(n)["instruction"],
-                                       "setup": setup(LD.load_trial(n))} for n in names] +
-                           [{"name": n, "instruction": tr["instruction"], "setup": "the table as it is (typed in the chat)"}
-                            for n, tr in custom.items()],
+                                       "setup": setup(LD.load_trial(n))} for n in names],
                             "running": lad["running"], "results": lad["results"], "lanes": lad["lanes"],
                             "now": time.time(), "t0": lad["t0"]})
             elif self.path.startswith("/runs/"):  # pictures and results from runs/ (nothing outside it)
@@ -234,15 +220,27 @@ def main() -> None:
                 text = (body.get("text") or "").strip()
                 if text:
                     board.add("you", text)
-                    # a typed instruction runs as a task: look and act (still looks, SAM, the three moves, every
-                    # move checked), the table as it is; not the older chat robot
-                    if lad["running"]:
-                        board.add("robot", f"I'm still on {lad['running']}; tell me again when it's done.")
+                    if text.lower().startswith("v7:"):  # the new robot: lab/v7run.run on this cell
+                        wish = text[3:].strip() or "look around and say what you see"
+                        if getattr(robot, "v7_busy", False):
+                            board.add("robot", "(v7 is already running: one task at a time)")
+                        else:
+                            def _v7(wish=wish):
+                                robot.v7_busy = True
+                                board.add("robot", "v7: looking around - watch the Rerun window for my head")
+                                try:
+                                    from lab import v7run
+                                    v7run.run(robot.cell, wish, headless=False, tag="v7")
+                                    board.add("robot", "v7: done (the whole story is in the Rerun window)")
+                                except Exception as e:
+                                    board.add("robot", f"v7 stopped: {e}")
+                                finally:
+                                    robot.v7_busy = False
+                            threading.Thread(target=_v7, daemon=True).start()
                     else:
-                        n = f"chat_{time.strftime('%H%M%S')}"
-                        custom[n] = {"name": n, "instruction": text, "mode": "v2", "as_is": True, "objects": [],
-                                     "fixtures": [], "goal": []}
-                        threading.Thread(target=ladder_loop, args=([n],), daemon=True).start()
+                        if state["distract"]:
+                            robot.distract(2.0)
+                        threading.Thread(target=chat.user, args=(text,), daemon=True).start()
                 self._json({})
             elif self.path == "/hands":
                 try:

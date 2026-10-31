@@ -120,10 +120,10 @@ class IsaacCell:
         """at=None picks a clear spot: every box dropped on one hard-coded point lands inside the
         previous box and PhysX shoves them into a tangle."""
         if at is None:
-            taken = [(q[0], q[1]) for q in self.poses.values()]
+            taken = [(p[0], p[1]) for p in self.poses.values()]
             for cand in [(0.30, 0.22), (0.30, 0.10), (0.30, -0.02), (0.30, -0.14),
                          (0.38, 0.22), (0.38, 0.10), (0.38, -0.02), (0.46, 0.22)]:
-                if all(np.hypot(cand[0] - q[0], cand[1] - q[1]) > 0.08 for q in taken):
+                if all(np.hypot(cand[0] - p[0], cand[1] - p[1]) > 0.08 for p in taken):
                     at = cand
                     break
             else:
