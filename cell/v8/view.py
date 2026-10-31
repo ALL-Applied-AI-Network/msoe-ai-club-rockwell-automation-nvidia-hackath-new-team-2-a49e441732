@@ -27,6 +27,12 @@ def setup() -> None:
                                      colors=[(235, 235, 235)], fill_mode="solid"), static=True)
 
 
+def clear() -> None:
+    """Every shot pyramid and every blob volume, gone from the viewer: a fresh head."""
+    rr.log("world/shots", rr.Clear(recursive=True))
+    rr.log("world/blobs", rr.Clear(recursive=True))
+
+
 class View:
     def __init__(self) -> None:
         self.step = 0

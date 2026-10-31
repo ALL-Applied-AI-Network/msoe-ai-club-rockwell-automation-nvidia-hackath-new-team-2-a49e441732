@@ -74,6 +74,15 @@ def main() -> None:
     names = sorted(f.stem for f in LD.TRIALS.glob("ladder*.yaml"))
     tasks = [{"name": n, "instruction": LD.load_trial(n)["instruction"]} for n in names]
 
+    def wipe() -> None:
+        """Reset and Clear both mean ALL of it: the mind's memory, the chat, the blobs, the viewer.
+        A fresh start that remembers old views isn't fresh (they lump into the new world)."""
+        mind.forget()
+        st["chat"] = []
+        v8view.clear()
+        if st["cell"] is not None and st["mode"] == "sim":
+            st["eyes"] = Eyes(st["cell"], vw)
+
     def connect_sim() -> str:
         from lab.isaaccell import IsaacCell
         from lab.trial import build as build_scene, load_trial
@@ -169,7 +178,9 @@ def main() -> None:
                 elif self.path == "/reset":
                     if st["mode"] != "sim":
                         raise RuntimeError("reset is the simulator's; the real table is reset by hand")
-                    msg = "reset: " + connect_sim()
+                    msg = connect_sim()
+                    wipe()
+                    msg = "reset: " + msg + "; mind, chat and world model cleared"
                 elif self.path == "/hands":
                     msg = hands(body)
                 elif self.path == "/say":
@@ -187,9 +198,8 @@ def main() -> None:
                     t = st["cell"].start_trial()
                     msg = f"trial {t['trial_id']} is running"
                 elif self.path == "/chat/clear":
-                    mind.forget()
-                    st["chat"] = []
-                    msg = "chat cleared: it remembers nothing now"
+                    wipe()
+                    msg = "cleared: chat, memory and the world model - it knows nothing now"
                 elif self.path == "/task":
                     st["task"] = body.get("name")
                     msg = f"task selected: {st['task']} (the mind has no tools yet: it goes nowhere)"
