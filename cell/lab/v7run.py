@@ -241,6 +241,7 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
                 t, c = w[int(do["into"]["thing"])], w[int(do["into"]["container"])]
             except (KeyError, TypeError, ValueError) as e:
                 worldview.trace("plan", f"bad into {do['into']}: {e}", "WARN")
+                print(f"bad into {do['into']}: {e}", flush=True)
                 done.append(f"your into call {do['into']} made no sense")
                 continue
             obs = cell.observe()
@@ -256,6 +257,7 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
             worldview.things(w)
             worldview.trace("plan", f"{t.name} #{t.id} -> into {c.name} #{c.id}: "
                             + ("ok" if rep.ok else rep.problem), "INFO" if rep.ok else "WARN")
+            print(f"into: {t.name} #{t.id} -> {c.name} #{c.id}: {'ok' if rep.ok else rep.problem}", flush=True)
             if not rep.ok:
                 w.confirm(t.id, found=None)
                 done.append(f"{t.name} #{t.id} into {c.name} #{c.id} refused: {rep.problem}")
@@ -270,6 +272,7 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
                 inside = bool((g.get("json") or {}).get("inside"))
                 worldview.trace("check", f"glance: {t.name} inside {c.name}? {inside}",
                                 "INFO" if inside else "WARN")
+                print(f"glance: {t.name} inside {c.name}? {inside}", flush=True)
                 ok = w.confirm(t.id, (c.x_mm, c.y_mm) if inside else None)
                 if inside:
                     w[t.id].note = f"in {c.name} #{c.id}"
