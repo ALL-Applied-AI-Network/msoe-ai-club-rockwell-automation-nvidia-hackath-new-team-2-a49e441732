@@ -724,3 +724,37 @@ class Eyes:
                      f"{b.name or 'blob'} (in #{container_id})"
         if self.view:
             self.view.blobs(self.blobs, self.grid)
+
+    def pile_spots(self, counts: list[int]) -> list[list[tuple[float, float]]]:
+        """The layout service: a TIDY LINE of piles a person can read at a glance - group anchors
+        evenly spaced across the comfortable middle of the workspace, items gridded 38 mm apart
+        within each group, the whole line nudged outward until it clears everything believed in.
+        (Emergent farthest-point spots hugged corners and looked like noise: Joel vetoed them.)"""
+        k = len(counts)
+        if k == 0:
+            return []
+        rounds = []
+        for b in self.blobs:
+            p = self.grid.pts[b.keep]
+            if len(p):
+                rounds.append((float(p[:, 0].mean()) * 1000, float(p[:, 1].mean()) * 1000,
+                               max(float(np.ptp(p[:, 0])), float(np.ptp(p[:, 1]))) * 500 + 30))
+        span = min(120.0 * (k - 1), 440.0)
+        ys = [0.0] if k == 1 else list(np.linspace(-span / 2, span / 2, k))
+        for ax in (320.0, 380.0, 440.0, 260.0):        # the line slides in x until it clears everything
+            spots = []
+            ok = True
+            for ay, n in zip(ys, counts):
+                offs = [(dx * 38 - 38, dy * 38 - 38) for dy in range(3) for dx in range(3)]
+                sp = [(ax + ox, ay + oy) for ox, oy in offs][:n]
+                from lab import primitives as P
+                for x, y in sp:
+                    if not P.reachable(x / 1000, y / 1000, margin_mm=20) or                        any(np.hypot(x - ox_, y - oy_) < orad + 25 for ox_, oy_, orad in rounds):
+                        ok = False
+                        break
+                if not ok:
+                    break
+                spots.append(sp)
+            if ok:
+                return spots
+        return []   # no clear line fits: the caller says so and the mind shrinks the job

@@ -43,9 +43,11 @@ spot, sliding in from a clear side so small errors forgive themselves; put_in dr
 thing into an open-top container. Things too wide to grasp (bins, cups, trays) are terrain: label
 them, put things INTO them, never try to move them. The scene is static except for what YOU move.
 Every move is verified by looking, the model updates only on what the checks found, and a MISS is
-normal, not a failure: the object is still where it was, so look and try again. When sorting, the
-default is tidy piles on empty table, spaced well apart; when bins or cups are present, or Joel
-says to use them, sort into those instead.
+normal, not a failure: the object is still where it was, so look and try again. A sorting job is a set partition: declare it ONCE with set_plan (groups of object ids; into for
+container groups) and the tool hands back the full contract - spots chosen for you - which you
+then execute move by move. The default is tidy piles on empty table; when bins or cups are
+present, or Joel says to use them, sort into those instead. Directions: x grows away from the
+robot's base, +y is the robot's left - when Joel says left or right, say which way you took it.
 Your own eyes never recognize things; a blob stays an anonymous shape until
 the label tool reads a name off its closest photo, and a tight hull makes that name trustworthy. The table spans x 200..780 mm, y -360..360 mm, base at (0, 0), center near (480, 0).
 Joel sees a short line for every tool call as you work, so narrate sparsely and never pad. Report
@@ -125,6 +127,48 @@ class Mind:
             ctx.deps.say(f"(blob #{blob} looks like: {b.name})")
             return f"blob #{blob} is labeled: {b.name}" + (", flat on the table (a marking, not a thing)"
                                                            if flat else "")
+
+        @self.agent.tool
+        def set_plan(ctx: RunContext[Deps], groups: dict[str, list[int]],
+                     into: dict[str, int] | None = None) -> str:
+            """Declare a sorting job ONCE, before moving anything: every object id into exactly one
+            named group (a partition - no object in two groups). into maps a group to a container
+            blob id; every other group gets a pile spot chosen for you in empty reachable space.
+            The returned assignments are the contract: execute them one by one with grab_to /
+            put_in, and treat each verification's verdict as the checkmark."""
+            eyes = ctx.deps.eyes
+            if eyes is None:
+                return "no cell is connected"
+            into = into or {}
+            known = {b.id: b for b in eyes.blobs}
+            seen_ids: set[int] = set()
+            for g, ids in groups.items():
+                for i in ids:
+                    if i not in known:
+                        return f"there is no blob #{i} (group {g!r})"
+                    if i in seen_ids:
+                        return f"blob #{i} is in two groups: a partition puts each object in exactly one"
+                    seen_ids.add(i)
+                    if g not in into and eyes.grip_mm(known[i]) > eyes.GRASP_MM:
+                        return (f"blob #{i} (group {g!r}) is too wide to grasp: it cannot be moved - "
+                                "leave it out, or make it a container with into")
+            for g, cid in into.items():
+                if cid not in known:
+                    return f"group {g!r} points into container #{cid}, which does not exist"
+            pile_groups = [g for g in groups if g not in into]
+            spots = eyes.pile_spots([len(groups[g]) for g in pile_groups])
+            lines = ["THE PLAN (the contract until replaced):"]
+            for g, sp in zip(pile_groups, spots):
+                if len(sp) < len(groups[g]):
+                    lines.append(f"  {g}: NOT ENOUGH CLEAR TABLE for {len(groups[g])} spots - shrink the job")
+                for bid, (x, y) in zip(groups[g], sp):
+                    lines.append(f"  {g}: blob #{bid} -> grab_to ({x:.0f}, {y:.0f})")
+            for g, cid in into.items():
+                for bid in groups[g]:
+                    lines.append(f"  {g}: blob #{bid} -> put_in container #{cid}")
+            plan = "\n".join(lines)
+            ctx.deps.say("(" + plan.replace("\n", " · ") [:200] + ")")
+            return plan
 
         @self.agent.tool
         def grab_to(ctx: RunContext[Deps], blob: int, x_mm: float, y_mm: float) -> str:
