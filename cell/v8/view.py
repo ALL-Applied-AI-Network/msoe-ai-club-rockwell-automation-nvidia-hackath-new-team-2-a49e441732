@@ -101,5 +101,6 @@ class View:
             rr.log(f"world/blobs/{b.id}", rr.Mesh3D(vertex_positions=verts, triangle_indices=faces,
                                                     vertex_normals=normals, albedo_factor=col))
             top = verts[verts[:, 2].argmax()]
+            tag = f"{b.name} #{b.id}" if getattr(b, "name", "") else f"blob #{b.id}"
             rr.log(f"world/blobs/{b.id}/tag", rr.Points3D([top + [0, 0, 0.01]], radii=0.0008,
-                                                          colors=[col], labels=[f"blob #{b.id}"]))
+                                                          colors=[col], labels=[tag]))

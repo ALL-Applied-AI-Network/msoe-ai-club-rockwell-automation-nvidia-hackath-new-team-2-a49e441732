@@ -50,21 +50,26 @@ class Grid:
 
 @dataclass
 class Blob:
-    """An anonymous shape: a volume of space that evidence says is occupied. No name, ever (here)."""
+    """An anonymous shape: a volume of space that evidence says is occupied. The eyes never name
+    it; name is written by the mind's label tool (the ventral stream), after the shape is carved."""
     id: int
     keep: np.ndarray                 # bool over grid.pts: still possible after every shot so far
     shots: int = 1
     born: float = field(default_factory=time.time)
+    name: str = ""                   # the mind's label, once it asks for one
+    best_crop: np.ndarray | None = None   # the closest photo of it so far (for labeling)
+    best_px: int = 0                 # that crop's mask size: bigger = closer = better
 
     def summary(self, grid: Grid) -> str:
         p = grid.pts[self.keep]
+        who = f"{self.name} (blob #{self.id})" if self.name else f"blob #{self.id}"
         if not len(p):
-            return f"blob #{self.id}: carved away to nothing"
+            return f"{who}: carved away to nothing"
         x, y = p[:, 0].mean() * 1000, p[:, 1].mean() * 1000
         sx, sy = np.ptp(p[:, 0]) * 1000 + VOX * 1000, np.ptp(p[:, 1]) * 1000 + VOX * 1000
         top = (p[:, 2].max() - SURFACE_Z) * 1000
         sure = "height still a guess (one view)" if self.shots < 2 else f"seen from {self.shots} angles"
-        return (f"blob #{self.id}: around ({x:.0f}, {y:.0f}) mm, footprint ~{sx:.0f} x {sy:.0f} mm, "
+        return (f"{who}: around ({x:.0f}, {y:.0f}) mm, footprint ~{sx:.0f} x {sy:.0f} mm, "
                 f"up to {top:.0f} mm tall - {sure}")
 
     def centre(self, grid: Grid) -> np.ndarray | None:
@@ -210,6 +215,7 @@ class Eyes:
             if own is not None:
                 b.keep &= cones[own] | ~in_frame | (any_mask & ~cones[own])   # mine, unknown, or occluded
                 b.shots += 1
+                self._keep_crop(b, shot, own)
             else:
                 b.keep &= ~in_frame | any_mask   # not seen here: clear table carves, other masks occlude
 
@@ -220,12 +226,34 @@ class Eyes:
             keep = cones[i].copy()
             if keep.sum() >= 4:
                 b = Blob(next(self._ids), keep)
+                self._keep_crop(b, shot, i)
                 self.blobs.append(b)
                 born.append(b)
         self.blobs = [b for b in self.blobs if b.keep.any()]
         if self.view:
             self.view.blobs(self.blobs, self.grid)
         return born
+
+    def _keep_crop(self, b: Blob, shot: Shot, mi: int) -> None:
+        """Remember the closest photo of this blob (biggest mask = closest view): the labeling
+        tool sends exactly this crop to the vision model, so the name is read off the best look."""
+        m = shot.masks[mi]["mask"]
+        px = int(m.sum())
+        if px <= b.best_px:
+            return
+        vs, us = np.nonzero(m)
+        mh, mw = m.shape
+        ih, iw = shot.image.shape[:2]
+        x0, x1 = int(us.min() * iw / mw), int(us.max() * iw / mw)
+        y0, y1 = int(vs.min() * ih / mh), int(vs.max() * ih / mh)
+        r = max(x1 - x0, y1 - y0) // 2 + 24
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        crop = shot.image[max(0, cy - r):cy + r, max(0, cx - r):cx + r]
+        if crop.size and min(crop.shape[:2]) < 300:   # blow tiny crops up so the model sees pixels
+            s = 300 / min(crop.shape[:2])
+            crop = cv2.resize(crop, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
+        if crop.size:
+            b.best_crop, b.best_px = crop, px
 
     # ---------------- aiming: motion planning, not the LLM ----------------
 
@@ -306,6 +334,25 @@ class Eyes:
         return out
 
     # ---------------- what the mind calls ----------------
+
+    def scan(self) -> str:
+        """The opening move, hardcoded on purpose (we are on the clock): a few top-down shots
+        covering the table, flown first, SAM'd after - finds the columns of stuff in one sweep."""
+        spots = [(0.34, -0.17), (0.34, 0.17), (0.52, -0.17), (0.52, 0.17)]
+        taken, skipped = [], []
+        for x, y in spots:
+            try:
+                self._fly_cam(np.array([x, y, SURFACE_Z + 0.33]), np.array([x, y, SURFACE_Z + 0.01]))
+            except (ValueError, RuntimeError) as e:
+                skipped.append(f"({x * 1000:.0f}, {y * 1000:.0f}): {e}")
+                continue
+            taken.append(self._grab())
+        for img, joints in taken:
+            self._carve(self._see(img, joints))
+        lines = [f"scanned the table from above: {len(taken)} shots" +
+                 (f", {len(skipped)} spots unreachable" if skipped else "")]
+        lines += [b.summary(self.grid) for b in self.blobs] or ["nothing found"]
+        return "\n".join(lines)
 
     def look_at(self, x_mm: float, y_mm: float) -> str:
         """Move the head: hover the camera over that table point (top-down first, a 50-degree

@@ -23,10 +23,11 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider  # noqa: E402
 
 PERSONA = """You are the mind of a FANUC ER-4iA robot arm in a small work cell at a hackathon,
 talking with Joel, who built you. Your mission, which you are fully capable of: starting from
-nothing, figure out the state of the scene on the table - find every shape, fly around it, carve
-its true 3D form - and keep working until the goal of the conversation is achieved. Joel believes
-in you; be ambitious. You own your head, and when you don't know something you can find out, you
-go find out - on your own, without being told to. Your eyes are
+nothing, figure out the state of the scene on the table - scan for the columns of stuff, fly
+around each shape, carve its true 3D form, then find out what each one IS (label) - and keep
+working until the goal of the conversation is achieved. Joel believes in you; be ambitious. You
+own your head, and when you don't know something you can find out, you go find out - on your own,
+without being told to. Your eyes are
 tools: look (a photo from where the camera is), look_at (fly the camera anywhere over the table
 and look from there), inspect (fly three vantages around one blob and carve its real shape).
 
@@ -36,9 +37,9 @@ not something to report - it is something to go settle by inspecting. An empty o
 means move and look again; looking costs nothing and you can look anywhere. Keep going until more
 looking would not change your answer, then say what you measured and what remains unknowable.
 
-Your limits, stated plainly when they matter: you cannot name or recognize what things ARE (a blob
-is a shape, not a thing), and you cannot touch or move anything on the table - only your head
-moves. The table spans x 200..780 mm, y -360..360 mm, base at (0, 0), center near (480, 0).
+Your limits, stated plainly when they matter: you cannot touch or move anything on the table -
+only your head moves. Your own eyes never recognize things; a blob stays an anonymous shape until
+the label tool reads a name off its closest photo, and a tight hull makes that name trustworthy. The table spans x 200..780 mm, y -360..360 mm, base at (0, 0), center near (480, 0).
 Joel sees a short line for every tool call as you work, so narrate sparsely and never pad. Report
 measurements, never imagination. Be direct and brief. You remember the whole conversation."""
 
@@ -69,6 +70,49 @@ class Mind:
             r = ctx.deps.eyes.look()
             ctx.deps.say("(" + r.split("\n")[0] + ")")
             return r
+
+        @self.agent.tool
+        def scan(ctx: RunContext[Deps]) -> str:
+            """Survey the whole table: a quick sweep of top-down shots that finds the columns of
+            stuff. The natural opening move when you know nothing about the scene yet."""
+            if ctx.deps.eyes is None:
+                return "no cell is connected: there is nothing to scan"
+            ctx.deps.say("(scanning the table from above)")
+            r = ctx.deps.eyes.scan()
+            ctx.deps.say("(" + r.split("\n")[0] + ")")
+            return r
+
+        @self.agent.tool
+        def label(ctx: RunContext[Deps], blob: int) -> str:
+            """Ask a vision model what blob <blob> actually IS (a name and a color), read off the
+            closest photo of it. Most trustworthy after inspect has carved the shape tight."""
+            if ctx.deps.eyes is None:
+                return "no cell is connected: there is nothing to label"
+            b = next((b for b in ctx.deps.eyes.blobs if b.id == blob), None)
+            if b is None:
+                return f"there is no blob #{blob}"
+            if b.best_crop is None:
+                return f"no photo of blob #{blob} yet: look or inspect first"
+            ctx.deps.say(f"(asking what blob #{blob} is)")
+            from lab import vlm
+            r = vlm.ask_image(b.best_crop,
+                              'This is a close-up crop of ONE thing on a robot workcell table, at the '
+                              'center of the picture. What is it? Answer JSON only: '
+                              '{"what": "<2-4 words>", "color": "<word>", "flat": true or false}',
+                              model=os.getenv("V8_LABEL_VLM", "openrouter/openai/gpt-6.1-terra"),
+                              think=False)
+            if r is None:
+                raise RuntimeError("no vision model answers (check cell/.env keys)")
+            j = r.get("json") or {}
+            what, color, flat = j.get("what"), j.get("color", ""), j.get("flat")
+            if not what:
+                return f"the vision model gave no readable answer: {(r.get('text') or '')[:120]}"
+            b.name = f"{color} {what}".strip()
+            if ctx.deps.eyes.view:
+                ctx.deps.eyes.view.blobs(ctx.deps.eyes.blobs, ctx.deps.eyes.grid)
+            ctx.deps.say(f"(blob #{blob} looks like: {b.name})")
+            return f"blob #{blob} is labeled: {b.name}" + (", flat on the table (a marking, not a thing)"
+                                                           if flat else "")
 
         @self.agent.tool
         def look_at(ctx: RunContext[Deps], x_mm: float, y_mm: float) -> str:
