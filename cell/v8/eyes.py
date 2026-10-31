@@ -392,8 +392,17 @@ class Eyes:
             q = self._joints()[:6]
             err = np.abs(q - leg[-1][:6])
             if err.max() > 4.0:
-                raise RuntimeError(f"{what} leg did not land: J{int(err.argmax()) + 1} is "
-                                   f"{err.max():.0f} deg from the plan - the cell did not follow")
+                # the real arm trails its queue by up to a second and can read 'still' mid-catch-up:
+                # a miss only counts if it persists once the arm has had its beat to arrive
+                for _ in range(6):
+                    time.sleep(0.4)
+                    q = self._joints()[:6]
+                    err = np.abs(q - leg[-1][:6])
+                    if err.max() <= 4.0:
+                        break
+                else:
+                    raise RuntimeError(f"{what} leg did not land: J{int(err.argmax()) + 1} is "
+                                       f"{err.max():.0f} deg from the plan - the cell did not follow")
 
     def _fly_cam(self, eye: np.ndarray, target: np.ndarray) -> None:
         """Put the WRIST CAMERA at eye, looking at target - the datarun's proven way: planned in
