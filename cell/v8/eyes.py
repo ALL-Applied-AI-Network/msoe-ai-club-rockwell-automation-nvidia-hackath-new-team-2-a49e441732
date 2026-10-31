@@ -326,15 +326,21 @@ class Eyes:
 
     def _obstacles(self) -> list:
         """Every blob's current volume as an armcheck box: the arm plans around what the eyes
-        believe is there - inspected ones included, since looking never requires touching."""
+        believe is there - inspected ones included, since looking never requires touching. The one
+        exception is honest: while a blob is being INSPECTED, its box height is capped at 70 mm
+        (nothing in this cell is taller than the 55 mm bins), because a one-glance slack hull is a
+        phantom tower whose air would otherwise veto the very looks that carve it away."""
         from lab.armcheck import Box
         out = []
         for b in self.blobs:
             p = self.grid.pts[b.keep]
             if not len(p):
                 continue
-            c = (p.min(0) + p.max(0)) / 2
-            half = (p.max(0) - p.min(0)) / 2 + 0.005
+            lo, hi = p.min(0).copy(), p.max(0).copy()
+            if b.id == getattr(self, "_inspecting", None):
+                hi[2] = min(hi[2], SURFACE_Z + 0.070)
+            c = (lo + hi) / 2
+            half = (hi - lo) / 2 + 0.005
             out.append(Box(np.array([c[0], c[1], c[2]]), 0.0, half, f"blob #{b.id}"))
         return out
 
@@ -422,11 +428,8 @@ class Eyes:
         half = np.arctan(min(cam["size"]) / 2 / cam["fx"])        # the tight half-angle of the frame
         dist = float(np.clip(blob.extent(self.grid) / 2 / np.tan(half) * 1.6 + 0.04, 0.20, 0.42))
         out = []
-        try:
-            ik_for(foot + np.array([0.0, 0.0, dist]), c, cam["T"])
+        if self._flyable(foot + np.array([0.0, 0.0, dist]), c):
             out.append((foot + np.array([0.0, 0.0, dist]), c))
-        except ValueError:
-            pass
         # two elevations: 40 deg shapes the sides, and a LOW 22 deg grazes the top - without the low
         # looks a tall thing keeps a pyramid tent over it (steep silhouettes can never cut it off).
         # Low poses fight the 95 mm fingertip floor, so many azimuths are tried to find legal ones.
@@ -437,15 +440,26 @@ class Eyes:
                       np.pi * 0.3, -np.pi * 0.3, np.pi * 1.7):   # base side first: reachable
                 az = base_az + a
                 eye = foot + dist * np.array([np.cos(az) * np.cos(el), np.sin(az) * np.cos(el), np.sin(el)])
-                try:
-                    ik_for(eye, c, cam["T"])
-                except ValueError:
+                if not self._flyable(eye, c):
                     continue
                 out.append((eye, c))
                 got += 1
                 if got == quota:
                     break
         return out
+
+    def _flyable(self, eye: np.ndarray, target: np.ndarray) -> bool:
+        """Can this vantage be FULLY planned (pose, path, obstacles), from HOME, on paper? Costs
+        milliseconds; proposing a vantage the flight planner will refuse costs visible stutter -
+        the grazing low poses fail joint_move's come-down-from-above template more often than not,
+        and the only cheap place to learn that is before anything moves."""
+        from calibration.kinematics import HOME
+        try:
+            tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])
+            self._plan_fly(tip, wpr, np.asarray(HOME, float)[:6])
+            return True
+        except (ValueError, RuntimeError):
+            return False
 
     # ---------------- what the mind calls ----------------
 
@@ -548,6 +562,7 @@ class Eyes:
             return f"there is no blob #{blob_id}; current blobs: " + (
                 ", ".join(f"#{x.id}" for x in self.blobs) or "none")
         story, taken = [], []
+        self._inspecting = b.id        # its slack crown must not veto the looks that would carve it
         for n, (eye, tgt) in enumerate(self._vantages(b), 1):   # move, snap, move, snap - SAM after
             try:
                 self._fly_cam(eye, tgt)
@@ -555,6 +570,7 @@ class Eyes:
                 story.append(f"vantage {n}: {e}")      # the decider hears the verdict, whole
                 continue
             taken.append((n, self._grab()))
+        self._inspecting = None
         for n, (img, joints) in taken:
             shot = self._see(img, joints)
             self._carve(shot)
