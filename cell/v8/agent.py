@@ -64,6 +64,7 @@ measurements, never imagination. Be direct and brief. You remember the whole con
 class Deps:
     eyes: object | None = None       # v8.eyes.Eyes once a cell is connected
     say: object = staticmethod(lambda text: None)   # a short line to the page while the loop works
+    recent: list = None              # the last chat lines, for a local digest if memory must drop
 
 
 class Mind:
@@ -280,12 +281,15 @@ class Mind:
                 if e2.status_code < 500:
                     raise
                 if deps and deps.say:
-                    deps.say("(the language provider failed on our conversation; I dropped my chat "
-                             "memory and kept going - the world model is intact)")
+                    deps.say("(the language provider failed on our conversation; I summarized it "
+                             "locally and kept going - the world model is intact)")
                 self.history = []
+                digest = "\n".join((deps.recent or [])[-24:]) if deps else ""
+                state = deps.eyes.state() if deps and deps.eyes is not None else "no cell connected"
                 r = self.agent.run_sync(
-                    "(Your chat memory was just lost to a provider error; the world model and all "
-                    "blobs are intact - check state with your tools if unsure.) " + text,
+                    "(Your verbatim chat memory was lost to a provider error. Digest of the "
+                    f"conversation so far:\n{digest}\n\nCurrent world model:\n{state}\n"
+                    "All blobs and verdicts above are real; continue from here.) " + text,
                     deps=deps or Deps(), message_history=[])
         self.history = r.all_messages()
         return r.output

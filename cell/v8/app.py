@@ -234,7 +234,9 @@ def main() -> None:
                     try:
                         with mind_lock:
                             reply = mind.say(text, Deps(eyes=st["eyes"],
-                                                        say=lambda t: st["chat"].append({"who": "robot", "text": t})))
+                                                        say=lambda t: st["chat"].append({"who": "robot", "text": t}),
+                                                        recent=[f"[{c['who']}] {c['text'][:160]}"
+                                                                for c in st["chat"][-30:]]))
                         st["chat"].append({"who": "robot", "text": reply})
                     except Exception as e:   # the boundary: the crash lands IN THE CHAT, whole cause named
                         print(traceback.format_exc(), flush=True)
