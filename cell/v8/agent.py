@@ -83,9 +83,11 @@ class Mind:
             return r
 
         @self.agent.tool
-        def label(ctx: RunContext[Deps], blob: int) -> str:
+        def label(ctx: RunContext[Deps], blob: int, hint: str = "") -> str:
             """Ask a vision model what blob <blob> actually IS (a name and a color), read off the
-            closest photo of it. Most trustworthy after inspect has carved the shape tight."""
+            closest photo of it. Most trustworthy after inspect has carved the shape tight.
+            hint: what you already know about the scene from the conversation (e.g. 'Joel says the
+            table has bins and small blocks') - it reaches the vision model with the photo."""
             if ctx.deps.eyes is None:
                 return "no cell is connected: there is nothing to label"
             b = next((b for b in ctx.deps.eyes.blobs if b.id == blob), None)
@@ -97,7 +99,9 @@ class Mind:
             from lab import vlm
             r = vlm.ask_image(b.best_crop,
                               'This is a close-up crop of ONE thing on a robot workcell table, at the '
-                              'center of the picture. What is it? Answer JSON only: '
+                              'center of the picture. What is it? '
+                              + (f'Context from the operator: {hint} ' if hint else '')
+                              + 'Answer JSON only: '
                               '{"what": "<2-4 words>", "color": "<word>", "flat": true or false}',
                               model=os.getenv("V8_LABEL_VLM", "openrouter/openai/gpt-6.1-terra"),
                               think=False)

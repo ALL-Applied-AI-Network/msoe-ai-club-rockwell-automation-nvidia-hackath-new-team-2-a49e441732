@@ -229,10 +229,43 @@ class Eyes:
                 self._keep_crop(b, shot, i)
                 self.blobs.append(b)
                 born.append(b)
+        self._gravity()
         self.blobs = [b for b in self.blobs if b.keep.any()]
         if self.view:
             self.view.blobs(self.blobs, self.grid)
         return born
+
+    def _gravity(self) -> None:
+        """Nothing floats: gravity is the one licensed physics prior. A connected piece of a blob
+        with nothing under it - not the table, not another blob's volume (stacks stay legal) - is
+        carving debris, not matter: drop it."""
+        from scipy import ndimage
+        occ = np.zeros(self.grid.shape, bool)
+        for b in self.blobs:
+            occ |= b.keep.reshape(self.grid.shape)
+        for b in self.blobs:
+            vol = b.keep.reshape(self.grid.shape)
+            lab, n = ndimage.label(vol, structure=np.ones((3, 3, 3)))
+            if n <= 1:
+                if n == 1 and not vol[:, :, 0].any():   # one piece, hovering whole: check support
+                    under = np.zeros_like(vol)
+                    under[:, :, :-1] = vol[:, :, 1:]
+                    under[:, :, :-2] |= vol[:, :, 2:]
+                    if not (under & occ & ~vol).any():
+                        b.keep = np.zeros_like(b.keep)
+                continue
+            kept = np.zeros_like(vol)
+            for k in range(1, n + 1):
+                comp = lab == k
+                if comp[:, :, 0].any():                 # stands on the table
+                    kept |= comp
+                    continue
+                under = np.zeros_like(comp)
+                under[:, :, :-1] = comp[:, :, 1:]       # the cells directly beneath the piece
+                under[:, :, :-2] |= comp[:, :, 2:]      # (contact tolerance: voxel rounding leaves seams)
+                if (under & occ & ~vol).any():          # rests on another blob: a stack, not debris
+                    kept |= comp
+            b.keep = kept.ravel()
 
     def _keep_crop(self, b: Blob, shot: Shot, mi: int) -> None:
         """Remember the closest photo of this blob (biggest mask = closest view): the labeling
@@ -348,13 +381,17 @@ class Eyes:
     def scan(self) -> str:
         """The opening move, hardcoded on purpose (we are on the clock): a few top-down shots
         covering the table, flown first, SAM'd after - finds the columns of stuff in one sweep."""
-        spots = [(0.34, -0.17), (0.34, 0.17), (0.52, -0.17), (0.52, 0.17)]
+        flights = [((x, y, SURFACE_Z + 0.33), (x, y, SURFACE_Z + 0.01))
+                   for x, y in ((0.34, -0.17), (0.34, 0.17), (0.52, -0.17), (0.52, 0.17))]
+        # plus two borderline-horizontal looks across the table: they bound every height at once
+        flights += [((0.26, -0.26, SURFACE_Z + 0.10), (0.56, 0.08, SURFACE_Z + 0.02)),
+                    ((0.26, 0.26, SURFACE_Z + 0.10), (0.56, -0.08, SURFACE_Z + 0.02))]
         taken, skipped = [], []
-        for x, y in spots:
+        for eye, tgt in flights:
             try:
-                self._fly_cam(np.array([x, y, SURFACE_Z + 0.33]), np.array([x, y, SURFACE_Z + 0.01]))
+                self._fly_cam(np.array(eye), np.array(tgt))
             except (ValueError, RuntimeError) as e:
-                skipped.append(f"({x * 1000:.0f}, {y * 1000:.0f}): {e}")
+                skipped.append(f"({eye[0] * 1000:.0f}, {eye[1] * 1000:.0f}): {e}")
                 continue
             taken.append(self._grab())
         for img, joints in taken:
