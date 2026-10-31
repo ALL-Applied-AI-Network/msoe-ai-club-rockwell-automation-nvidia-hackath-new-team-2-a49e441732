@@ -317,20 +317,30 @@ class Eyes:
         foot = np.array([c[0], c[1], SURFACE_Z + 0.01])           # puts base AND slack crown in frame
         half = np.arctan(min(cam["size"]) / 2 / cam["fx"])        # the tight half-angle of the frame
         dist = float(np.clip(blob.extent(self.grid) / 2 / np.tan(half) * 1.6 + 0.04, 0.20, 0.42))
-        cands = [foot + np.array([0.0, 0.0, dist])]
-        el = np.radians(40.0)
-        for a in (np.pi, np.pi * 0.6, -np.pi * 0.6, np.pi * 1.4, 0.0):   # base side first: reachable
-            az = np.arctan2(foot[1], foot[0]) + a
-            cands.append(foot + dist * np.array([np.cos(az) * np.cos(el), np.sin(az) * np.cos(el), np.sin(el)]))
         out = []
-        for eye in cands:
-            try:
-                ik_for(eye, c, cam["T"])
-            except ValueError:
-                continue
-            out.append((eye, c))
-            if len(out) == 3:
-                break
+        try:
+            ik_for(foot + np.array([0.0, 0.0, dist]), c, cam["T"])
+            out.append((foot + np.array([0.0, 0.0, dist]), c))
+        except ValueError:
+            pass
+        # two elevations: 40 deg shapes the sides, and a LOW 22 deg grazes the top - without the low
+        # looks a tall thing keeps a pyramid tent over it (steep silhouettes can never cut it off).
+        # Low poses fight the 95 mm fingertip floor, so many azimuths are tried to find legal ones.
+        base_az = np.arctan2(foot[1], foot[0])
+        for el_deg, quota in ((40.0, 2), (22.0, 2)):
+            el, got = np.radians(el_deg), 0
+            for a in (np.pi, np.pi * 0.6, -np.pi * 0.6, np.pi * 1.4, 0.0,
+                      np.pi * 0.3, -np.pi * 0.3, np.pi * 1.7):   # base side first: reachable
+                az = base_az + a
+                eye = foot + dist * np.array([np.cos(az) * np.cos(el), np.sin(az) * np.cos(el), np.sin(el)])
+                try:
+                    ik_for(eye, c, cam["T"])
+                except ValueError:
+                    continue
+                out.append((eye, c))
+                got += 1
+                if got == quota:
+                    break
         return out
 
     # ---------------- what the mind calls ----------------
