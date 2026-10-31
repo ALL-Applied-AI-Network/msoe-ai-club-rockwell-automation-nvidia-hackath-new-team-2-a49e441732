@@ -82,7 +82,7 @@ def main() -> None:
         mind.forget()
         st["chat"] = []
         v8view.clear()
-        if st["cell"] is not None and st["mode"] == "sim":
+        if st["cell"] is not None:          # BOTH cells: a stale stop flag must never outlive a wipe
             st["eyes"] = Eyes(st["cell"], vw)
 
     def staged(trial_name: str):
@@ -232,6 +232,8 @@ def main() -> None:
                         reply = mind.comment(text, st["eyes"], recent)
                         st["chat"].append({"who": "robot", "text": f"(answering while I work) {reply}"})
                         return self._json({"reply": reply})
+                    if st["eyes"] is not None:
+                        st["eyes"].stop_now = False   # a NEW request un-latches any old stop
                     st["busy"] = True
                     try:
                         with mind_lock:
