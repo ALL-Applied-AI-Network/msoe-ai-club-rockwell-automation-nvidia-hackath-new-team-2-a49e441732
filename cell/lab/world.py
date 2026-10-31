@@ -120,6 +120,9 @@ class World:
 
     def forget(self, tid: int) -> None:
         with self._lock:
+            t = next((t for t in self.things if t.id == tid), None)
+            if t is not None:
+                self._say(f"gone: {t.name} #{t.id} was not at ({t.x_mm:.0f}, {t.y_mm:.0f}) when looked at")
             self.things = [t for t in self.things if t.id != tid and t.of != tid]
 
     def rename(self, tid: int, name: str) -> None:

@@ -50,6 +50,7 @@ Answer ONE action as JSON, nothing else:
   {{"say": "<one short line>", "do": {{"name": {{"thing": <id>, "name": "<what it clearly is, e.g. red cube 1>"}}}}}}
   {{"say": "<one short line>", "do": {{"look": {{"at": [x_mm, y_mm]}}}}}}   fresh close outlines there: finds what was missed, tightens a one-glance blob
   {{"say": "<one short line>", "do": {{"move": {{"thing": <id>, "to": [x_mm, y_mm]}}}}}}   pick it up, set it down there
+  {{"say": "<one short line>", "do": {{"into": {{"thing": <id>, "container": <id>}}}}}}   drop it into an open-top thing (a bin, a cup): fly above it, let go, gravity does the rest
   {{"say": "<one short line>", "done": true}}   the instruction is satisfied, or nothing useful is left
 
 You are curious: name blobs you recognize in the photo before moving them; look closer when unsure.
@@ -198,7 +199,14 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
             one_look(cell, cams, fresh, first=True, words=words)
             solid, axes, support = carve(fresh)
             obs_list = objects(solid, axes, support=support)
-            w.look(obs_list)
+            seen_ids = {t2.id for t2 in w.look(obs_list)}
+            # the friend turned around: a solid AT the looked-at spot that this look didn't find is gone.
+            # But a look that saw NOTHING ANYWHERE is a blind instrument, not evidence of absence
+            # (SAM returns zero masks on a sparse close-up): it deletes nothing.
+            if obs_list:
+                for t2 in [t2 for t2 in w.things if t2.state == "solid" and t2.id not in seen_ids
+                           and t2.dist_mm(float(at[0]), float(at[1])) < 60.0]:
+                    w.forget(t2.id)
             rr.set_time("step", sequence=step); step += 1
             worldview.voxels(solid, axes)
             worldview.things(w)
@@ -207,6 +215,52 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
                 worldview.trace("world", e2)
             said = len(w.events)
             done.append(f"looked at ({at[0]:.0f}, {at[1]:.0f})")
+            continue
+        if "into" in do:  # Joel: no cavity geometry - the LLM knows it's open on top, gravity finds the
+            try:          # inside, and a glance validates
+                t, c = w[int(do["into"]["thing"])], w[int(do["into"]["container"])]
+            except (KeyError, TypeError, ValueError) as e:
+                worldview.trace("plan", f"bad into {do['into']}: {e}", "WARN")
+                done.append(f"your into call {do['into']} made no sense")
+                continue
+            obs = cell.observe()
+            cur, q = tcp_uf0(obs["joints"]), np.asarray(obs["joints"], float)
+            jaw = float(np.degrees(t.yaw) + 90.0)
+            place = (c.x_mm / 1000.0, c.y_mm / 1000.0)
+            rows = MV.pick_top(cur, (t.x_mm / 1000, t.y_mm / 1000), jaw, place,
+                               max(120.0, c.top_mm + 60.0), drop_mm=c.top_mm + 12.0)
+            rep = armcheck.check(rows, q, obstacles=w.boxes(ignore=(t.id,)))
+            w.plan_move(t.id, c.x_mm, c.y_mm)
+            rr.set_time("step", sequence=step); step += 1
+            rr.log("world/plan/path", rr.LineStrips3D([row_points(rows)], colors=[(60, 200, 90)], radii=0.0012))
+            worldview.things(w)
+            worldview.trace("plan", f"{t.name} #{t.id} -> into {c.name} #{c.id}: "
+                            + ("ok" if rep.ok else rep.problem), "INFO" if rep.ok else "WARN")
+            if not rep.ok:
+                w.confirm(t.id, found=None)
+                done.append(f"{t.name} #{t.id} into {c.name} #{c.id} refused: {rep.problem}")
+            else:
+                worldview.trace("do", f"{len(rows)} rows: drop {t.name} #{t.id} into {c.name} #{c.id}")
+                cell.play(rows)
+                cur2 = tcp_uf0(cell.observe()["joints"])
+                cell.play(MV.travel(cur2, place, 0, 0, 300.0) + MV.hold(MV.uf0(*place, 300.0), 0, 0, 10))
+                shot = cell.observe()["images"]["wrist"]
+                g = vlm.ask_image(shot, f"Looking straight down at the {c.name}. Is the {t.name} now inside "
+                                  'it? Answer JSON: {"inside": true or false}') or {}
+                inside = bool((g.get("json") or {}).get("inside"))
+                worldview.trace("check", f"glance: {t.name} inside {c.name}? {inside}",
+                                "INFO" if inside else "WARN")
+                ok = w.confirm(t.id, (c.x_mm, c.y_mm) if inside else None)
+                if inside:
+                    w[t.id].note = f"in {c.name} #{c.id}"
+                rr.set_time("step", sequence=step); step += 1
+                rr.log("world/plan/path", rr.Clear(recursive=True))
+                worldview.things(w)
+                worldview.mind(w)
+                done.append(f"{t.name} #{t.id} into {c.name} #{c.id}: " + ("confirmed inside" if ok else "NOT seen inside"))
+            for e2 in w.events[said:]:
+                worldview.trace("world", e2)
+            said = len(w.events)
             continue
         m = do.get("move")
         if not isinstance(m, dict):
