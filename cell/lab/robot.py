@@ -537,9 +537,11 @@ class Robot:
         return f"tipped box {box_id} out: {len(out)} things back on the table"
 
     def add_box(self, color: str) -> str:
-        b = self.cell.add_box(color, at=(0.30, 0.22))
+        b = self.cell.add_box(color)
         viz.truth_setup(self.cell)
-        return f"put a {color} box down at (300, 220) mm"
+        p = self.cell.poses.get(b.id)
+        at = f"({p[0] * 1000:.0f}, {p[1] * 1000:.0f})" if p is not None else "a clear spot"
+        return f"put a {color} box down at {at} mm"
 
 
 def _approved_token(url: str, ca: str | None) -> tuple[str, str]:

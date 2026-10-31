@@ -116,7 +116,18 @@ class IsaacCell:
         self.instances = [i for i in self.instances if i.id not in ids]
         self._set(r["truth"])
 
-    def add_box(self, color: str = "white", at=(0.36, -0.24), kind: str = "box_60") -> Instance:
+    def add_box(self, color: str = "white", at=None, kind: str = "box_60") -> Instance:
+        """at=None picks a clear spot: every box dropped on one hard-coded point lands inside the
+        previous box and PhysX shoves them into a tangle."""
+        if at is None:
+            taken = [(q[0], q[1]) for q in self.poses.values()]
+            for cand in [(0.30, 0.22), (0.30, 0.10), (0.30, -0.02), (0.30, -0.14),
+                         (0.38, 0.22), (0.38, 0.10), (0.38, -0.02), (0.46, 0.22)]:
+                if all(np.hypot(cand[0] - q[0], cand[1] - q[1]) > 0.08 for q in taken):
+                    at = cand
+                    break
+            else:
+                raise RuntimeError("no clear spot left for a new box near the left edge: move something first")
         i = Instance(self._next_id(1), kind, color, np.zeros(3), np.array([1.0, 0, 0, 0]))
         self.local[i.id] = kind_mesh(KINDS[kind])
         T = np.eye(4)
