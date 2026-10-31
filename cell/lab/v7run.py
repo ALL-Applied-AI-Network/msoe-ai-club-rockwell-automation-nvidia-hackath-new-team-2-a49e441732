@@ -181,16 +181,20 @@ def row_points(rows) -> np.ndarray:
     return np.stack([a[:, 0] / 1000, a[:, 1] / 1000, (a[:, 2] - UF0_Z_MM) / 1000], -1)
 
 
-def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None:
+def run(cell, instruction: str, headless: bool = False, tag: str = "v7", attach: bool = False) -> None:
     """The V7 loop on any cell that speaks observe/play/tip: the MuJoCo sim, the Isaac twin through
-    the cell API (lab/realcell.py), and one day the real arm - same loop, same trace."""
+    the cell API (lab/realcell.py), and one day the real arm - same loop, same trace.
+    attach=True (the app): log into the recording that already feeds the page's embedded viewer,
+    replacing its layout with the V7 one, instead of opening a window of our own."""
     out = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_{tag}"
     out.mkdir(parents=True)
-    rr.init("v7", spawn=not headless)
-    rr.save(str(out / "v7.rrd"))
-    rr.log("world/table", rr.Boxes3D(centers=[[0.49, 0.0, SURFACE_Z - 0.002]],
-                                     half_sizes=[[0.29, 0.36, 0.002]],
-                                     colors=[(235, 235, 235)], fill_mode="solid"), static=True)
+    if attach:
+        worldview.attach()
+    else:
+        rr.init("v7", spawn=not headless)
+        rr.save(str(out / "v7.rrd"))
+        worldview.blueprint()
+        worldview.table()
 
     cams = load()
     worldview.trace("think", f"brain: {vlm.model_id(BRAIN) or 'default'}")

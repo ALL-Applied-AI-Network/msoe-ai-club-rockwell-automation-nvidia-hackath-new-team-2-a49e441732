@@ -137,6 +137,14 @@ def main() -> None:
         chat.banner.update(phase="done", headline=f"Ladder: {sum(r['state'] == 'pass' for r in done)}/{len(done)} passed")
         board.add("status", json.dumps(chat.banner))
     viewer = f"http://127.0.0.1:9090/?url={quote(robot.viewer_uri, safe='')}"
+    try:
+        import subprocess
+        build = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
+                               text=True, cwd=Path(__file__).parent).stdout.strip()
+    except Exception:
+        build = "?"
+    board.add("system", f"V7 agent on chat (build {build}): every message runs look-decide-act; "
+                        "type 'v6: ...' for the old robot. The viewer switches to the V7 view when a task starts.")
     board.add("system", "Ready. The Isaac window on the GPU box is the real world; the right side here is what I think.")
 
     class H(BaseHTTPRequestHandler):
@@ -235,8 +243,8 @@ def main() -> None:
                                 board.add("robot", "v7: looking around - watch the Rerun window for my head")
                                 try:
                                     from lab import v7run
-                                    v7run.run(robot.cell, wish, headless=False, tag="v7")
-                                    board.add("robot", "v7: done (the whole story is in the Rerun window)")
+                                    v7run.run(robot.cell, wish, headless=True, tag="v7", attach=True)
+                                    board.add("robot", "v7: done (the whole story is in the viewer)")
                                 except Exception as e:
                                     board.add("robot", f"v7 stopped: {e}")
                                 finally:

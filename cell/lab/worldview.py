@@ -38,13 +38,40 @@ def mind(w: World) -> None:
     rr.log("agent/mind", rr.TextDocument(w.mirror()))
 
 
-def start(run: Path, name: str = "worldview") -> None:
-    rr.init(name, spawn=False)
-    rr.save(str(Path(run) / "worldview.rrd"))
+def table() -> None:
     rr.log("world/table", rr.Boxes3D(
         centers=[[(GRID_X[0] + GRID_X[1]) / 2, (GRID_Y[0] + GRID_Y[1]) / 2, SURFACE_Z - 0.002]],
         half_sizes=[[(GRID_X[1] - GRID_X[0]) / 2, (GRID_Y[1] - GRID_Y[0]) / 2, 0.002]],
         colors=[(235, 235, 235)], fill_mode="solid"), static=True)
+
+
+def blueprint() -> None:
+    """The V7 layout, sent to whatever viewer shows the current recording: the 3D world on the left,
+    the agent's mirror and full stack trace on the right."""
+    import rerun.blueprint as rrb
+    rr.send_blueprint(rrb.Blueprint(
+        rrb.Horizontal(
+            rrb.Spatial3DView(name="the robot's world", origin="/world"),
+            rrb.Vertical(
+                rrb.TextDocumentView(name="what it believes", origin="/agent/mind"),
+                rrb.TextLogView(name="its stack trace", origin="/agent"),
+                row_shares=[1, 2]),
+            column_shares=[3, 2]),
+        collapse_panels=True))
+
+
+def attach() -> None:
+    """V7 takes over the CURRENT recording - in the app that is the served viewer embedded in the
+    page, so the old layout is replaced in place: no second window, no prefix, no hunting."""
+    blueprint()
+    table()
+
+
+def start(run: Path, name: str = "worldview") -> None:
+    rr.init(name, spawn=False)
+    rr.save(str(Path(run) / "worldview.rrd"))
+    blueprint()
+    table()
 
 
 def voxels(solid: np.ndarray, axes: tuple) -> None:
