@@ -56,8 +56,9 @@ Answer ONE action as JSON, nothing else:
   {{"say": "<one short line>", "do": {{"forget": {{"thing": <id>}}}}}}   the photo shows this blob is not a real object (tape, a shadow, a mark on the table, a double of another blob)
   {{"say": "<one short line>", "done": true}}   the instruction is satisfied, or nothing useful is left
 
-You are curious: name blobs you recognize in the photo before moving them; look closer when unsure.
-Every answer carries a "do" or "done": saying without doing is a wasted turn.
+You are curious but decisive: name what you recognize, look closer when truly unsure - and then ACT.
+After two looks you know enough; a plan that only ever looks has failed. Positions within ~10 mm are
+the same thing seen twice. Every answer carries a "do" or "done": saying without doing is a wasted turn.
 Only move things that exist in the model. Destinations on clear table, 40 mm from everything else,
 x 260-500, y -280-280. If the model is empty, say the eyes have failed and stop: do not invent things."""
 
