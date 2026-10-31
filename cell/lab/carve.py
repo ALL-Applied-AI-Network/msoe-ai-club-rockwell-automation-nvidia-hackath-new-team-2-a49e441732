@@ -26,8 +26,11 @@ GRID_Y = (-0.36, 0.36)
 GRID_Z = (SURFACE_Z + 0.003, SURFACE_Z + 0.10)
 VOX = 0.0025           # 2.5 mm voxels
 DILATE_PX = 3          # grown over each mask: segmentation + pose error budget, keeps the error one-sided
-MIN_VIEWS = 2          # a voxel nobody carved but only one camera saw is "unseen", not solid
+MIN_VIEWS = 2          # a voxel is solid only if at least this many views put it inside an outline
 MIN_VOXELS = 8         # smaller surviving clumps are noise
+NEAR_PX = 60           # calibration pixels: a dissent this close to a mask SAW the thing and always carves
+                       # (the top-shaving rays pass just outside an outline); a dissent with no mask
+                       # anywhere near probably just missed the thing, and one such miss is forgiven
 
 
 @dataclass
@@ -56,8 +59,9 @@ def carve(views: list[View], vox: float = VOX, dilate_px: int = DILATE_PX,
     """-> (solid bool (nx, ny, nz), (xs, ys, zs) voxel-centre axes in base metres)."""
     xs, ys, zs = _axes(vox)
     pts = np.stack(np.meshgrid(xs, ys, zs, indexing="ij"), -1).reshape(-1, 3)
-    alive = np.ones(len(pts), bool)
-    seen = np.zeros(len(pts), np.uint8)
+    near_kill = np.zeros(len(pts), bool)   # a view that saw the thing said: outside it
+    far_out = np.zeros(len(pts), np.uint8)  # views with no outline near: "nothing here at all"
+    in_k = np.zeros(len(pts), np.uint8)
     for v in views:
         T = np.linalg.inv(v.T_base_cam()).astype(np.float32)
         pc = pts @ T[:3, :3].T + T[:3, 3]
@@ -70,15 +74,33 @@ def carve(views: list[View], vox: float = VOX, dilate_px: int = DILATE_PX,
         vv = (v.cam["fx"] * y * d + h / 2) * (mh / h)
         ui, vi = u.astype(np.int32), vv.astype(np.int32)
         inb = front & (ui >= 0) & (ui < mw) & (vi >= 0) & (vi < mh)
-        seen[inb] += 1
         k = max(1, round(dilate_px * mw / w))  # dilate_px is at calibration scale; the mask may be smaller
         kern = np.ones((2 * k + 1,) * 2, np.uint8)
         mask = cv2.dilate(v.mask.astype(np.uint8), kern).astype(bool)
         inside = np.zeros(len(pts), bool)
         inside[inb] = mask[vi[inb], ui[inb]]
-        alive &= ~inb | inside
-    solid = (alive & (seen >= min_views)).reshape(len(xs), len(ys), len(zs))
+        in_k += inside
+        dt = cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 3)
+        near = np.zeros(len(pts), bool)
+        near[inb] = dt[vi[inb], ui[inb]] <= NEAR_PX * mw / w
+        near_kill |= inb & ~inside & near
+        far_out += (inb & ~inside & ~near).astype(np.uint8)
+    solid = (~near_kill & (far_out <= 1) & (in_k >= min_views)).reshape(len(xs), len(ys), len(zs))
     return solid, (xs, ys, zs)
+
+
+def on_table(mask: np.ndarray, cam: dict, joints=None) -> bool:
+    """Everything we care about sits on the table: a mask whose bottom edge doesn't reach the work
+    surface inside the workspace (the robot's own arm or gripper, the far wall) is dropped."""
+    from calibration.geometry import pixel_to_base
+    vs, us = np.nonzero(mask)
+    if not len(vs):
+        return False
+    i = int(np.argmax(vs))
+    w, h = cam["size"]
+    mh, mw = mask.shape
+    p = pixel_to_base(cam, (us[i] * w / mw, vs[i] * h / mh), joints=joints)
+    return GRID_X[0] - 0.05 < p[0] < GRID_X[1] + 0.05 and GRID_Y[0] - 0.05 < p[1] < GRID_Y[1] + 0.05
 
 
 def objects(solid: np.ndarray, axes: tuple, min_voxels: int = MIN_VOXELS) -> list[dict]:

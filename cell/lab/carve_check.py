@@ -18,24 +18,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from calibration.geometry import SURFACE_Z, load, pixel_to_base
+from calibration.geometry import SURFACE_Z, load
 from lab import sam
-from lab.carve import GRID_X, GRID_Y, View, carve, name_objects, objects
+from lab.carve import View, carve, name_objects, objects, on_table
 
 WORDS = ["box", "cube", "pen", "screw", "bolt"]
-
-
-def _on_table(mask: np.ndarray, cam: dict, joints) -> bool:
-    """Everything we care about sits on the table: a mask whose bottom edge doesn't reach the work
-    surface inside the workspace (the robot's own body, the gantry, the far wall) is dropped."""
-    vs, us = np.nonzero(mask)
-    if not len(vs):
-        return False
-    i = int(np.argmax(vs))
-    w, h = cam["size"]
-    mh, mw = mask.shape
-    p = pixel_to_base(cam, (us[i] * w / mw, vs[i] * h / mh), joints=joints)
-    return GRID_X[0] - 0.05 < p[0] < GRID_X[1] + 0.05 and GRID_Y[0] - 0.05 < p[1] < GRID_Y[1] + 0.05
 
 
 def _mask_union(found: list[dict], shape) -> tuple[np.ndarray, dict[str, np.ndarray]]:
@@ -69,7 +56,7 @@ def main(run_dir: str, words: list[str] = WORDS) -> None:
             img = cv2.cvtColor(cv2.imread(str(jpg)), cv2.COLOR_BGR2RGB)
             t0 = time.time()
             found = sam.segment_many(img, words, scale=1.0)
-            found = [d for d in found if _on_table(d["mask"], cams[cam_name], jnts)]
+            found = [d for d in found if on_table(d["mask"], cams[cam_name], jnts)]
             union, per_word = _mask_union(found, img.shape[:2])
             view = View(mask=union, cam=cams[cam_name], joints=jnts)
             views.append(view)
