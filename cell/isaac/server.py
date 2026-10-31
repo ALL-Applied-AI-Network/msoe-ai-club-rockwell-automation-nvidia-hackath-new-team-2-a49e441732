@@ -92,7 +92,10 @@ from calibration import selfcollide  # noqa: E402
 
 JUMP_DEG = 20.0  # a row whose joints are this far from the last row's: a wrist flip the controller would refuse
 TORSION_M = 0.004  # torsional friction patch radius on objects (m): a finger pad's contact, roughly
-BLOCKED_MM = 40.0  # the fingertip this far from where it was told to be after a row: something is in the way.
+BLOCKED_MM = 30.0  # FITTED, Oct 31 night: measured lag is <=5 mm across open air, full SAM load on the
+# same GPU, and a complete slide-grasp WITH contact (289+267 samples). 30 = 6x the honest maximum. The
+# historic 12-51 mm fault lags came from the parked-prims pile destabilizing PhysX (restart clears it;
+# truly deleting parked prims is the standing cleanup item).  # the fingertip this far from where it was told to be after a row: something is in the way.
 # 12 was below ONE ROW of ordinary motion (a 4-deg joint step swings the fingertip ~35 mm at full extension),
 # so the follower faulted on open air whenever it trailed by a single row (Oct 31 night: constant false
 # collisions mid-table). A genuine block makes the lag grow without bound and still trips within a row or two.
@@ -519,7 +522,7 @@ class Cell:
                                                            if k != "rows"), flush=True)
         with self.lock:
             self.frames.append({"t": self.t, "poses": truth, "tip": tip.tolist(), "wpr": wpr.tolist(), "grip": grip,
-                                "joints": goal.tolist(), "fault": self.fault})
+                                "joints": goal.tolist(), "fault": self.fault, "lag": round(lag, 1)})
             self.fault = None
 
     def joints_now(self) -> np.ndarray:

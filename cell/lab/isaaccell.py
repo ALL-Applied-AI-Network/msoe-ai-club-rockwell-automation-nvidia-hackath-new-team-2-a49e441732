@@ -227,6 +227,8 @@ class IsaacCell:
 
     def _frames(self, frames, on_frame) -> None:
         for f in frames:
+            if f.get("lag") is not None:
+                self.lags = (getattr(self, "lags", []) + [float(f["lag"])])[-4000:]
             if f.get("fault"):
                 self.faults.append(f["fault"])
                 print(f"[isaac] FAULT: {f['fault']}", flush=True)

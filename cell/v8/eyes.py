@@ -368,11 +368,32 @@ class Eyes:
             if k % 2 == 0 and (why := unsafe(np.asarray(r, float))):
                 raise RuntimeError(f"can't even get home: {why}")
         print("home: un-cornering, re-planning from the home pose", flush=True)
-        self.cell.play(np.asarray(rows, float), kind="joints")
+        self.execute(np.asarray(rows, float), "the home retreat")
 
     def _check_stop(self) -> None:
         if self.stop_now:
             raise RuntimeError("stopped: Joel reset the session - this job is over")
+
+    def execute(self, rows, what: str) -> None:
+        """THE one way motion reaches the cell. The plan goes in legs; after each leg the loop is
+        CLOSED: the controller's faults are read as results (not log lines), and the joints must
+        match the leg's last row before the next leg may launch. One mechanism replaces the five
+        that used to approximate it from outside (arrival sniffing, fault log-grepping, stall
+        discovery by the NEXT motion failing, blind re-sends, scattered recovery)."""
+        rows = np.atleast_2d(np.asarray(rows, float))
+        n_f0 = len(getattr(self.cell, "faults", ()))
+        for k in range(0, len(rows), 50):
+            self._check_stop()
+            leg = rows[k:k + 50]
+            self.cell.play(leg, kind="joints")
+            faults = getattr(self.cell, "faults", ())
+            if len(faults) > n_f0:
+                raise RuntimeError(f"the cell FAULTED during {what}: {faults[-1]}")
+            q = self._joints()[:6]
+            err = np.abs(q - leg[-1][:6])
+            if err.max() > 4.0:
+                raise RuntimeError(f"{what} leg did not land: J{int(err.argmax()) + 1} is "
+                                   f"{err.max():.0f} deg from the plan - the cell did not follow")
 
     def _fly_cam(self, eye: np.ndarray, target: np.ndarray) -> None:
         """Put the WRIST CAMERA at eye, looking at target - the datarun's proven way: planned in
@@ -410,17 +431,10 @@ class Eyes:
         return rows
 
     def _fly_rows(self, tip: np.ndarray, wpr: np.ndarray, eye: np.ndarray) -> None:
-        from lab import primitives as P
         q_now = self._joints()[:6]
         rows = self._plan_fly(tip, wpr, q_now)
         print(f"fly: cam -> {np.round(eye, 3)}, {len(rows)} joint rows", flush=True)
-        P.send(self.cell, rows)
-        j = self._joints()
-        cam_now = (flange_pose(j) @ self.cams["wrist"]["T"])[:3, 3]
-        off = float(np.linalg.norm(cam_now - eye)) * 1000
-        if off > 40:
-            raise RuntimeError(f"flight failed: asked the camera to {np.round(eye, 3)}, it is at "
-                               f"{np.round(cam_now, 3)} ({off:.0f} mm away) - the cell did not follow")
+        self.execute(np.asarray(rows, float), "a camera flight")
 
     def _vantages(self, blob: Blob) -> list[tuple[np.ndarray, np.ndarray]]:
         """Three (eye, target) pairs: one from above, two from ~40 degrees up at different sides -
@@ -779,7 +793,7 @@ class Eyes:
         jrows, how = self._grasp_rows(b, (gx, gy), (x_mm, y_mm), 120.0, None)
         print(f"grab: blob #{blob_id} ({gx:.0f}, {gy:.0f}) -> ({x_mm:.0f}, {y_mm:.0f}), {how}, "
               f"{len(jrows)} rows", flush=True)
-        self.cell.play(np.asarray(jrows, float), kind="joints")
+        self.execute(np.asarray(jrows, float), "the grab-and-place")
         # the verdicts - and ONLY the verdicts - update the world. One shot answers both
         # questions when source and destination fit in one frame (half the verification flights).
         if np.hypot(x_mm - sx, y_mm - sy) < 200:
@@ -829,7 +843,7 @@ class Eyes:
             print(f"drop: far bin, release pulled {pull:.0f} mm toward the base", flush=True)
         jrows, how = self._grasp_rows(b, near[0], (cx, cy), max(130.0, top + 60.0), drop_mm=drop)
         print(f"drop: blob #{blob_id} -> into #{container_id} at ({cx:.0f}, {cy:.0f}), {how}", flush=True)
-        self.cell.play(np.asarray(jrows, float), kind="joints")
+        self.execute(np.asarray(jrows, float), "the carry-and-drop")
         self._hover(cx, cy)
         img, _ = self._grab()
         return f"dropped with a {how} above blob #{container_id} (top {top:.0f} mm)", img
