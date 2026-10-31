@@ -191,6 +191,11 @@ def main() -> None:
                     if not text:
                         return self._json({"error": "say something"}, 400)
                     st["chat"].append({"who": "you", "text": text})
+                    if st["busy"]:   # mid-job: the side-channel voice answers NOW; the hands keep working
+                        recent = [c["text"] for c in st["chat"][-14:] if c["who"] == "robot"]
+                        reply = mind.comment(text, st["eyes"], recent)
+                        st["chat"].append({"who": "robot", "text": f"(answering while I work) {reply}"})
+                        return self._json({"reply": reply})
                     st["busy"] = True
                     try:
                         with mind_lock:

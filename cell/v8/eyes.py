@@ -650,21 +650,15 @@ class Eyes:
         length = max(1.0, max(float(np.ptp(self.grid.pts[b.keep][:, 0])),
                               float(np.ptp(self.grid.pts[b.keep][:, 1]))) * 1000)
 
-        rounds = []              # every OTHER believed thing as a keep-out circle for the slide entry
-        for o in self._others(b):
-            po = self.grid.pts[o.keep]
-            rad = max(float(np.ptp(po[:, 0])), float(np.ptp(po[:, 1]))) * 500 + 20
-            rounds.append((float(po[:, 0].mean()) * 1000, float(po[:, 1].mean()) * 1000, rad))
-
         from lab import primitives as P
 
         def clear(xy) -> bool:
-            # the slide's entry point must be free of every other believed thing AND legal for the
-            # arm: near enough that fingertips may come low (the fitted far-low rule starts ~485 mm
-            # out), so slides naturally come from the base side instead of being refused outright
+            # the slide's entry point must be free of every other believed SURFACE (the hull's real
+            # shape, not a circle) AND legal for the arm: near enough that fingertips may come low
+            # (the fitted far-low rule starts ~485 mm out), so slides come from the base side
             if np.hypot(xy[0], xy[1]) * 1000 > 460 or not P.reachable(xy[0], xy[1], margin_mm=15):
                 return False
-            return all(np.hypot(xy[0] * 1000 - ox, xy[1] * 1000 - oy) > orad for ox, oy, orad in rounds)
+            return self._clearance_mm(xy[0] * 1000, xy[1] * 1000, but=b) > 18.0
 
         rows, how = MV.push_grasp(cur, at, jaw, length, place, travel_mm, drop_mm, clear)
         if not rows:
@@ -678,6 +672,25 @@ class Eyes:
         if jrows is None:
             raise ValueError(f"no safe joint path: {why}")
         return jrows, how
+
+    def _footprints(self, but: Blob | None = None):
+        """Each other blob's footprint as 2D points (mm): clearance is measured to the hull's REAL
+        shape, not a bounding circle - that is the point of having carved the hull (Joel)."""
+        out = []
+        for o in self.blobs:
+            if (but is not None and o.id == but.id) or not o.keep.any():
+                continue
+            p = self.grid.pts[o.keep]
+            out.append(np.unique(np.round(p[:, :2] * 1000 / 8) * 8, axis=0))   # ~8 mm lattice
+        return out
+
+    def _clearance_mm(self, x_mm: float, y_mm: float, but: Blob | None = None) -> float:
+        """Distance from a point to the nearest believed surface (mm), 999 when nothing is near."""
+        best = 999.0
+        for pts in self._footprints(but):
+            d = float(np.min(np.hypot(pts[:, 0] - x_mm, pts[:, 1] - y_mm)))
+            best = min(best, d)
+        return best
 
     def _others(self, b: Blob):
         return [o for o in self.blobs if o.id != b.id and o.keep.any()]
@@ -700,12 +713,11 @@ class Eyes:
         if gw > self.GRASP_MM:
             return (f"blob #{blob_id} is {gw:.0f} mm across its narrow side; the jaws take about "
                     f"{self.GRASP_MM:.0f} mm. It can be labeled and used as a container, never moved.")
-        for o in self._others(b):   # the destination must be clear of everything we believe in
-            p = self.grid.pts[o.keep]
-            if np.hypot(p[:, 0].mean() * 1000 - x_mm, p[:, 1].mean() * 1000 - y_mm) < \
-               (max(np.ptp(p[:, 0]), np.ptp(p[:, 1])) * 1000 + gw) / 2 + 25:
-                return (f"({x_mm:.0f}, {y_mm:.0f}) is too close to blob #{o.id}: pick an empty spot "
-                        "at least ~25 mm clear of everything")
+        need = gw / 2 + 15.0        # half the carried thing + a slim real margin, to the REAL surface
+        room = self._clearance_mm(x_mm, y_mm, but=b)
+        if room < need:
+            return (f"({x_mm:.0f}, {y_mm:.0f}) is only {room:.0f} mm from a believed surface; "
+                    f"this object needs {need:.0f} mm - pick a spot with that much room")
         c = b.centre(self.grid)
         sx, sy = c[0] * 1000, c[1] * 1000
         cents = self._spot_masks(sx, sy)                      # fresh fix + the neighbour count
@@ -758,8 +770,14 @@ class Eyes:
         if not near:
             return f"blob #{blob_id} is NOT at ({sx:.0f}, {sy:.0f}) any more: look before moving it", None
         drop = top + 15.0
-        if np.hypot(cx, cy) > 440:   # a far bin: beyond ~485 mm out the fingertips must stay high
+        r_c = float(np.hypot(cx, cy))
+        if r_c > 440:                # a far bin: beyond ~485 mm out the fingertips must stay high
             drop = max(drop, 85.0)   # (the fitted far-low rule) - drop from higher, gravity still lands it
+        half_in = max(min(float(np.ptp(pc[:, 0])), float(np.ptp(pc[:, 1]))) * 500 - 12, 0.0)
+        if r_c > 480 and half_in > 0:   # center past the reach envelope: release over the NEAR rim
+            pull = min(r_c - 480.0, half_in)
+            cx, cy = cx * (1 - pull / r_c), cy * (1 - pull / r_c)
+            print(f"drop: far bin, release pulled {pull:.0f} mm toward the base", flush=True)
         jrows, how = self._grasp_rows(b, near[0], (cx, cy), max(130.0, top + 60.0), drop_mm=drop)
         print(f"drop: blob #{blob_id} -> into #{container_id} at ({cx:.0f}, {cy:.0f}), {how}", flush=True)
         self.cell.play(np.asarray(jrows, float), kind="joints")

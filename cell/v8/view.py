@@ -25,6 +25,16 @@ def setup() -> None:
     rr.log("world/table", rr.Boxes3D(centers=[[0.49, 0.0, SURFACE_Z - 0.002]],
                                      half_sizes=[[0.29, 0.36, 0.002]],
                                      colors=[(235, 235, 235)], fill_mode="solid"), static=True)
+    # the arm's envelope, drawn from the SAME constants the planners refuse with - so a bin placed
+    # outside the amber ring is visibly out of reach before anyone wastes a run on it
+    from calibration.selfcollide import FAR_MM, REACH_MM
+    a = np.linspace(0, 2 * np.pi, 180)
+    for r_mm, col, tag in ((REACH_MM, (230, 160, 40), f"hard reach {REACH_MM:.0f} mm (fault-fitted)"),
+                           (FAR_MM, (160, 160, 160), f"beyond {FAR_MM:.0f} mm fingertips must stay high")):
+        ring = np.stack([r_mm / 1000 * np.cos(a), r_mm / 1000 * np.sin(a),
+                         np.full_like(a, SURFACE_Z + 0.001)], -1)
+        rr.log(f"world/reach/{int(r_mm)}", rr.LineStrips3D([ring], colors=[col], radii=0.0012,
+                                                           labels=[tag]), static=True)
 
 
 def flash(blob, grid) -> None:

@@ -250,6 +250,24 @@ class Mind:
     def forget(self) -> None:
         self.history = []
 
+    def comment(self, question: str, eyes, recent: list[str]) -> str:
+        """The side-channel voice: a tool-less answer while the main loop is mid-job, from the same
+        persona with the live world state and the last few activity lines. It can only talk."""
+        from pydantic_ai import Agent
+        if not hasattr(self, "_commentator"):
+            m = OpenAIChatModel(self.model_name,
+                                provider=OpenRouterProvider(api_key=os.environ["OPENROUTER_API_KEY"]))
+            self._commentator = Agent(m, instructions=(
+                "You are the same robot's voice, answering a quick question from Joel WHILE your "
+                "main process is busy working - you cannot act or see anything new right now, only "
+                "explain. Below is your current world model and your last few actions. Answer the "
+                "question briefly, honestly, in plain language."))
+        state = eyes.state() if eyes is not None else "no cell connected"
+        acts = "\n".join(recent[-8:])
+        r = self._commentator.run_sync(
+            f"World model:\n{state}\n\nYour recent activity:\n{acts}\n\nJoel asks: {question}")
+        return r.output
+
 
 if __name__ == "__main__":
     import sys
