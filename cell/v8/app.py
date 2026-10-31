@@ -214,10 +214,12 @@ def main() -> None:
                     msg = connect_sim() if body.get("target") == "sim" else connect_real(body)
                 elif self.path == "/reset":
                     if st["mode"] != "sim":
-                        raise RuntimeError("reset is the simulator's; the real table is reset by hand")
-                    msg = connect_sim()
-                    wipe()
-                    msg = "reset: " + msg + "; mind, chat and world model cleared"
+                        wipe()   # on the real cell: the head resets, the table is reset by hand
+                        msg = "reset: mind, chat and world model cleared (the real table is reset by hand)"
+                    else:
+                        msg = connect_sim()
+                        wipe()
+                        msg = "reset: " + msg + "; mind, chat and world model cleared"
                 elif self.path == "/hands":
                     msg = hands(body)
                 elif self.path == "/say":

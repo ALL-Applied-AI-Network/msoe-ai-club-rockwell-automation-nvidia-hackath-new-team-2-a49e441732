@@ -378,7 +378,15 @@ class Eyes:
 
     def _check_stop(self) -> None:
         if self.stop_now:
-            raise RuntimeError("stopped: Joel reset the session - this job is over")
+            raise RuntimeError("stopped: this job is over (reset, or the trial ended)")
+
+    def _trial_gate(self, e: Exception) -> Exception:
+        """A 'trial is over' from the cell ends the WHOLE job, not just one tool call: without
+        this the mind kept ambitiously re-flying into a dead trial for minutes (t06, Oct 31)."""
+        if "trial is" in str(e) or "no trial is running" in str(e):
+            self.stop_now = True
+            return RuntimeError("the trial has ENDED: every motion is over; report and stop")
+        return e
 
     def execute(self, rows, what: str) -> None:
         """THE one way motion reaches the cell. The plan goes in legs; after each leg the loop is
@@ -420,7 +428,10 @@ class Eyes:
         try:
             self._fly_rows(tip, wpr, eye)
         except (ValueError, RuntimeError) as e:
+            e = self._trial_gate(e)
             print(f"first plan failed: {e}", flush=True)   # the reason is evidence, never swallowed
+            if self.stop_now:
+                raise e
             from calibration.kinematics import HOME
             self._plan_fly(tip, wpr, np.asarray(HOME, float)[:6])   # pure computation: flyable from
             self.home()                       # home, or this raises and NO wasted trip is made
