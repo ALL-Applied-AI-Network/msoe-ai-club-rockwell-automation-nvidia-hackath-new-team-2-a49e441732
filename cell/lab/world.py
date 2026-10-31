@@ -25,7 +25,8 @@ import numpy as np
 from calibration.geometry import SURFACE_Z
 from lab.armcheck import Box
 
-MATCH_MM = 25.0   # a carved object this close to a known thing is that thing
+MATCH_MM = 38.0   # a carved object this close to a known thing is that thing (close looks see the
+                  # same cube a few cm shifted; spread objects sit further apart than this)
 PAD_MM = 4.0      # grown around every thing when it becomes an obstacle box
 
 
