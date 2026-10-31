@@ -29,7 +29,7 @@ class Mind:
         from pydantic_ai import Agent
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openrouter import OpenRouterProvider
-        self.model_name = model or os.getenv("V8_MODEL", "openai/gpt-6.1-terra")
+        self.model_name = model or os.getenv("V8_MODEL", "openai/gpt-6-luna")
         m = OpenAIChatModel(self.model_name,
                             provider=OpenRouterProvider(api_key=os.environ["OPENROUTER_API_KEY"]))
         self.agent = Agent(m, instructions=PERSONA)
