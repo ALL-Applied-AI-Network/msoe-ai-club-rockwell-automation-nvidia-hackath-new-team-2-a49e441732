@@ -353,7 +353,8 @@ class Eyes:
         tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])   # an illegal POSE: homing can't help
         try:
             self._fly_rows(tip, wpr, eye)
-        except (ValueError, RuntimeError):
+        except (ValueError, RuntimeError) as e:
+            print(f"first plan failed: {e} - homing", flush=True)   # the reason is evidence, never swallowed
             self.home()                       # cornered or stranded: the reflex, then once more
             self._fly_rows(tip, wpr, eye)
 
