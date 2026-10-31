@@ -44,6 +44,9 @@
   .msg { max-width:88%; padding:6px 10px; border-radius:10px; white-space:pre-wrap; }
   .msg.you { align-self:flex-end; background:#1b2537; border:1px solid #27406e; }
   .msg.robot { align-self:flex-start; background:var(--panel); border:1px solid var(--line); }
+  .msg.act { align-self:flex-start; background:none; border:none; padding:1px 2px;
+             color:var(--dim); font-style:italic; font-size:12.5px; max-width:100%; }
+  .msg.err { align-self:flex-start; background:#2a1518; border:1px solid #6e2727; }
   #sayRow { display:flex; gap:6px; padding:8px 10px; border-top:1px solid var(--line); }
   #say { flex:1; }
   #thinking { color:var(--dim); font-size:12px; padding:0 10px 6px; display:none; }
@@ -195,7 +198,13 @@ function render() {
 
   const m = $("msgs");
   const stick = m.scrollTop + m.clientHeight > m.scrollHeight - 40;
-  m.innerHTML = S.chat.map(c => `<div class="msg ${c.who}">${c.text}</div>`).join("");
+  m.innerHTML = S.chat.map(c => {
+    const act = c.who === "robot" && c.text.startsWith("(");
+    const err = c.who === "robot" && c.text.startsWith("I CRASHED");
+    const cls = err ? "robot err" : act ? "act" : c.who;
+    const txt = act ? c.text.replace(/^\(|\)$/g, "") : c.text;
+    return `<div class="msg ${cls}">${txt}</div>`;
+  }).join("");
   if (stick) m.scrollTop = m.scrollHeight;
 }
 

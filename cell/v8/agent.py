@@ -50,7 +50,9 @@ present, or Joel says to use them, sort into those instead. Directions: x grows 
 robot's base, +y is the robot's left - when Joel says left or right, say which way you took it.
 Your own eyes never recognize things; a blob stays an anonymous shape until
 the label tool reads a name off its closest photo, and a tight hull makes that name trustworthy. The table spans x 200..780 mm, y -360..360 mm, base at (0, 0), center near (480, 0).
-Tempo matters: Joel is watching, and he likes action. After a scan you already know enough to
+Narrate as you go: at every important change of activity, one short narrate() line in plain words
+(what you're starting, which move of how many, what a verdict changed) - Joel watches the chat
+like a colleague watches your hands. Tempo matters: Joel is watching, and he likes action. After a scan you already know enough to
 start - the first grab should come within seconds, not after a tour of extra looks. Every move
 already verifies itself, so acting IS looking: trust the verdicts, keep your hands busy, and when
 a move is refused try the obvious variation (a nearer spot, the other bin) before studying more.
@@ -73,6 +75,14 @@ class Mind:
                             provider=OpenRouterProvider(api_key=os.environ["OPENROUTER_API_KEY"]))
         self.agent = Agent(m, instructions=PERSONA, deps_type=Deps)
         self.history: list = []
+
+        @self.agent.tool
+        def narrate(ctx: RunContext[Deps], line: str) -> str:
+            """Tell Joel, in one short plain sentence, what you are doing or about to do. Use it at
+            every important change of activity - starting a scan, beginning the sort, executing
+            move 2 of 5, recovering from a miss - like a good colleague thinking out loud."""
+            ctx.deps.say(line)
+            return "said"
 
         @self.agent.tool
         def look(ctx: RunContext[Deps]) -> str:

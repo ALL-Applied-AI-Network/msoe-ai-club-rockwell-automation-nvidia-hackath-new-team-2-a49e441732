@@ -111,12 +111,18 @@ def ik_for(eye: np.ndarray, target: np.ndarray, T_flange_cam: np.ndarray,
     are checked INSIDE the roll search: a low camera pose is legal whenever SOME roll keeps the
     fingers up and in reach. Raises ValueError with the last miss when no roll works."""
     from lab import primitives as P
+    if np.hypot(eye[0], eye[1]) < 0.18:   # Isaac refuses camera poses over the robot's own base
+        raise ValueError("camera would hover over the robot's base")
     err: Exception | None = None
     for roll in (0.0, np.pi / 2, -np.pi / 2, np.pi, np.pi / 4, -np.pi / 4, 3 * np.pi / 4, -3 * np.pi / 4):
         tip, wpr = aim(eye, target, T_flange_cam, roll)
         up_mm = (tip[2] - SURFACE_Z) * 1000
+        r_out = float(np.hypot(tip[0], tip[1])) * 1000
         if up_mm < floor_mm or not P.reachable(tip[0], tip[1], margin_mm=15):
             err = ValueError(f"fingertips would be {up_mm:.0f} mm up, or out of reach")
+            continue
+        if r_out > 505 or (r_out > 485 and up_mm < 92):   # the fitted far-low rule, AT PROPOSAL TIME
+            err = ValueError(f"fingertips {r_out:.0f} mm out at {up_mm:.0f} mm up (far-low rule)")
             continue
         try:
             tool_ik(tip, wpr, tol_mm=3.0)
@@ -360,15 +366,16 @@ class Eyes:
         try:
             self._fly_rows(tip, wpr, eye)
         except (ValueError, RuntimeError) as e:
-            print(f"first plan failed: {e} - homing", flush=True)   # the reason is evidence, never swallowed
-            self.home()                       # cornered or stranded: the reflex, then once more
+            print(f"first plan failed: {e}", flush=True)   # the reason is evidence, never swallowed
+            from calibration.kinematics import HOME
+            self._plan_fly(tip, wpr, np.asarray(HOME, float)[:6])   # pure computation: flyable from
+            self.home()                       # home, or this raises and NO wasted trip is made
             self._fly_rows(tip, wpr, eye)
 
-    def _fly_rows(self, tip: np.ndarray, wpr: np.ndarray, eye: np.ndarray) -> None:
+    def _plan_fly(self, tip: np.ndarray, wpr: np.ndarray, q_now: np.ndarray):
         from calibration.kinematics import tool_ik, tool_pose
         from lab import armcheck
         from lab import primitives as P
-        q_now = np.asarray(self.cell.observe(cams=())["joints"], float)[:6]
         q = tool_ik(tip, wpr, q_now)
         T_now = tool_pose(q_now)
         rows = P.joint_move(q_now, T_now[:3, 3], wpr_of(T_now[:3, :3]), q, tip, wpr,
@@ -378,10 +385,16 @@ class Eyes:
         rep = armcheck.check_joints(np.asarray(rows)[:, :6], 0.0, obstacles=self._obstacles())
         if not rep.ok:
             raise ValueError(f"the move fails the arm check: {rep.problem}")
-        from lab.scan import unsafe   # the padded real-mesh self-collision model (both real faults fail it)
+        from lab.scan import unsafe
         for k, r in enumerate(rows):
             if k % 2 == 0 and (why := unsafe(np.asarray(r, float))):
                 raise ValueError(f"self-collision risk on the way: {why}")
+        return rows
+
+    def _fly_rows(self, tip: np.ndarray, wpr: np.ndarray, eye: np.ndarray) -> None:
+        from lab import primitives as P
+        q_now = np.asarray(self.cell.observe(cams=())["joints"], float)[:6]
+        rows = self._plan_fly(tip, wpr, q_now)
         print(f"fly: cam -> {np.round(eye, 3)}, {len(rows)} joint rows", flush=True)
         P.send(self.cell, rows)
         j = np.asarray(self.cell.observe(cams=())["joints"], float)
