@@ -146,6 +146,8 @@ def main() -> None:
     board.add("system", f"V7 agent on chat (build {build}): every message runs look-decide-act; "
                         "type 'v6: ...' for the old robot. The viewer switches to the V7 view when a task starts.")
     board.add("system", "Ready. The Isaac window on the GPU box is the real world; the right side here is what I think.")
+    from lab import worldview
+    worldview.attach()  # the embedded viewer shows the V7 layout from the first second, not the V6 relic
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
