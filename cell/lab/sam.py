@@ -25,7 +25,6 @@ from lab import samcodec, vlm  # noqa: F401  (vlm loads cell/.env)
 
 URL = "https://api.meta.ai/v1/responses"
 LOCAL_PORT = int(os.getenv("SAM_PORT", 8766))
-_local_down = False  # the box didn't answer once: Meta for the rest of the session (said once)
 
 
 def configured() -> bool:
@@ -71,8 +70,7 @@ def _local(part: np.ndarray, prompts: list[str], timeout: float) -> dict[str, li
 def segment_many(image: np.ndarray, prompts: list[str], crop: tuple[int, int, int, int] | None = None,
                  scale: float = 2.0, timeout: float = 40.0) -> list[dict]:
     """segment() for several words at once: on the local server the picture is sent and encoded once."""
-    global _local_down
-    if os.getenv("SAM_BACKEND", "local") == "local" and not _local_down:
+    if os.getenv("SAM_BACKEND", "local") == "local":
         H, W = image.shape[:2]
         x0, y0, x1, y1 = crop or (0, 0, W, H)
         part = image[y0:y1, x0:x1]
@@ -82,8 +80,10 @@ def segment_many(image: np.ndarray, prompts: list[str], crop: tuple[int, int, in
         try:
             found = _local(part, prompts, timeout)
         except (requests.RequestException, ConnectionError, OSError) as e:
-            _local_down = True
-            print(f"(local SAM unreachable: {e}; using Meta's API from now on)", flush=True)
+            # No silent fallback to a DIFFERENT model mid-run: the eyes either work or the run stops
+            # with the real cause (Joel's rule: a swallowed crash is a hidden bug).
+            raise RuntimeError(f"local SAM unreachable: {e} (tunnel + isaac/sam_server.py on the box; "
+                               "or set SAM_BACKEND=meta on purpose)") from e
         else:
             out = []
             for w in prompts:

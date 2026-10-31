@@ -269,8 +269,9 @@ class SimCell:
         tip = self.tip()
         try:
             self.q = tool_ik(tip, self.actual_wpr(), q0=self.q)
-        except ValueError:
-            pass  # keep the last joints: the wrist camera pose will be slightly off
+        except ValueError as e:
+            # Swallowing this rendered the wrist camera from a stale pose and quietly corrupted carves.
+            raise ValueError(f"observe: no IK for the gripper's current pose {np.round(tip, 3)}: {e}") from e
         scene = [*self.object_meshes(), *self.finger_meshes()]
         r = Renderer(scene, self.cams)
         rng = self.rng if rng_noise else None

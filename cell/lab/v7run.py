@@ -98,10 +98,18 @@ def marked(img: np.ndarray, w: World, cam: dict) -> np.ndarray:
     return out
 
 
+def _ask(image: np.ndarray | None, prompt: str, **kw) -> dict:
+    """ask_image, but a missing brain is a crash with a cause, never a silent empty answer."""
+    r = vlm.ask_image(image, prompt, model=BRAIN, **kw)
+    if r is None:
+        raise RuntimeError(f"no VLM answers (model {vlm.model_id(BRAIN)!r}: check cell/.env keys)")
+    return r
+
+
 def decide(w: World, instruction: str, done: list[str], table_img: np.ndarray) -> dict:
     p = DECIDE.format(mirror=w.mirror(), instruction=instruction, done="; ".join(done) or "nothing yet")
     worldview.trace("think", "deciding: " + p.replace("\n", " ⏎ ")[:500])
-    r = vlm.ask_image(table_img, p, think=True, model=BRAIN) or {}
+    r = _ask(table_img, p, think=True)
     if r.get("thinking"):
         worldview.trace("think", "thinking: " + r["thinking"][:400])
     worldview.trace("think", "reply: " + (r.get("text") or "(nothing)")[:400])
@@ -332,7 +340,7 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7", attach:
                 crop = cv2.resize(crop, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
             if crop.size:
                 rr.log("cams/closeup", rr.Image(crop).compress(jpeg_quality=80))
-            a = (vlm.ask_image(crop, INSPECT, model=BRAIN, think=False) or {}) if crop.size else {}
+            a = _ask(crop, INSPECT, think=False) if crop.size else {}
             j = a.get("json") or {}
             what, color, flat = j.get("what", "?"), j.get("color", "?"), j.get("flat")
             worldview.trace("check", f"inspect #{t.id}: {what}, {color}, flat={flat}")
@@ -388,8 +396,8 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7", attach:
                 cell.play(MV.travel(cur2, place, 0, 0, 300.0) + MV.hold(MV.uf0(*place, 300.0), 0, 0, 10))
                 shot = cell.observe()["images"]["wrist"]
                 rr.log("cams/closeup", rr.Image(shot).compress(jpeg_quality=80))
-                g = vlm.ask_image(shot, f"Looking straight down at the {c.name}. Is the {t.name} now inside "
-                                  'it? Answer JSON: {"inside": true or false}', model=BRAIN, think=False) or {}
+                g = _ask(shot, f"Looking straight down at the {c.name}. Is the {t.name} now inside "
+                         'it? Answer JSON: {"inside": true or false}', think=False)
                 inside = bool((g.get("json") or {}).get("inside"))
                 worldview.trace("check", f"glance: {t.name} inside {c.name}? {inside}",
                                 "INFO" if inside else "WARN")
