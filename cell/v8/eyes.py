@@ -257,7 +257,13 @@ class Eyes:
                 b.shots += 1
                 self._keep_crop(b, shot, own)
             else:
-                b.keep &= ~in_frame | any_mask   # not seen here: clear table carves, other masks occlude
+                nk = b.keep & (~in_frame | any_mask)   # not seen here: clear table carves, occlusion keeps
+                if nk.sum() >= 4 or b.keep.sum() < 4:
+                    b.keep = nk
+                # else: this shot claimed no mask for the blob AND would erase it - on the real cell
+                # SAM blinks (lighting, blur), and a blink is not evidence of absence (the V7 lesson).
+                # Existence dies only to a shot that actually SAW the spot occupied by nothing but
+                # table across every ray - which an owned mask elsewhere, or verification, provides.
 
         born = []
         for i, m in enumerate(shot.masks):
