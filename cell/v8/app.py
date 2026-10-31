@@ -211,8 +211,24 @@ def main() -> None:
                     wipe()
                     msg = "cleared: chat, memory and the world model - it knows nothing now"
                 elif self.path == "/task":
-                    st["task"] = body.get("name")
-                    msg = f"task selected: {st['task']} (the mind has no tools yet: it goes nowhere)"
+                    name = body.get("name")
+                    t = next((t for t in tasks if t["name"] == name), None)
+                    if t is None:
+                        return self._json({"error": f"no task {name!r}"}, 404)
+                    from lab.isaaccell import IsaacCell
+                    from lab.trial import build as build_scene
+                    with lock:
+                        st["cell"] = IsaacCell(build_scene(LD.load_trial(name), 0))
+                        st["mode"] = "sim"
+                        st["eyes"] = Eyes(st["cell"], vw)
+                    mind.forget()
+                    st["chat"] = []
+                    v8view.clear()
+                    v8view.setup()
+                    st["task"] = name
+                    msg = f"set up {name}: the table is staged. Instruction: {t['instruction']}"
+                    say(msg)
+                    return self._json({"msg": msg, "instruction": t["instruction"]})
                 else:
                     return self._json({"error": "not found"}, 404)
             except Exception as e:

@@ -64,7 +64,7 @@
     <details id="dTasks">
       <summary>Tasks</summary>
       <div id="tasks"></div>
-      <div class="muted">selecting a task does nothing yet - the mind has no tools</div>
+      <div class="muted">click a task: the simulator stages its table and the instruction lands in the chat box - Enter sends it</div>
     </details>
 
     <details open>
@@ -136,8 +136,25 @@ function render() {
   $("bReal").className = S.mode === "real" ? "on" : "";
 
   $("tasks").innerHTML = S.tasks.map(t =>
-    `<div class="task ${t.name===S.task?"sel":""}" data-n="${t.name}">${t.name}<small>${t.instruction}</small></div>`).join("");
-  for (const el of $("tasks").children) el.onclick = () => post("/task", {name: el.dataset.n});
+    `<div class="task ${t.name===S.task?"sel":""}" data-n="${t.name}">
+       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+         <span>${t.name}<small>${t.instruction}</small></span>
+         <button class="run" data-n="${t.name}">Run</button>
+       </div></div>`).join("");
+  const stage = async (name) => {
+    const r = await (await fetch("/task", {method:"POST", headers:{"Content-Type":"application/json"},
+                                           body:JSON.stringify({name})})).json();
+    await refresh();
+    return r.instruction;
+  };
+  for (const el of $("tasks").querySelectorAll(".task"))
+    el.onclick = async () => { const i = await stage(el.dataset.n); if (i) $("say").value = i; };
+  for (const b of $("tasks").querySelectorAll(".run"))
+    b.onclick = async (ev) => {         // Run = stage the cell, then say the instruction AS Joel
+      ev.stopPropagation();
+      const i = await stage(b.dataset.n);
+      if (i) { $("say").value = i; await sayIt(); }
+    };
 
   if (S.mode === "real") {
     const tr = S.trials || [];
