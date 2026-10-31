@@ -1,0 +1,10 @@
+# Look and act (v2): sort writing tools from hardware into two groups (pens: pick from above; bolts: push-grasp).
+instruction: Put the pens together on one side of the table and the bolts together on the other side.
+mode: v2
+layout: spread
+seed: 0
+objects:
+  - {kind: marker, color: black, count: 2}
+  - {kind: screw_m6x30, color: steel, count: 2}
+goal:
+  - {what: {}, piles_by: kind}

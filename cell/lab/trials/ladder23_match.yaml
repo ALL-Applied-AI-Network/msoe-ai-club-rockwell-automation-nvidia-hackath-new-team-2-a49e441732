@@ -1,0 +1,14 @@
+# Look and act (v2): colour match with small blocks (push-grasp) into the right bins.
+instruction: Put each block into the bin of its own colour.
+mode: v2
+layout: spread
+seed: 0
+objects:
+  - {kind: cube_10, color: red, count: 1}
+  - {kind: cube_10, color: blue, count: 1}
+fixtures:
+  - {kind: box_60, color: red, at: [0.30, -0.24]}
+  - {kind: box_60, color: blue, at: [0.45, -0.24]}
+goal:
+  - {what: {color: red}, into: {color: red}}
+  - {what: {color: blue}, into: {color: blue}}

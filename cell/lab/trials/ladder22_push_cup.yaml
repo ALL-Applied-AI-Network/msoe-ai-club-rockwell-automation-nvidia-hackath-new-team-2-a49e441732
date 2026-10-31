@@ -1,0 +1,10 @@
+# Look and act (v2): push a cup somewhere, no lifting.
+instruction: Push the cup about ten centimetres to the left.
+mode: v2
+layout: spread
+seed: 0
+objects: []
+fixtures:
+  - {kind: cup_51, color: blue, at: [0.40, -0.05]}
+goal:
+  - {what: {}, moved: true}

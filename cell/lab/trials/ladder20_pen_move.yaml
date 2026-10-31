@@ -1,0 +1,9 @@
+# Look and act (v2): one pen. Pick from above, across its narrow side.
+instruction: Move the pen to the other side of the table.
+mode: v2
+layout: spread
+seed: 0
+objects:
+  - {kind: marker, color: black, count: 1}
+goal:
+  - {what: {kind: marker}, moved: true}

@@ -592,6 +592,27 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
     before_img = obs0["images"]["table"]
     look = first_look(obs0)
     cv2.imwrite(str(out / "first_look.jpg"), cv2.cvtColor(look, cv2.COLOR_RGB2BGR))
+    if t.get("mode") == "v2":  # the look-and-act flow (lab/act2): no video sweep, still shots + SAM + table-relative depth
+        from lab import act2
+        truth = {} if real else sim_objects(task)
+        before = {} if real else requests.get(api + "sim/truth", timeout=30).json()["poses"]
+        say(f"\n=== {task}: \"{t['instruction']}\" (look and act)")
+        r2 = act2.run_v2(c, t, out, before_img, look, crop_box, say, tell, state, real)
+        time.sleep(2.0)
+        after = {} if real else requests.get(api + "sim/truth", timeout=30).json()["poses"]
+        lines = [] if real else check(t["goal"], truth, before, after)
+        wanted = len(r2["plan"].get("moves") or [])
+        ok = all(x for x, _ in lines) if not real else bool(wanted) and len(r2["moves_done"]) == wanted
+        for x, s_ in lines:
+            say(f"  {'PASS' if x else 'FAIL'}  {s_}")
+        tell(("Done, and the simulator agrees: " if ok else "Done, but the simulator says it's not right: ") +
+             "; ".join(s_ for _, s_ in lines) + "." if not real else
+             f"Done: {len(r2['moves_done'])} of {wanted} moves. Look at the table.")
+        res = {"task": task, "instruction": t["instruction"], "ok": ok, "checks": [{"ok": x, "says": s_} for x, s_ in lines],
+               "llm": r2["plan"], "moves_done": r2["moves_done"], "seconds": round(time.time() - t0), "scan_s": 0, "llm_s": 0}
+        (out / "result.json").write_text(json.dumps(res, indent=1, default=float))
+        say(f"  {'PASSED' if ok else 'FAILED'} in {res['seconds']} s")
+        return res
     first = {}
 
     def plan_first():  # second 0: the language model gets every camera and the instruction, while the scan runs
