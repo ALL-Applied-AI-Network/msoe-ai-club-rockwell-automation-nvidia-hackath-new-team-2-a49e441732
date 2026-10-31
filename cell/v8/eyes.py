@@ -113,6 +113,9 @@ def ik_for(eye: np.ndarray, target: np.ndarray, T_flange_cam: np.ndarray,
     from lab import primitives as P
     if np.hypot(eye[0], eye[1]) < 0.18:   # Isaac refuses camera poses over the robot's own base
         raise ValueError("camera would hover over the robot's base")
+    if not (0.16 < eye[0] < 0.54 and abs(eye[1]) < 0.33):   # the cell's PHYSICAL furniture is not in
+        raise ValueError("camera eye beyond the table's physical bounds")   # our model: stay over the table
+        # (lab evidence, Oct 31 night: eyes past the rim drew real Isaac collision FAULTS mid-flight)
     err: Exception | None = None
     for roll in (0.0, np.pi / 2, -np.pi / 2, np.pi, np.pi / 4, -np.pi / 4, 3 * np.pi / 4, -3 * np.pi / 4):
         tip, wpr = aim(eye, target, T_flange_cam, roll)
@@ -123,6 +126,9 @@ def ik_for(eye: np.ndarray, target: np.ndarray, T_flange_cam: np.ndarray,
             continue
         if r_out > 505 or (r_out > 485 and up_mm < 92):   # the fitted far-low rule, AT PROPOSAL TIME
             err = ValueError(f"fingertips {r_out:.0f} mm out at {up_mm:.0f} mm up (far-low rule)")
+            continue
+        if not (0.15 < tip[0] < 0.52 and abs(tip[1]) < 0.33):   # looking never needs the hand past
+            err = ValueError("fingertips beyond the table bounds for a look")   # the table's edge
             continue
         try:
             tool_ik(tip, wpr, tol_mm=3.0)
