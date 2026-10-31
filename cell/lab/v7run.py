@@ -19,13 +19,15 @@ numbers that count are the offline ones on real recorded stills (lab.carve_check
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 import rerun as rr
 
-from calibration.geometry import SURFACE_Z, UF0_Z_MM, load
+from calibration.geometry import SURFACE_Z, UF0_Z_MM, flange_pose, load, project
 from calibration.kinematics import tcp_uf0
 from lab import armcheck
 from lab import moves as MV
@@ -40,8 +42,15 @@ from lab.recorder import RUNS
 # ZERO on a sparse scene of three things, where "small object" finds all of them. Their masks union.
 WORDS = ["object", "small object"]
 
+# The deciding brain. Measured on real crops (croptest, Oct 31): Nemotron called 3 of 9 solid cubes
+# flat stickers/tape (the dangerous direction) and needs ~90 s to think; gpt-6.1-terra got 10/10 with
+# tape correctly flat, in 1.4-2.7 s at low effort. Default to it whenever the OpenRouter key is around;
+# V7_VLM in the environment overrides either way (any VLM_<NAME> name or a full "openrouter/..." id).
+BRAIN = os.getenv("V7_VLM") or ("openrouter/openai/gpt-6.1-terra" if os.getenv("OPENROUTER_API_KEY") else None)
+
 DECIDE = """You are the mind of a robot arm. SAM found these things (your world model: mm, base frame,
-x away from the base, y left; the photo is the table camera, use it to recognize what each blob is):
+x away from the base, y left; the photo is the table camera with each blob's id painted at its spot -
+read the ids off the photo, never guess which blob is which):
 {mirror}
 
 Instruction: {instruction}
@@ -51,22 +60,48 @@ Done so far: {done}
 Answer ONE action as JSON, nothing else:
   {{"say": "<one short line>", "do": {{"name": {{"thing": <id>, "name": "<what it clearly is, e.g. red cube 1>"}}}}}}
   {{"say": "<one short line>", "do": {{"look": {{"at": [x_mm, y_mm]}}}}}}   fresh close outlines there: finds what was missed, tightens a one-glance blob
+  {{"say": "<one short line>", "do": {{"inspect": {{"thing": <id>}}}}}}   fly over it and study a close-up crop: tells you what it really is (use when the table photo is too far away to tell)
   {{"say": "<one short line>", "do": {{"move": {{"thing": <id>, "to": [x_mm, y_mm]}}}}}}   pick it up, set it down there
   {{"say": "<one short line>", "do": {{"into": {{"thing": <id>, "container": <id>}}}}}}   drop it into an open-top thing (a bin, a cup): fly above it, let go, gravity does the rest
   {{"say": "<one short line>", "do": {{"forget": {{"thing": <id>}}}}}}   the photo shows this blob is not a real object (tape, a shadow, a mark on the table, a double of another blob)
   {{"say": "<one short line>", "done": true}}   the instruction is satisfied, or nothing useful is left
 
-You are curious but decisive: name what you recognize, look closer when truly unsure - and then ACT.
-After two looks you know enough; a plan that only ever looks has failed. Positions within ~10 mm are
-the same thing seen twice. Every answer carries a "do" or "done": saying without doing is a wasted turn.
-Only move things that exist in the model. Destinations on clear table, 40 mm from everything else,
-x 260-500, y -280-280. If the model is empty, say the eyes have failed and stop: do not invent things."""
+You are curious and decisive: figure out the scene, then do the task. The ids painted on the photo
+are the model's ids. move and into accept only things you have named (the code refuses an unnamed
+blob). The table is x 260-500, y -280-280. Every answer carries a "do" or "done"."""
+
+INSPECT = ('This is a close-up crop of a robot workcell table. The thing in question is at the CENTER '
+           'of the crop; anything near the edges is a neighbor, not it. If there is nothing at the '
+           'center, say so. What is the center thing? Is it a flat marking on the table surface (tape, '
+           'shadow, stain, line), a solid object, or nothing? Answer JSON only: '
+           '{"what": "<2-4 words, or nothing>", "color": "<word>", "flat": true or false}')
+
+
+def marked(img: np.ndarray, w: World, cam: dict) -> np.ndarray:
+    """Set-of-marks: the table photo with every solid thing's id painted at its projected spot, so
+    photo -> id is read off the picture, not guessed (the grounding gap: the agent once moved junk
+    blob #5 believing it was the red cube)."""
+    out = img.copy()
+    ih, iw = out.shape[:2]
+    cw, ch = cam["size"]
+    for t in w.things:
+        if t.state != "solid":
+            continue
+        u, v = project(cam, [[t.x_mm / 1000, t.y_mm / 1000, SURFACE_Z + t.top_mm / 1000]])[0]
+        u, v = int(u * iw / cw), int(v * ih / ch)
+        if not (0 <= u < iw and 0 <= v < ih):
+            continue
+        cv2.circle(out, (u, v), 3, (255, 255, 255), -1)
+        cv2.circle(out, (u, v), 4, (0, 0, 0), 1)
+        for col, th in (((0, 0, 0), 4), ((255, 255, 255), 1)):
+            cv2.putText(out, f"#{t.id}", (u + 6, v - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, th)
+    return out
 
 
 def decide(w: World, instruction: str, done: list[str], table_img: np.ndarray) -> dict:
     p = DECIDE.format(mirror=w.mirror(), instruction=instruction, done="; ".join(done) or "nothing yet")
     worldview.trace("think", "deciding: " + p.replace("\n", " ⏎ ")[:500])
-    r = vlm.ask_image(table_img, p, think=True) or {}
+    r = vlm.ask_image(table_img, p, think=True, model=BRAIN) or {}
     if r.get("thinking"):
         worldview.trace("think", "thinking: " + r["thinking"][:400])
     worldview.trace("think", "reply: " + (r.get("text") or "(nothing)")[:400])
@@ -125,6 +160,22 @@ def confirm_look(cell: SimCell, cams: dict, place_m, word: str) -> tuple | None:
     return None
 
 
+def grasp(w: World, t, cur, place, travel_mm: float, drop_mm: float | None) -> tuple[list, str]:
+    """Slide-in first (fingers down beside it, slide until it sits between them - the grip that works
+    on 10 mm cubes and screws on the real table), top pick only when no side is clear."""
+    jaw = float(np.degrees(t.yaw) + 90.0)
+    at = (t.x_mm / 1000.0, t.y_mm / 1000.0)
+
+    def clear(xy) -> bool:
+        return all(th.dist_mm(xy[0] * 1000, xy[1] * 1000) > max(th.size_mm) / 2 + 20
+                   for th in w.things if th.id != t.id and th.of != t.id)
+
+    rows, why = MV.push_grasp(cur, at, jaw, max(t.size_mm), place, travel_mm, drop_mm, clear)
+    if rows:
+        return rows, "slide-in grasp"
+    return MV.pick_top(cur, at, jaw, place, travel_mm, drop_mm), f"top pick ({why})"
+
+
 def row_points(rows) -> np.ndarray:
     a = np.atleast_2d(np.asarray(rows, float))
     return np.stack([a[:, 0] / 1000, a[:, 1] / 1000, (a[:, 2] - UF0_Z_MM) / 1000], -1)
@@ -142,6 +193,7 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
                                      colors=[(235, 235, 235)], fill_mode="solid"), static=True)
 
     cams = load()
+    worldview.trace("think", f"brain: {vlm.model_id(BRAIN) or 'default'}")
     words = WORDS
     w = World()
     views: list[View] = []
@@ -176,8 +228,8 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
     # ---- the loop: the LLM decides, the world predicts, the arm acts, the look confirms ----
     said = len(w.events)
     done: list[str] = []
-    for cycle in range(10):
-        r = decide(w, instruction, done, cell.observe()["images"]["table"])
+    for cycle in range(20):
+        r = decide(w, instruction, done, marked(cell.observe()["images"]["table"], w, cams["table"]))
         if r.get("say"):
             worldview.trace("say", r["say"])
             print("robot:", r["say"], flush=True)
@@ -236,6 +288,48 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
                 worldview.trace("world", e2)
             said = len(w.events)
             continue
+        if "inspect" in do:  # Joel: crop what SAM found, send it up close, ask "what's this?" -
+            try:             # the ventral stream foveating before it names
+                t = w[int(do["inspect"]["thing"])]
+            except (KeyError, TypeError, ValueError) as e:
+                worldview.trace("plan", f"bad inspect {do['inspect']}: {e}", "WARN")
+                done.append(f"your inspect call {do['inspect']} made no sense")
+                continue
+            fly(cell, np.array([t.x_mm, t.y_mm,
+                                SURFACE_Z * 1000 + UF0_Z_MM + max(160.0, t.top_mm + 120.0), *DOWN], float))
+            obs = cell.observe()
+            img, jnts = obs["images"]["wrist"], np.asarray(obs["joints"], float)
+            Tf = np.linalg.inv(flange_pose(jnts))   # wrist cam: project() wants flange-frame points
+            c3 = np.array([t.x_mm / 1000, t.y_mm / 1000, SURFACE_Z + t.top_mm / 2000])
+            r3 = c3 + [max(t.size_mm) / 2000 + 0.012, 0, 0]
+            uv = project(cams["wrist"], [Tf[:3, :3] @ c3 + Tf[:3, 3], Tf[:3, :3] @ r3 + Tf[:3, 3]])
+            ih, iw = img.shape[:2]
+            cw = cams["wrist"]["size"][0]
+            u, v = uv[0][0] * iw / cw, uv[0][1] * iw / cw
+            rad = int(max(float(np.hypot(*(uv[1] - uv[0]))) * iw / cw * 1.8, 60))
+            crop = img[max(0, int(v) - rad):int(v) + rad, max(0, int(u) - rad):int(u) + rad]
+            if crop.size and min(crop.shape[:2]) < 300:   # blow tiny crops up so the model sees pixels
+                s = 300 / min(crop.shape[:2])
+                crop = cv2.resize(crop, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
+            a = (vlm.ask_image(crop, INSPECT, model=BRAIN, think=False) or {}) if crop.size else {}
+            j = a.get("json") or {}
+            what, color, flat = j.get("what", "?"), j.get("color", "?"), j.get("flat")
+            worldview.trace("check", f"inspect #{t.id}: {what}, {color}, flat={flat}")
+            print(f"inspect #{t.id}: {what}, {color}, flat={flat}", flush=True)
+            if j and str(what).lower().startswith("nothing"):
+                # the close look AT its spot saw nothing there: that is the contradiction that deletes
+                # (friend-walks-away) - evidence logic lives in code, not in the prompt
+                w.forget(t.id)
+                done.append(f"inspected #{t.id}: nothing there - forgotten")
+            else:
+                t.note = f"close-up: {what}, {color}" + (", flat on the table" if flat else "")
+                done.append(f"inspected #{t.id}: {what} ({color}), flat={flat}")
+            worldview.things(w)
+            worldview.mind(w)
+            for e2 in w.events[said:]:
+                worldview.trace("world", e2)
+            said = len(w.events)
+            continue
         if "into" in do:  # Joel: no cavity geometry - the LLM knows it's open on top, gravity finds the
             try:          # inside, and a glance validates
                 t, c = w[int(do["into"]["thing"])], w[int(do["into"]["container"])]
@@ -244,12 +338,17 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
                 print(f"bad into {do['into']}: {e}", flush=True)
                 done.append(f"your into call {do['into']} made no sense")
                 continue
+            unnamed = [x for x in (t, c) if x.name == "blob"]
+            if unnamed:  # the photo<->mirror join: acting on a blob it never named is how #5 got moved
+                msg = "still unnamed: " + ", ".join(f"#{x.id}" for x in unnamed) + " - inspect or name first"
+                worldview.trace("plan", "into refused, " + msg, "WARN")
+                done.append("into refused, " + msg)
+                continue
             obs = cell.observe()
             cur, q = tcp_uf0(obs["joints"]), np.asarray(obs["joints"], float)
-            jaw = float(np.degrees(t.yaw) + 90.0)
             place = (c.x_mm / 1000.0, c.y_mm / 1000.0)
-            rows = MV.pick_top(cur, (t.x_mm / 1000, t.y_mm / 1000), jaw, place,
-                               max(120.0, c.top_mm + 60.0), drop_mm=c.top_mm + 12.0)
+            rows, how = grasp(w, t, cur, place, max(120.0, c.top_mm + 60.0), drop_mm=c.top_mm + 12.0)
+            worldview.trace("plan", f"grip: {how}")
             rep = armcheck.check(rows, q, obstacles=w.boxes(ignore=(t.id,)))
             w.plan_move(t.id, c.x_mm, c.y_mm)
             rr.set_time("step", sequence=step); step += 1
@@ -268,7 +367,7 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
                 cell.play(MV.travel(cur2, place, 0, 0, 300.0) + MV.hold(MV.uf0(*place, 300.0), 0, 0, 10))
                 shot = cell.observe()["images"]["wrist"]
                 g = vlm.ask_image(shot, f"Looking straight down at the {c.name}. Is the {t.name} now inside "
-                                  'it? Answer JSON: {"inside": true or false}') or {}
+                                  'it? Answer JSON: {"inside": true or false}', model=BRAIN, think=False) or {}
                 inside = bool((g.get("json") or {}).get("inside"))
                 worldview.trace("check", f"glance: {t.name} inside {c.name}? {inside}",
                                 "INFO" if inside else "WARN")
@@ -297,11 +396,15 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
             worldview.trace("plan", f"bad move {m}: {e}", "WARN")
             done.append(f"your move {m} made no sense")
             continue
+        if t.name == "blob":
+            worldview.trace("plan", f"move refused, #{t.id} still unnamed", "WARN")
+            done.append(f"move refused, #{t.id} still unnamed - inspect or name first")
+            continue
         place = (to[0] / 1000.0, to[1] / 1000.0)
         obs = cell.observe()
         cur, q = tcp_uf0(obs["joints"]), np.asarray(obs["joints"], float)
-        jaw = float(np.degrees(t.yaw) + 90.0)
-        rows = MV.pick_top(cur, (t.x_mm / 1000, t.y_mm / 1000), jaw, place, 120.0, None)
+        rows, how = grasp(w, t, cur, place, 120.0, None)
+        worldview.trace("plan", f"grip: {how}")
 
         # predict BEFORE moving: ghost at the destination, green path, both collision checks
         rep = armcheck.check(rows, q, obstacles=w.boxes(ignore=(t.id,)))

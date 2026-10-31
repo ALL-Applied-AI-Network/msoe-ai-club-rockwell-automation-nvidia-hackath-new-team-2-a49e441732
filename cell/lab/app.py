@@ -220,8 +220,13 @@ def main() -> None:
                 text = (body.get("text") or "").strip()
                 if text:
                     board.add("you", text)
-                    if text.lower().startswith("v7:"):  # the new robot: lab/v7run.run on this cell
-                        wish = text[3:].strip() or "look around and say what you see"
+                    if text.lower().startswith("v6:"):  # the old robot, kept for comparison only
+                        if state["distract"]:
+                            robot.distract(2.0)
+                        threading.Thread(target=chat.user, args=(text[3:].strip(),), daemon=True).start()
+                    else:  # every chat message IS the V7 agent: look, decide, act on this cell
+                        wish = (text[3:].strip() if text.lower().startswith("v7:") else text) \
+                               or "look around and say what you see"
                         if getattr(robot, "v7_busy", False):
                             board.add("robot", "(v7 is already running: one task at a time)")
                         else:
@@ -237,10 +242,6 @@ def main() -> None:
                                 finally:
                                     robot.v7_busy = False
                             threading.Thread(target=_v7, daemon=True).start()
-                    else:
-                        if state["distract"]:
-                            robot.distract(2.0)
-                        threading.Thread(target=chat.user, args=(text,), daemon=True).start()
                 self._json({})
             elif self.path == "/hands":
                 try:
