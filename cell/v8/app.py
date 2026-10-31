@@ -266,6 +266,11 @@ def main() -> None:
                     t = next((t for t in tasks if t["name"] == name), None)
                     if t is None:
                         return self._json({"error": f"no task {name!r}"}, 404)
+                    if st["mode"] == "real":   # the REAL table is staged by hands: a task click must
+                        st["task"] = name      # never yank the session back into the simulator
+                        say(f"real cell: {name} selected - the instruction is in the chat box; Enter sends it")
+                        return self._json({"msg": "instruction loaded (real cell: no staging)",
+                                           "instruction": t["instruction"]})
                     from lab.isaaccell import IsaacCell
                     if st["eyes"] is not None:
                         st["eyes"].stop_now = True
