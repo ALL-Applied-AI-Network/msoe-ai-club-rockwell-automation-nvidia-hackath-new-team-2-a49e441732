@@ -168,17 +168,26 @@ class IsaacCell:
     def _set(self, truth: dict) -> None:
         self.poses = {int(k): np.array(v) for k, v in truth.items()}
 
-    def _post(self, path: str, body: dict, timeout: float = 30) -> dict:
-        r = requests.post(f"{self.url}/{path}", json=body, timeout=timeout)
+    @staticmethod
+    def _reply(r, path: str) -> dict:
+        """The server's answer, or its REAL complaint: a non-JSON error body (a traceback, a proxy
+        page) must never be masked by the json parser's own whine."""
         if r.status_code != 200:
-            raise RuntimeError(f"isaac {path}: {r.json().get('error', r.status_code)}")
-        return r.json()
+            try:
+                msg = r.json().get("error", r.status_code)
+            except ValueError:
+                msg = f"{r.status_code}: {r.text[:300]}"
+            raise RuntimeError(f"isaac {path}: {msg}")
+        try:
+            return r.json()
+        except ValueError:
+            raise RuntimeError(f"isaac {path} answered 200 but not JSON: {r.text[:300]}")
+
+    def _post(self, path: str, body: dict, timeout: float = 30) -> dict:
+        return self._reply(requests.post(f"{self.url}/{path}", json=body, timeout=timeout), path)
 
     def _get(self, path: str, timeout: float = 600) -> dict:
-        r = requests.get(f"{self.url}/{path}", timeout=timeout)
-        if r.status_code != 200:
-            raise RuntimeError(f"isaac {path}: {r.json().get('error', r.status_code)}")
-        return r.json()
+        return self._reply(requests.get(f"{self.url}/{path}", timeout=timeout), path)
 
     # ------------------------------------------------------------ what the policy uses
 

@@ -248,7 +248,9 @@ def main() -> None:
                                     v7run.run(robot.cell, wish, headless=True, tag="v7", attach=True)
                                     board.add("robot", "v7: done (the whole story is in the viewer)")
                                 except Exception as e:
-                                    board.add("robot", f"v7 stopped: {e}")
+                                    import traceback
+                                    print(traceback.format_exc(), flush=True)
+                                    board.add("robot", f"v7 stopped: {e} (full trace in app.log)")
                                 finally:
                                     robot.v7_busy = False
                             threading.Thread(target=_v7, daemon=True).start()

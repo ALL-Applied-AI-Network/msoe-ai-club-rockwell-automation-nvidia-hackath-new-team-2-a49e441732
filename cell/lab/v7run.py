@@ -121,6 +121,20 @@ def fly(cell: SimCell, target_row: np.ndarray) -> None:
     cell.play([r for r in rows for _ in range(12)])  # repeats: the lagged arm arrives and settles
 
 
+def show_cam(name: str, img: np.ndarray, found: list[dict]) -> None:
+    """What this camera sent to SAM and what SAM answered: the frame with every mask outlined and
+    the word that found it - the eyes, inspectable, next to the world they built."""
+    vis = img.copy()
+    for d in found:
+        cs, _ = cv2.findContours(d["mask"].astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(vis, cs, -1, (60, 255, 80), 2)
+        bx = d.get("box")
+        if bx is not None:
+            cv2.putText(vis, d.get("prompt", ""), (int(bx[0]), max(14, int(bx[1]) - 4)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (60, 255, 80), 1)
+    rr.log(f"cams/{name}", rr.Image(vis).compress(jpeg_quality=70))
+
+
 def one_look(cell: SimCell, cams: dict, views: list[View], first: bool, words: list[str]) -> tuple:
     obs = cell.observe()
     jnts = np.asarray(obs["joints"], float)
@@ -136,6 +150,7 @@ def one_look(cell: SimCell, cams: dict, views: list[View], first: bool, words: l
             union |= d["mask"]
             per_word[d["prompt"]] = per_word.get(d["prompt"], np.zeros(img.shape[:2], bool)) | d["mask"]
         views.append(View(mask=union, cam=cams[cam_name], joints=j))
+        show_cam(cam_name, img, found)
         if cam_name == "wrist" and per_word:
             naming = (per_word, views[-1])
         worldview.trace("see", f"{cam_name}: {len(found)} masks ("
@@ -315,6 +330,8 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7", attach:
             if crop.size and min(crop.shape[:2]) < 300:   # blow tiny crops up so the model sees pixels
                 s = 300 / min(crop.shape[:2])
                 crop = cv2.resize(crop, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
+            if crop.size:
+                rr.log("cams/closeup", rr.Image(crop).compress(jpeg_quality=80))
             a = (vlm.ask_image(crop, INSPECT, model=BRAIN, think=False) or {}) if crop.size else {}
             j = a.get("json") or {}
             what, color, flat = j.get("what", "?"), j.get("color", "?"), j.get("flat")
@@ -370,6 +387,7 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7", attach:
                 cur2 = tcp_uf0(cell.observe()["joints"])
                 cell.play(MV.travel(cur2, place, 0, 0, 300.0) + MV.hold(MV.uf0(*place, 300.0), 0, 0, 10))
                 shot = cell.observe()["images"]["wrist"]
+                rr.log("cams/closeup", rr.Image(shot).compress(jpeg_quality=80))
                 g = vlm.ask_image(shot, f"Looking straight down at the {c.name}. Is the {t.name} now inside "
                                   'it? Answer JSON: {"inside": true or false}', model=BRAIN, think=False) or {}
                 inside = bool((g.get("json") or {}).get("inside"))

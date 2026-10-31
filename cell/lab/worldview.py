@@ -50,13 +50,20 @@ def blueprint() -> None:
     the agent's mirror and full stack trace on the right."""
     import rerun.blueprint as rrb
     rr.send_blueprint(rrb.Blueprint(
-        rrb.Horizontal(
-            rrb.Spatial3DView(name="the robot's world", origin="/world"),
-            rrb.Vertical(
-                rrb.TextDocumentView(name="what it believes", origin="/agent/mind"),
-                rrb.TextLogView(name="its stack trace", origin="/agent"),
-                row_shares=[1, 2]),
-            column_shares=[3, 2]),
+        rrb.Vertical(
+            rrb.Horizontal(
+                rrb.Spatial3DView(name="the robot's world", origin="/world"),
+                rrb.Vertical(
+                    rrb.TextDocumentView(name="what it believes", origin="/agent/mind"),
+                    rrb.TextLogView(name="its stack trace", origin="/agent"),
+                    row_shares=[1, 2]),
+                column_shares=[3, 2]),
+            rrb.Horizontal(  # the eyes: every frame SAM saw, masks outlined, plus the LLM's close-ups
+                rrb.Spatial2DView(name="wrist", origin="cams/wrist"),
+                rrb.Spatial2DView(name="table", origin="cams/table"),
+                rrb.Spatial2DView(name="side", origin="cams/side"),
+                rrb.Spatial2DView(name="close-up", origin="cams/closeup")),
+            row_shares=[7, 3]),
         collapse_panels=True))
 
 
