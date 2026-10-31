@@ -57,6 +57,7 @@ Answer ONE action as JSON, nothing else:
   {{"say": "<one short line>", "done": true}}   the instruction is satisfied, or nothing useful is left
 
 You are curious: name blobs you recognize in the photo before moving them; look closer when unsure.
+Every answer carries a "do" or "done": saying without doing is a wasted turn.
 Only move things that exist in the model. Destinations on clear table, 40 mm from everything else,
 x 260-500, y -280-280. If the model is empty, say the eyes have failed and stop: do not invent things."""
 
@@ -180,8 +181,11 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
             worldview.trace("say", r["say"])
             print("robot:", r["say"], flush=True)
         do = r.get("do") or {}
-        if r.get("done") or not do:
+        if r.get("done"):
             break
+        if not do:  # it narrated instead of acting: remind it, don't end the run
+            done.append("you said something but did nothing: every answer carries a do or done")
+            continue
         if "name" in do:
             try:
                 w.rename(int(do["name"]["thing"]), str(do["name"]["name"])[:40])
