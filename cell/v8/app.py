@@ -42,7 +42,7 @@ def main() -> None:
     build = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
                            text=True, cwd=HERE).stdout.strip() or "?"
 
-    st = {"mode": None, "cell": None, "task": None, "log": [], "chat": []}
+    st = {"mode": None, "cell": None, "task": None, "log": [], "chat": [], "busy": False}
     lock = threading.Lock()
 
     from v8.agent import Deps, Mind
@@ -155,6 +155,7 @@ def main() -> None:
                 self.wfile.write(data)
             elif self.path == "/state":
                 out = {"mode": st["mode"], "build": build, "viewer": viewer, "task": st["task"],
+                       "busy": st["busy"],
                        "table": table(), "tasks": tasks, "chat": st["chat"],
                        "model": mind.model_name,
                        "kinds": [k for k in KINDS if not k.startswith("box")],
@@ -190,10 +191,19 @@ def main() -> None:
                     if not text:
                         return self._json({"error": "say something"}, 400)
                     st["chat"].append({"who": "you", "text": text})
-                    with mind_lock:
-                        reply = mind.say(text, Deps(eyes=st["eyes"],
-                                                    say=lambda t: st["chat"].append({"who": "robot", "text": t})))
-                    st["chat"].append({"who": "robot", "text": reply})
+                    st["busy"] = True
+                    try:
+                        with mind_lock:
+                            reply = mind.say(text, Deps(eyes=st["eyes"],
+                                                        say=lambda t: st["chat"].append({"who": "robot", "text": t})))
+                        st["chat"].append({"who": "robot", "text": reply})
+                    except Exception as e:   # the boundary: the crash lands IN THE CHAT, whole cause named
+                        print(traceback.format_exc(), flush=True)
+                        st["chat"].append({"who": "robot",
+                                           "text": f"I CRASHED: {type(e).__name__}: {e} (full trace in the app log)"})
+                        return self._json({"error": str(e)}, 500)
+                    finally:
+                        st["busy"] = False
                     return self._json({"reply": reply})
                 elif self.path == "/flash":
                     from v8 import view as _v

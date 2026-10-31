@@ -97,7 +97,10 @@
   </div>
 
   <div id="chat">
-    <div id="chatHead"><span id="chatTitle">Talk to it</span><button id="bClear">clear</button></div>
+    <div id="chatHead">
+      <span id="chatTitle"><span id="stateDot">●</span> Talk to it <small id="stateText" class="muted"></small></span>
+      <button id="bClear">clear</button>
+    </div>
     <div id="msgs"></div>
     <div id="thinking">thinking…</div>
     <div id="sayRow">
@@ -185,6 +188,10 @@ function render() {
 
   $("log").innerHTML = S.log.slice(-12).reverse().map(l =>
     `<div class="${/Error|couldn|unreachable|refused/.test(l.text)?"err":""}">${l.text}</div>`).join("");
+
+  const crashed = S.chat.length && S.chat[S.chat.length-1].text.startsWith("I CRASHED");
+  $("stateDot").style.color = crashed ? "#e06c75" : S.busy ? "#e5c07b" : "#71c178";
+  $("stateText").textContent = crashed ? "crashed - see the last message" : S.busy ? "working…" : "waiting for you";
 
   const m = $("msgs");
   const stick = m.scrollTop + m.clientHeight > m.scrollHeight - 40;

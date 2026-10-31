@@ -350,9 +350,6 @@ class Eyes:
         JOINT space (tcp rows to tilted poses make the wrist writhe near J5=0 and the controller
         refuses them - joint_move's own docstring), armchecked, then sent. Works on the Isaac twin
         and the real cell alike (P.send speaks both). Verifies arrival from observed joints."""
-        from calibration.kinematics import tool_ik, tool_pose
-        from lab import armcheck
-        from lab import primitives as P
         tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])   # an illegal POSE: homing can't help
         try:
             self._fly_rows(tip, wpr, eye)
@@ -361,6 +358,9 @@ class Eyes:
             self._fly_rows(tip, wpr, eye)
 
     def _fly_rows(self, tip: np.ndarray, wpr: np.ndarray, eye: np.ndarray) -> None:
+        from calibration.kinematics import tool_ik, tool_pose
+        from lab import armcheck
+        from lab import primitives as P
         q_now = np.asarray(self.cell.observe(cams=())["joints"], float)[:6]
         q = tool_ik(tip, wpr, q_now)
         T_now = tool_pose(q_now)
