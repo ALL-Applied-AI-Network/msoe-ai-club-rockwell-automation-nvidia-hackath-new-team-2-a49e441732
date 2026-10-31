@@ -21,6 +21,7 @@ Writes runs/<stamp>_ladder/<task>/ (before.jpg, after.jpg, plan.json, result.jso
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import subprocess
