@@ -92,7 +92,10 @@ from calibration import selfcollide  # noqa: E402
 
 JUMP_DEG = 20.0  # a row whose joints are this far from the last row's: a wrist flip the controller would refuse
 TORSION_M = 0.004  # torsional friction patch radius on objects (m): a finger pad's contact, roughly
-BLOCKED_MM = 12.0  # the fingertip this far from where it was told to be after a row: something is in the way (a fault)
+BLOCKED_MM = 40.0  # the fingertip this far from where it was told to be after a row: something is in the way.
+# 12 was below ONE ROW of ordinary motion (a 4-deg joint step swings the fingertip ~35 mm at full extension),
+# so the follower faulted on open air whenever it trailed by a single row (Oct 31 night: constant false
+# collisions mid-table). A genuine block makes the lag grow without bound and still trips within a row or two.
 BASE_Z = C.TABLE_TOP_Z  # the robot base in Isaac's world: base frame = world - (0, 0, 0.90)
 TCP_BOX = [(150.0, 650.0), (-450.0, 450.0), (-334.0, 300.0)]  # the cell's limits, mm in UF0
 APERTURE = 20.955  # mm; any value works, the focal length is scaled to match
