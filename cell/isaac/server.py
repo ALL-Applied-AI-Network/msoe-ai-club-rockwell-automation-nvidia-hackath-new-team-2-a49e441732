@@ -303,13 +303,27 @@ class Cell:
 
     def add(self, objects: list[dict], fall_s: float = 1.5) -> dict:
         """New objects (poses in the base frame, usually above the table: a cup poured out), then let them fall. The
-        robot's clock doesn't move: this is a person's hand, not the robot's time."""
+        robot's clock doesn't move: this is a person's hand, not the robot's time. An id seen before (a reset putting
+        the starting table back, something re-added after remove) reuses its parked prim instead of crashing on it."""
+        have = {int(o["id"]): k for k, o in enumerate(self.objects)}
         for o in objects:
             self._add(o, self.looks)
-        self.objects += objects
+            i = int(o["id"])
+            if i in have:
+                self.objects[have[i]] = o
+            else:
+                self.objects.append(o)
+            self.taken.discard(i)
         self.world.step(render=False)  # physics picks up the new bodies
         self._reattach()
         self._new_view()
+        # through the physics view too: a reused body is live, and PhysX won't reread its USD ops
+        idx = {str(o2["id"]): k for k, o2 in enumerate(self.objects)}
+        ks = np.array([idx[str(o["id"])] for o in objects])
+        p = np.array([o["pos"] for o in objects], float) + [0, 0, BASE_Z]
+        q = np.array([o["quat"] for o in objects], float)
+        self.view.set_world_poses(positions=p, orientations=q, indices=ks)
+        self.view.set_velocities(np.zeros((len(ks), 6)), indices=ks)
         self._settle(fall_s)
         return {"truth": self.truth()}
 
@@ -359,14 +373,26 @@ class Cell:
             looks[key] = mat
         return looks[key]
 
+    @staticmethod
+    def _place_ops(xf, pos=None, quat=None, scale=None) -> None:
+        """Set translate/orient/scale whether or not the ops exist yet: Define() hands back an existing prim
+        (remove() parks prims rather than deleting them), and AddXformOp on one of those throws."""
+        ops = {op.GetOpType(): op for op in xf.GetOrderedXformOps()}
+        if pos is not None:
+            (ops.get(UsdGeom.XformOp.TypeTranslate) or xf.AddTranslateOp()).Set(Gf.Vec3d(*[float(v) for v in pos]))
+        if quat is not None:
+            w, x, y, z = (float(v) for v in quat)
+            (ops.get(UsdGeom.XformOp.TypeOrient) or xf.AddOrientOp(UsdGeom.XformOp.PrecisionDouble)).Set(
+                Gf.Quatd(w, Gf.Vec3d(x, y, z)))
+        if scale is not None:
+            (ops.get(UsdGeom.XformOp.TypeScale) or xf.AddScaleOp()).Set(Gf.Vec3f(*[float(v) for v in scale]))
+
     def _add(self, o: dict, looks: dict) -> None:
         """A rigid body: a convex-hull mesh, or (boxes) a set of cuboids, since a hull would fill the well."""
         path = f"{OBJ_ROOT}/obj_{o['id']}"
         xf = UsdGeom.Xform.Define(self.stage, path)
         pos = np.array(o["pos"], float) + [0, 0, BASE_Z]
-        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
-        w, x, y, z = o["quat"]
-        xf.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(w, Gf.Vec3d(x, y, z)))
+        self._place_ops(xf, pos=pos, quat=o["quat"])
         mat = self._look(o["rgb"], looks)
         shapes = []
         if o.get("boxes"):
@@ -374,8 +400,7 @@ class Cell:
                 cube = UsdGeom.Cube.Define(self.stage, f"{path}/part{k}")
                 cube.CreateSizeAttr(1.0)
                 cx = UsdGeom.Xformable(cube.GetPrim())
-                cx.AddTranslateOp().Set(Gf.Vec3d(*b["center"]))
-                cx.AddScaleOp().Set(Gf.Vec3f(*b["size"]))
+                self._place_ops(cx, pos=b["center"], scale=b["size"])
                 UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
                 shapes.append(cube.GetPrim())
         else:
