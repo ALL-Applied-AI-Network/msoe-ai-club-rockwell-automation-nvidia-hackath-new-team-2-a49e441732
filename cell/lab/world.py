@@ -77,6 +77,7 @@ class World:
                 else:
                     t = Thing(next(self._ids), ob.get("name", "?"), ob["x_mm"], ob["y_mm"],
                               tuple(ob["size_mm"]), ob["top_mm"], ob.get("yaw", 0.0), seen=now)
+                    claimed.add(t.id)
                     self.things.append(t)
                     self._say(f"new: {t.name} #{t.id} at ({t.x_mm:.0f}, {t.y_mm:.0f})")
                 out.append(t)
