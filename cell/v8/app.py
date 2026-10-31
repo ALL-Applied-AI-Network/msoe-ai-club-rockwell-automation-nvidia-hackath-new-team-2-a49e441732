@@ -45,9 +45,13 @@ def main() -> None:
     st = {"mode": None, "cell": None, "task": None, "log": [], "chat": []}
     lock = threading.Lock()
 
-    from v8.agent import Mind
-    mind = Mind()   # stage one: it talks and remembers; it has no tools, no eyes, no hands
+    from v8.agent import Deps, Mind
+    from v8.eyes import Eyes
+    from v8 import view as v8view
+    mind = Mind()   # it talks, remembers, and has eyes (look/inspect) once a cell is connected
     mind_lock = threading.Lock()
+    st["eyes"] = None
+    vw = v8view.View()
 
     def say(text: str) -> None:
         st["log"] = (st["log"] + [{"t": time.time(), "text": text}])[-30:]
@@ -76,6 +80,8 @@ def main() -> None:
         with lock:
             st["cell"] = IsaacCell(build_scene(load_trial("chat_table"), 0))
             st["mode"] = "sim"
+            st["eyes"] = Eyes(st["cell"], vw)
+            v8view.setup()
         return "connected to the Isaac simulator: the starting table is set"
 
     def connect_real(b: dict) -> str:
@@ -88,6 +94,8 @@ def main() -> None:
         rep = cell.check()
         with lock:
             st["cell"], st["mode"] = cell, "real"
+            st["eyes"] = Eyes(cell, vw)
+            v8view.setup()
         return (f"connected to the real cell: {rep['round_trip_ms']} ms round trip, a picture in "
                 f"{rep['observe_s']} s, cameras {'ok' if rep['sees'] else 'NOT seeing'}")
 
@@ -170,7 +178,7 @@ def main() -> None:
                         return self._json({"error": "say something"}, 400)
                     st["chat"].append({"who": "you", "text": text})
                     with mind_lock:
-                        reply = mind.say(text)
+                        reply = mind.say(text, Deps(eyes=st["eyes"]))
                     st["chat"].append({"who": "robot", "text": reply})
                     return self._json({"reply": reply})
                 elif self.path == "/trial/start":
