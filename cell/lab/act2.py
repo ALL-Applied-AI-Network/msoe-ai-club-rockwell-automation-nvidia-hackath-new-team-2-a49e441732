@@ -134,7 +134,8 @@ def show(shot, seen, near, title):
     rec.set_time("look", sequence=VIEW.setdefault("n", 0))
     VIEW["n"] += 1
     rec.log("look/picture", rr.Image(shot.colour))
-    others = [s.outline for s in seen if s.outline is not None and s not in near]
+    chosen = {id(s) for s in near}  # (by identity: comparing the records compares their arrays, which raises)
+    others = [s.outline for s in seen if s.outline is not None and id(s) not in chosen]
     taken = [s.outline for s in near if s.outline is not None]
     rec.log("look/picture/others", rr.LineStrips2D([np.vstack([o, o[:1]]) for o in others], colors=[[255, 200, 0]] * len(others),
                                                    radii=1.5) if others else rr.Clear(recursive=False))
@@ -144,7 +145,7 @@ def show(shot, seen, near, title):
                                                                      f" {'real' if s.real else 'flat?'}" for s in near])
             if taken else rr.Clear(recursive=False))
     rec.log("look/what", rr.TextDocument(f"{title}\n\n" + "\n".join(
-        f"{'-> ' if s in near else '   '}{s.word}: {s.size_mm[0]:.0f} x {s.size_mm[1]:.0f} mm, "
+        f"{'-> ' if id(s) in chosen else '   '}{s.word}: {s.size_mm[0]:.0f} x {s.size_mm[1]:.0f} mm, "
         f"top {s.top_mm} mm, {'real' if s.real else 'flat'} ({s.points} depth points)" for s in seen)))
 
 
