@@ -216,6 +216,20 @@ class Eyes:
 
     # ---------------- aiming: motion planning, not the LLM ----------------
 
+    def _obstacles(self) -> list:
+        """Every blob's current volume as an armcheck box: the arm plans around what the eyes
+        believe is there - inspected ones included, since looking never requires touching."""
+        from lab.armcheck import Box
+        out = []
+        for b in self.blobs:
+            p = self.grid.pts[b.keep]
+            if not len(p):
+                continue
+            c = (p.min(0) + p.max(0)) / 2
+            half = (p.max(0) - p.min(0)) / 2 + 0.005
+            out.append(Box(np.array([c[0], c[1], c[2]]), 0.0, half, f"blob #{b.id}"))
+        return out
+
     def _fly_cam(self, eye: np.ndarray, target: np.ndarray) -> None:
         """Put the WRIST CAMERA at eye, looking at target - the datarun's proven way: planned in
         JOINT space (tcp rows to tilted poses make the wrist writhe near J5=0 and the controller
@@ -225,6 +239,8 @@ class Eyes:
         from lab import armcheck
         from lab import primitives as P
         tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])   # ValueError = the caller's verdict
+        if (tip[2] - SURFACE_Z) * 1000 < 95.0 or not P.reachable(*tip[:2], margin_mm=15):
+            raise ValueError(f"fingertips would be {(tip[2] - SURFACE_Z) * 1000:.0f} mm up, or out of reach")
         q_now = np.asarray(self.cell.observe(cams=())["joints"], float)[:6]
         q = tool_ik(tip, wpr, q_now)
         T_now = tool_pose(q_now)
@@ -232,7 +248,7 @@ class Eyes:
                             height_mm=95.0, settle=5)
         if rows is None:
             raise ValueError("no safe joint path to that vantage")
-        rep = armcheck.check_joints(np.asarray(rows)[:, :6], 0.0)
+        rep = armcheck.check_joints(np.asarray(rows)[:, :6], 0.0, obstacles=self._obstacles())
         if not rep.ok:
             raise ValueError(f"the move fails the arm check: {rep.problem}")
         print(f"fly: cam -> {np.round(eye, 3)} looking at {np.round(target, 3)}, "
