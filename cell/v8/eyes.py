@@ -217,16 +217,27 @@ class Eyes:
     # ---------------- aiming: motion planning, not the LLM ----------------
 
     def _fly_cam(self, eye: np.ndarray, target: np.ndarray) -> None:
-        """Put the WRIST CAMERA at eye, looking at target. The carve later uses observed joints."""
-        tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])   # ValueError = the caller's verdict
+        """Put the WRIST CAMERA at eye, looking at target - and VERIFY it arrived (observed joints,
+        not hope). A flight that ends somewhere else is a crash with a cause, never a silent shrug:
+        every carve afterwards would otherwise be a lie told from the wrong place."""
         from calibration.kinematics import tcp_uf0
+        tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])   # ValueError = the caller's verdict
         cur = np.array(tcp_uf0(self.cell.observe(cams=())["joints"]), float)
         row = np.array([tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, *wpr, 0.0])
         lift = max(cur[2], row[2], SURFACE_Z * 1000 + UF0_Z_MM + 220)
         up_row = np.array([cur[0], cur[1], lift, *cur[3:6], 0.0])
         over = np.array([row[0], row[1], lift, *row[3:6], 0.0])
-        rows = [r for r in (up_row, over, row) for _ in range(10)]
+        rows = [r for r in (up_row, over, row) for _ in range(12)]
+        print(f"fly: cam -> {np.round(eye, 3)} looking at {np.round(target, 3)}; "
+              f"tip row {np.round(row[:6], 1)}", flush=True)
         self.cell.play([list(r) for r in rows])
+        j = np.asarray(self.cell.observe(cams=())["joints"], float)
+        cam_now = (flange_pose(j) @ self.cams["wrist"]["T"])[:3, 3]
+        off = float(np.linalg.norm(cam_now - eye)) * 1000
+        print(f"fly: arrived, camera {off:.0f} mm from asked", flush=True)
+        if off > 40:
+            raise RuntimeError(f"flight failed: asked the camera to {np.round(eye, 3)}, it is at "
+                               f"{np.round(cam_now, 3)} ({off:.0f} mm away) - the cell did not follow")
 
     def _vantages(self, blob: Blob) -> list[tuple[np.ndarray, np.ndarray]]:
         """Three (eye, target) pairs: one from above, two from ~40 degrees up at different sides -
@@ -257,6 +268,26 @@ class Eyes:
 
     # ---------------- what the mind calls ----------------
 
+    def look_at(self, x_mm: float, y_mm: float) -> str:
+        """Move the head: hover the camera over that table point (top-down first, a 50-degree
+        tilt from the base side when straight-down is out of reach), then look."""
+        tgt = np.array([x_mm / 1000.0, y_mm / 1000.0, SURFACE_Z + 0.01])
+        el = np.radians(50.0)
+        az = np.arctan2(tgt[1], tgt[0]) + np.pi
+        cands = [tgt + np.array([0.0, 0.0, 0.34])]
+        for d in (0.30, 0.38):
+            cands.append(tgt + d * np.array([np.cos(az) * np.cos(el), np.sin(az) * np.cos(el), np.sin(el)]))
+        last: Exception | None = None
+        for eye in cands:
+            try:
+                self._fly_cam(eye, tgt)
+                break
+            except (ValueError, RuntimeError) as e:
+                last = e
+        else:
+            return f"can't get the camera over ({x_mm:.0f}, {y_mm:.0f}): {last}"
+        return self.look()
+
     def look(self) -> str:
         shot = self._snap()
         born = self._carve(shot)
@@ -278,8 +309,8 @@ class Eyes:
         for n, (eye, tgt) in enumerate(self._vantages(b), 1):
             try:
                 self._fly_cam(eye, tgt)
-            except ValueError as e:
-                story.append(f"vantage {n}: out of reach ({e}); skipped")
+            except (ValueError, RuntimeError) as e:   # unreachable, or the cell did not follow:
+                story.append(f"vantage {n}: {e}")      # the decider hears the verdict, whole
                 continue
             shot = self._snap()
             mine = self._own_cut(b, shot)

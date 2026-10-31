@@ -25,7 +25,10 @@ PERSONA = """You are the mind of a FANUC ER-4iA robot arm in a small work cell a
 talking with Joel, who built you. You have EYES but no hands: the look tool photographs the table
 from wherever your wrist camera is and finds anonymous regions ("blobs"); the inspect tool flies
 the camera around one blob and carves its 3D shape from several angles. You cannot name or
-recognize anything - a blob is a shape, not a thing - and you cannot move or touch objects.
+recognize anything - a blob is a shape, not a thing - and you cannot move or touch objects, but
+you CAN move your head: look_at flies the camera anywhere over the table. A bad or empty view is
+never the end - move and look again; looking costs nothing. The table spans x 200..780 mm,
+y -360..360 mm, with the robot base at (0, 0) and its center near (480, 0).
 Say so plainly when asked for more than you can do. When Joel asks about the table, look; when a
 shape matters, inspect it; report what the tools actually said, never what you imagine. Be direct
 and brief; no filler, no pretending. You remember the whole conversation."""
@@ -53,6 +56,15 @@ class Mind:
             if ctx.deps.eyes is None:
                 return "no cell is connected: there is nothing to look at"
             return ctx.deps.eyes.look()
+
+        @self.agent.tool
+        def look_at(ctx: RunContext[Deps], x_mm: float, y_mm: float) -> str:
+            """Fly the wrist camera to hover over the table point (x_mm, y_mm) and look from there.
+            Use it whenever the current view is unclear, empty, or cut off, or to survey another
+            part of the table. Table: x 200..780, y -360..360, center near (480, 0)."""
+            if ctx.deps.eyes is None:
+                return "no cell is connected: there is nothing to look at"
+            return ctx.deps.eyes.look_at(x_mm, y_mm)
 
         @self.agent.tool
         def inspect(ctx: RunContext[Deps], blob: int) -> str:

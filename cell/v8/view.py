@@ -39,8 +39,10 @@ class View:
         w, h = cam["size"]
         ent = f"world/shots/{shot.k:03d}"
         rr.log(ent, rr.Transform3D(translation=T[:3, 3], mat3x3=T[:3, :3]))
-        rr.log(ent, rr.Pinhole(image_from_camera=[[cam["fx"], 0, w / 2], [0, cam["fx"], h / 2], [0, 0, 1]],
-                               resolution=[w, h], image_plane_distance=0.12))
+        ih, iw = shot.image.shape[:2]
+        s = iw / w   # the pinhole must match the PHOTO's resolution, or it fills a quadrant of the plane
+        rr.log(ent, rr.Pinhole(image_from_camera=[[cam["fx"] * s, 0, iw / 2], [0, cam["fx"] * s, ih / 2], [0, 0, 1]],
+                               resolution=[iw, ih], image_plane_distance=0.12))
         vis = shot.image.copy()
         for m in shot.masks:
             mh, mw = m["mask"].shape
