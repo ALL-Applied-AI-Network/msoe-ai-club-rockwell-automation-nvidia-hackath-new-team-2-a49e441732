@@ -122,7 +122,15 @@ def main(run_dir: str, words: list[str] = WORDS) -> None:
 
     (run / "carve.json").write_text(json.dumps(
         [{k: v for k, v in ob.items() if k != "ixyz"} for ob in obs], indent=1))
-    print(f"wrote {run / 'carve_map.jpg'}, carve_views.jpg, carve.json")
+
+    from lab import worldview
+    from lab.world import World
+    w = World()
+    w.look(obs)
+    worldview.start(run)
+    worldview.voxels(solid, axes)
+    worldview.things(w)
+    print(f"wrote {run / 'carve_map.jpg'}, carve_views.jpg, carve.json, worldview.rrd")
 
 
 if __name__ == "__main__":
