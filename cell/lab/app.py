@@ -97,6 +97,8 @@ def main() -> None:
     def lane(name, text):
         lad["lanes"][name] = {"text": text, "t": time.time()}
 
+    custom: dict = {}  # typed instructions: task name -> its trial (look and act, the table as it is)
+
     def ladder_loop(names):
         lad["root"] = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_ladder"
         lad["stop"] = False
@@ -105,11 +107,13 @@ def main() -> None:
                 break
             lad["running"] = n
             lad["results"][n] = {"state": "running"}
-            chat.banner.update(phase="working", headline=LD.load_trial(n)["instruction"])
+            tr = custom.get(n) or LD.load_trial(n)
+            chat.banner.update(phase="working", headline=tr["instruction"])
             board.add("status", json.dumps(chat.banner))
             say = lambda line: board.add("log", line.strip())
             tell = lambda text: board.add("robot", text)
-            board.add("you", LD.load_trial(n)["instruction"])
+            if n not in custom:  # (a typed one is already on the page)
+                board.add("you", tr["instruction"])
             lad["lanes"], lad["t0"] = {}, time.time()
             for attempt in (1, 2):
                 try:
@@ -119,7 +123,7 @@ def main() -> None:
                         real = (robot.cell.url, cl.s.headers["Authorization"].split(" ", 1)[1],
                                 cl.s.verify if isinstance(cl.s.verify, str) else None)
                     r = LD.run(n, lad["root"] / (n if attempt == 1 else n + "_retry"), say=say, rerun_to=task_uri,
-                               tell=tell, state=lane, real=real)
+                               tell=tell, state=lane, real=real, trial=custom.get(n))
                     break
                 except Exception as e:
                     r = {"task": n, "ok": False, "why": f"{type(e).__name__}: {e}"}
@@ -190,7 +194,9 @@ def main() -> None:
                         out.append(f"{n_} {col}{w}{'s' * (n_ > 1)}")
                     return ", ".join(out)
                 self._json({"tasks": [{"name": n, "instruction": LD.load_trial(n)["instruction"],
-                                       "setup": setup(LD.load_trial(n))} for n in names],
+                                       "setup": setup(LD.load_trial(n))} for n in names] +
+                           [{"name": n, "instruction": tr["instruction"], "setup": "the table as it is (typed in the chat)"}
+                            for n, tr in custom.items()],
                             "running": lad["running"], "results": lad["results"], "lanes": lad["lanes"],
                             "now": time.time(), "t0": lad["t0"]})
             elif self.path.startswith("/runs/"):  # pictures and results from runs/ (nothing outside it)
@@ -228,9 +234,15 @@ def main() -> None:
                 text = (body.get("text") or "").strip()
                 if text:
                     board.add("you", text)
-                    if state["distract"]:
-                        robot.distract(2.0)
-                    threading.Thread(target=chat.user, args=(text,), daemon=True).start()
+                    # a typed instruction runs as a task: look and act (still looks, SAM, the three moves, every
+                    # move checked), the table as it is; not the older chat robot
+                    if lad["running"]:
+                        board.add("robot", f"I'm still on {lad['running']}; tell me again when it's done.")
+                    else:
+                        n = f"chat_{time.strftime('%H%M%S')}"
+                        custom[n] = {"name": n, "instruction": text, "mode": "v2", "as_is": True, "objects": [],
+                                     "fixtures": [], "goal": []}
+                        threading.Thread(target=ladder_loop, args=([n],), daemon=True).start()
                 self._json({})
             elif self.path == "/hands":
                 try:

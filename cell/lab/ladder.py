@@ -556,7 +556,8 @@ Before the depth scan finishes, glance at the picture and say in one or two plai
 the table and roughly what you'll do. JSON only: {{"say": "..."}}"""
 
 
-def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state=None, real=None) -> dict:
+def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state=None, real=None,
+        trial: dict | None = None) -> dict:
     """say: detail lines (a log); tell: what the robot would say to a person watching, as things change;
     state(lane, text): live status, lanes "arm" (what it's doing), "where" (depth: the scan, the 3D map),
     "what" (the language model: what things are, the plan)."""
@@ -571,13 +572,13 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
         url = f"http://127.0.0.1:{PORT}"
         c = CellClient(url, token="sim")
     api = url + "/api/v1/"
-    t = load_trial(task)
+    t = trial or load_trial(task)  # (a custom trial: an instruction typed in the chat, the table as it is)
     out.mkdir(parents=True)
     t0 = time.time()
     state("where", "nothing yet")
     state("what", "nothing yet")
     t_ = time.time()
-    if not real:
+    if not real and not t.get("as_is"):
         state("arm", "switching the sim's timing mode off for the reset")
         requests.post(api + "sim/honest", json={"on": False}, timeout=30)
         t_ = time.time()
@@ -595,19 +596,20 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
     cv2.imwrite(str(out / "first_look.jpg"), cv2.cvtColor(look, cv2.COLOR_RGB2BGR))
     if t.get("mode") == "v2":  # the look-and-act flow (lab/act2): no video sweep, still shots + SAM + table-relative depth
         from lab import act2
-        truth = {} if real else sim_objects(task)
-        before = {} if real else requests.get(api + "sim/truth", timeout=30).json()["poses"]
+        scored = not real and not t.get("as_is")  # (a typed instruction has no goal to score against)
+        truth = sim_objects(task) if scored else {}
+        before = requests.get(api + "sim/truth", timeout=30).json()["poses"] if scored else {}
         say(f"\n=== {task}: \"{t['instruction']}\" (look and act)")
         r2 = act2.run_v2(c, t, out, before_img, look, crop_box, say, tell, state, real, rerun_to=rerun_to)
         time.sleep(2.0)
-        after = {} if real else requests.get(api + "sim/truth", timeout=30).json()["poses"]
-        lines = [] if real else check(t["goal"], truth, before, after)
+        after = requests.get(api + "sim/truth", timeout=30).json()["poses"] if scored else {}
+        lines = check(t["goal"], truth, before, after) if scored else []
         wanted = len(r2["plan"].get("moves") or [])
-        ok = all(x for x, _ in lines) if not real else bool(wanted) and len(r2["moves_done"]) == wanted
+        ok = all(x for x, _ in lines) if scored else bool(wanted) and len(r2["moves_done"]) == wanted
         for x, s_ in lines:
             say(f"  {'PASS' if x else 'FAIL'}  {s_}")
         tell(("Done, and the simulator agrees: " if ok else "Done, but the simulator says it's not right: ") +
-             "; ".join(s_ for _, s_ in lines) + "." if not real else
+             "; ".join(s_ for _, s_ in lines) + "." if scored else
              f"Done: {len(r2['moves_done'])} of {wanted} moves. Look at the table.")
         res = {"task": task, "instruction": t["instruction"], "ok": ok, "checks": [{"ok": x, "says": s_} for x, s_ in lines],
                "llm": r2["plan"], "moves_done": r2["moves_done"], "seconds": round(time.time() - t0), "scan_s": 0, "llm_s": 0}
