@@ -307,8 +307,12 @@ class Cell:
         the starting table back, something re-added after remove) reuses its parked prim instead of crashing on it."""
         have = {int(o["id"]): k for k, o in enumerate(self.objects)}
         for o in objects:
-            self._add(o, self.looks)
             i = int(o["id"])
+            if i in have:  # the same thing coming back (a reset) is fine; a DIFFERENT thing is a caller bug
+                old = self.objects[have[i]]
+                if old.get("boxes") != o.get("boxes") or len(old.get("vertices") or []) != len(o.get("vertices") or []):
+                    raise RuntimeError(f"id {i} already belongs to another object: ids are never reused, pick a fresh one")
+            self._add(o, self.looks)
             if i in have:
                 self.objects[have[i]] = o
             else:
