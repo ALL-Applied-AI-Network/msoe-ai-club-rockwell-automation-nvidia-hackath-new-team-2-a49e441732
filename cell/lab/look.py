@@ -47,6 +47,7 @@ class Seen:
     mask: np.ndarray = field(repr=False, default=None)
     shot: str = ""
     score: float = 0.0
+    outline: np.ndarray = field(repr=False, default=None)  # the mask's outline in the colour picture (pixels), simplified
 
 
 def _cams():
@@ -97,7 +98,8 @@ def measure(shot: Shot, words: list[str], sam_fn=None, min_area: int = 60, most:
             a, b, ang = b, a, ang + 90
         out.append(Seen(d["prompt"], np.array([cx, cy]) / 1000, float(ang % 180), (round(a, 1), round(b, 1)),
                         None if top is None else round(top, 1), real, int(inside.sum()), None, shot.id,
-                        float(d.get("score", 0.0))))
+                        float(d.get("score", 0.0)),
+                        cv2.approxPolyDP(max(cnt, key=cv2.contourArea), 1.5, True).reshape(-1, 2)))
     return out
 
 

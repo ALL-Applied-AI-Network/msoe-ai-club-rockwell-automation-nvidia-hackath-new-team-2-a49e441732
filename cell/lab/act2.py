@@ -122,6 +122,32 @@ def go_look(c, xy, tip_mm, say):
     return True
 
 
+VIEW = {"rec": None}  # the Rerun stream this task logs its looks to (the page's viewer), if any
+
+
+def show(shot, seen, near, title):
+    """One look in the viewer: the still picture, every mask's outline (the one taken in green), what was measured."""
+    rec = VIEW["rec"]
+    if rec is None:
+        return
+    import rerun as rr
+    rec.set_time("look", sequence=VIEW.setdefault("n", 0))
+    VIEW["n"] += 1
+    rec.log("look/picture", rr.Image(shot.colour))
+    others = [s.outline for s in seen if s.outline is not None and s not in near]
+    taken = [s.outline for s in near if s.outline is not None]
+    rec.log("look/picture/others", rr.LineStrips2D([np.vstack([o, o[:1]]) for o in others], colors=[[255, 200, 0]] * len(others),
+                                                   radii=1.5) if others else rr.Clear(recursive=False))
+    rec.log("look/picture/taken", rr.LineStrips2D([np.vstack([o, o[:1]]) for o in taken], colors=[[40, 230, 90]] * len(taken),
+                                                  radii=2.5, labels=[f"{s.word} {s.size_mm[0]:.0f}x{s.size_mm[1]:.0f} mm"
+                                                                     f" {('%.0f mm tall' % s.top_mm) if s.top_mm else ''}"
+                                                                     f" {'real' if s.real else 'flat?'}" for s in near])
+            if taken else rr.Clear(recursive=False))
+    rec.log("look/what", rr.TextDocument(f"{title}\n\n" + "\n".join(
+        f"{'-> ' if s in near else '   '}{s.word}: {s.size_mm[0]:.0f} x {s.size_mm[1]:.0f} mm, "
+        f"top {s.top_mm} mm, {'real' if s.real else 'flat'} ({s.points} depth points)" for s in seen)))
+
+
 def look_at(c, thing, xy, out, tell, say, k):
     """Look stations for one thing: over its point, a shot; small things a second, closer one. -> the Seen, or None."""
     words = list(dict.fromkeys([thing.get("word") or thing["name"]] + WORDS.get(thing.get("kind"), [])))
@@ -138,6 +164,7 @@ def look_at(c, thing, xy, out, tell, say, k):
         cv2.imwrite(str(out / f"look_{k}_{tag}.jpg"), cv2.cvtColor(shot.colour, cv2.COLOR_RGB2BGR))
         seen = LK.measure(shot, words)
         near = [s for s in seen if np.linalg.norm(s.centre - xy) < NEAR_M]
+        show(shot, seen, near, f"{tag} at the {thing['name']}")
         say(f"  {tag} at {thing['name']}: {len(seen)} masks, {len(near)} near the point: " +
             "; ".join(f"{s.word} {s.size_mm[0]:.0f}x{s.size_mm[1]:.0f} mm top {s.top_mm} real {s.real}" for s in near[:3]))
         if near:
@@ -154,11 +181,24 @@ def look_at(c, thing, xy, out, tell, say, k):
     return s
 
 
-def run_v2(c, t, out, before_img, look_pic, crop_box, say, tell, state, real=None) -> dict:
+def run_v2(c, t, out, before_img, look_pic, crop_box, say, tell, state, real=None, rerun_to=None) -> dict:
     from concurrent.futures import ThreadPoolExecutor
     from lab import vlm
     from lab.ladder import MODEL
     t0 = time.time()
+    VIEW["rec"] = None
+    try:  # the looks go to the page's viewer (and a file with the run)
+        import rerun as rr
+        import rerun.blueprint as rrb
+        rec = rr.RecordingStream(f"look_{t.get('name', 'task')}")
+        sinks = [rr.FileSink(str(out / "looks.rrd"))] + ([rr.GrpcSink(rerun_to)] if rerun_to else [])
+        rec.set_sinks(*sinks, default_blueprint=rrb.Blueprint(
+            rrb.Horizontal(rrb.Spatial2DView(origin="look/picture", name="what the wrist camera sees (still)"),
+                           rrb.TextDocumentView(origin="look/what", name="what it measured"), column_shares=[3, 1]),
+            rrb.BlueprintPanel(state="hidden"), rrb.SelectionPanel(state="hidden"), rrb.TimePanel(state="collapsed")))
+        VIEW["rec"] = rec
+    except Exception as e:
+        say(f"  (no viewer for the looks: {e})")
     state("what", "reading the pictures and planning...")
     with ThreadPoolExecutor(1) as ex:
         fut = ex.submit(vlm.ask_image, look_pic, PLAN.format(instruction=t["instruction"]), model=MODEL, think=True,

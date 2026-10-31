@@ -598,7 +598,7 @@ def run(task: str, out, say=print, rerun_to: str | None = None, tell=None, state
         truth = {} if real else sim_objects(task)
         before = {} if real else requests.get(api + "sim/truth", timeout=30).json()["poses"]
         say(f"\n=== {task}: \"{t['instruction']}\" (look and act)")
-        r2 = act2.run_v2(c, t, out, before_img, look, crop_box, say, tell, state, real)
+        r2 = act2.run_v2(c, t, out, before_img, look, crop_box, say, tell, state, real, rerun_to=rerun_to)
         time.sleep(2.0)
         after = {} if real else requests.get(api + "sim/truth", timeout=30).json()["poses"]
         lines = [] if real else check(t["goal"], truth, before, after)

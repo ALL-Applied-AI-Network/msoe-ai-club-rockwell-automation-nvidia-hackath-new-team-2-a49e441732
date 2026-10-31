@@ -118,7 +118,7 @@ def main() -> None:
                         cl = robot.cell.client
                         real = (robot.cell.url, cl.s.headers["Authorization"].split(" ", 1)[1],
                                 cl.s.verify if isinstance(cl.s.verify, str) else None)
-                    r = LD.run(n, lad["root"] / (n if attempt == 1 else n + "_retry"), say=say, rerun_to=robot.viewer_uri,
+                    r = LD.run(n, lad["root"] / (n if attempt == 1 else n + "_retry"), say=say, rerun_to=task_uri,
                                tell=tell, state=lane, real=real)
                     break
                 except Exception as e:
@@ -136,7 +136,15 @@ def main() -> None:
         done = [r for r in lad["results"].values() if r.get("state") in ("pass", "fail")]
         chat.banner.update(phase="done", headline=f"Ladder: {sum(r['state'] == 'pass' for r in done)}/{len(done)} passed")
         board.add("status", json.dumps(chat.banner))
-    viewer = f"http://127.0.0.1:9090/?url={quote(robot.viewer_uri, safe='')}"
+    # the page's viewer shows the tasks only (each task's scan or looks), on a server of its own: not the old chat
+    # robot's recording, which still lives on robot.viewer_uri for the older tools
+    import rerun as rr
+    TASK_GRPC, TASK_WEB = 9877, 9091
+    task_rec = rr.RecordingStream("tasks")
+    task_rec.set_sinks(rr.GrpcServerSink(bind_ip="127.0.0.1", port=TASK_GRPC))
+    task_uri = f"rerun+http://127.0.0.1:{TASK_GRPC}/proxy"
+    rr.serve_web_viewer(web_port=TASK_WEB, open_browser=False, connect_to=task_uri)
+    viewer = f"http://127.0.0.1:{TASK_WEB}/?url={quote(task_uri, safe='')}"
     board.add("system", "Ready. The Isaac window on the GPU box is the real world; the right side here is what I think.")
 
     class H(BaseHTTPRequestHandler):
