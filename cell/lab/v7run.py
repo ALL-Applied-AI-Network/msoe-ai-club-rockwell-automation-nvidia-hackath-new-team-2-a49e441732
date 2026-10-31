@@ -51,6 +51,7 @@ Answer ONE action as JSON, nothing else:
   {{"say": "<one short line>", "do": {{"look": {{"at": [x_mm, y_mm]}}}}}}   fresh close outlines there: finds what was missed, tightens a one-glance blob
   {{"say": "<one short line>", "do": {{"move": {{"thing": <id>, "to": [x_mm, y_mm]}}}}}}   pick it up, set it down there
   {{"say": "<one short line>", "do": {{"into": {{"thing": <id>, "container": <id>}}}}}}   drop it into an open-top thing (a bin, a cup): fly above it, let go, gravity does the rest
+  {{"say": "<one short line>", "do": {{"forget": {{"thing": <id>}}}}}}   the photo shows this blob is not a real object (tape, a shadow, a mark on the table, a double of another blob)
   {{"say": "<one short line>", "done": true}}   the instruction is satisfied, or nothing useful is left
 
 You are curious: name blobs you recognize in the photo before moving them; look closer when unsure.
@@ -215,6 +216,18 @@ def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None
                 worldview.trace("world", e2)
             said = len(w.events)
             done.append(f"looked at ({at[0]:.0f}, {at[1]:.0f})")
+            continue
+        if "forget" in do:  # the ventral stream dismissing a false blob: tape, shadow, a double
+            try:
+                w.forget(int(do["forget"]["thing"]))
+                done.append(f"forgot blob #{do['forget']['thing']}")
+            except (KeyError, TypeError, ValueError) as e:
+                worldview.trace("plan", f"bad forget {do['forget']}: {e}", "WARN")
+            worldview.things(w)
+            worldview.mind(w)
+            for e2 in w.events[said:]:
+                worldview.trace("world", e2)
+            said = len(w.events)
             continue
         if "into" in do:  # Joel: no cavity geometry - the LLM knows it's open on top, gravity finds the
             try:          # inside, and a glance validates
