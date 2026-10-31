@@ -436,6 +436,10 @@ class Cell:
         px.CreateSolverVelocityIterationCountAttr().Set(2)
         px.CreateEnableCCDAttr().Set(True)
 
+    def known_ids(self) -> list[int]:
+        """Every id this server has ever been given, parked ones included: the one id authority."""
+        return [int(o["id"]) for o in self.objects]
+
     def truth(self) -> dict:
         """{id: [x, y, z (base, m), qw, qx, qy, qz]}"""
         if self.view is None or not self.objects:
@@ -823,7 +827,7 @@ def handler(cell: Cell):
             if path == "sim/move":
                 return cell.run_job(cell.move, body["poses"])
             if path == "sim/truth":
-                return {"t": cell.t, "poses": cell.run_job(cell.truth)}
+                return {"t": cell.t, "poses": cell.run_job(cell.truth), "ids": cell.run_job(cell.known_ids)}
             if path == "sim/debug":  # world transforms (row-vector USD matrices, transposed to column form) of prims
                 return cell.run_job(cell.debug, q.get("prims", "").split(","))
             if path == "sim/honest":
