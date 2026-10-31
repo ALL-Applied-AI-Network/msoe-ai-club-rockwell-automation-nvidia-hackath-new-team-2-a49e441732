@@ -375,8 +375,7 @@ class Eyes:
         for k, r in enumerate(rows):
             if k % 2 == 0 and (why := unsafe(np.asarray(r, float))):
                 raise ValueError(f"self-collision risk on the way: {why}")
-        print(f"fly: cam -> {np.round(eye, 3)} looking at {np.round(target, 3)}, "
-              f"{len(rows)} joint rows", flush=True)
+        print(f"fly: cam -> {np.round(eye, 3)}, {len(rows)} joint rows", flush=True)
         P.send(self.cell, rows)
         j = np.asarray(self.cell.observe(cams=())["joints"], float)
         cam_now = (flange_pose(j) @ self.cams["wrist"]["T"])[:3, 3]
