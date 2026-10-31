@@ -224,6 +224,61 @@ def free_spot(want, angle_deg, size_mm, taken, step=0.01, far=0.20):
     return None
 
 
+def execute(c, th, s, m, place, drop, seen, say, tell, state):
+    """One move for thing `th` measured as `s`, to `place` (drop: release height over a bin, or None): the move by
+    kind, checked whole, sent. -> (sent, how)."""
+    tops = [v.top_mm for v in seen.values() if v.top_mm is not None] + [s.top_mm or 15.0, drop or 0.0]
+    travel_mm = max(60.0, max(tops) + MV.GRIP_MM + CLEAR_MM + (s.top_mm or 15.0))
+    cur, q = where(c)
+    jaw = s.angle_deg + 90.0  # across the narrow side
+    if m.get("push_to"):
+        rows = MV.push(cur, s.centre, max(s.size_mm) / 2, place, min(max((s.top_mm or 30) * 0.4, 8.0), 20.0), travel_mm)
+        how = "pushing"
+    elif max(s.size_mm) < SMALL_MM:
+        def clear(xy):
+            return all(np.linalg.norm(v.centre - xy) > 0.015 for n, v in seen.items() if n != th["name"])
+        rows, why = MV.push_grasp(cur, s.centre, jaw, max(s.size_mm), place, travel_mm, drop, clear)
+        if not rows:
+            tell(f"I can't push-grasp the {th['name']}: {why}.")
+            return False, ""
+        how = "sliding in beside and grabbing"
+    else:
+        if min(s.size_mm) > JAW_ROOM_MM:
+            tell(f"The {th['name']} is {min(s.size_mm):.0f} mm across its narrow side: too wide for the jaws.")
+            return False, ""
+        rows = MV.pick_top(cur, s.centre, jaw, place, travel_mm, drop)
+        how = "picking up"
+    jrows, why = MV.joints(rows, q)
+    if jrows is None:
+        tell(f"I'm not moving the {th['name']}: {why}.")
+        return False, ""
+    tell(f"{how.capitalize()} the {th['name']} ({s.size_mm[0]:.0f} x {s.size_mm[1]:.0f} mm, "
+         f"{'%.0f mm tall' % s.top_mm if s.top_mm else 'height unknown'}), flying {travel_mm:.0f} mm up.")
+    from lab import scan as SC
+    state("arm", f"{how} the {th['name']}")
+    if not SC.feed(c, jrows, lambda: queued(c), each=lambda qn: state("arm", f"{how} the {th['name']} ({qn / 10:.0f} s left)")):
+        tell(f"I stopped part-way with the {th['name']}.")
+        return False, how
+    wait_still(c)
+    return True, how
+
+
+def check_at(c, th, xy, out, say, tag, what, near_m=0.025):
+    """A still look at xy: is the thing there? -> the Seen of it there, or None."""
+    if not go_look(c, xy, LOOK_TIP_MM, say):
+        return None
+    shot = still_shot(c, tag)
+    if shot is None:
+        return None
+    cv2.imwrite(str(out / f"look_{tag}.jpg"), cv2.cvtColor(shot.colour, cv2.COLOR_RGB2BGR))
+    words = list(dict.fromkeys([th.get("word") or th["name"]] + WORDS.get(th.get("kind"), [])))
+    seen = LK.measure(shot, words)
+    near = [v for v in seen if np.linalg.norm(v.centre - np.asarray(xy)) < near_m]
+    show(shot, seen, near, f"check {what}: the {th['name']} {'IS' if near else 'is NOT'} there")
+    say(f"  check {what} ({tag}): {'there' if near else 'not there'} ({len(seen)} masks)")
+    return min(near, key=lambda v: np.linalg.norm(v.centre - np.asarray(xy))) if near else None
+
+
 def run_v2(c, t, out, before_img, look_pic, crop_box, say, tell, state, real=None, rerun_to=None) -> dict:
     from concurrent.futures import ThreadPoolExecutor
     from lab import vlm
@@ -313,41 +368,35 @@ def run_v2(c, t, out, before_img, look_pic, crop_box, say, tell, state, real=Non
             place = to_table(m["push_to"], before_img, crop_box)
         else:
             continue
-        # how high to fly: over every thing seen so far, the target and the destination included
-        tops = [v.top_mm for v in seen.values() if v.top_mm is not None] + [s.top_mm or 15.0, drop or 0.0]
-        travel_mm = max(60.0, max(tops) + MV.GRIP_MM + CLEAR_MM + (s.top_mm or 15.0))
-        cur, q = where(c)
-        jaw = s.angle_deg + 90.0  # across the narrow side
-        if m.get("push_to"):
-            rows = MV.push(cur, s.centre, max(s.size_mm) / 2, place, min(max((s.top_mm or 30) * 0.4, 8.0), 20.0), travel_mm)
-            how = "pushing"
-        elif max(s.size_mm) < SMALL_MM:
-            def clear(xy):
-                return all(np.linalg.norm(v.centre - xy) > 0.015 for n, v in seen.items() if n != th["name"])
-            rows, why = MV.push_grasp(cur, s.centre, jaw, max(s.size_mm), place, travel_mm, drop, clear)
-            if not rows:
-                tell(f"I can't push-grasp the {th['name']}: {why}.")
+        result = None
+        for attempt in (1, 2):  # act, then look: still there = missed (measure again from that look and retry)
+            sent, how = execute(c, th, s, m, place, drop, seen, say, tell, state)
+            if not sent:
+                result = "not sent"
+                break
+            still = check_at(c, th, s.centre, out, say, f"{k}_after{attempt}", "where it was")
+            if still is not None and attempt == 1:
+                tell(f"The {th['name']} is still where it was: the grip missed. Measured it again from that look: "
+                     f"trying once more.")
+                s = still
                 continue
-            how = "sliding in beside and grabbing"
-        else:
-            if min(s.size_mm) > JAW_ROOM_MM:
-                tell(f"The {th['name']} is {min(s.size_mm):.0f} mm across its narrow side: too wide for the jaws.")
-                continue
-            rows = MV.pick_top(cur, s.centre, jaw, place, travel_mm, drop)
-            how = "picking up"
-        jrows, why = MV.joints(rows, q)
-        if jrows is None:
-            tell(f"I'm not moving the {th['name']}: {why}.")
-            continue
-        tell(f"{how.capitalize()} the {th['name']} ({s.size_mm[0]:.0f} x {s.size_mm[1]:.0f} mm, "
-             f"{'%.0f mm tall' % s.top_mm if s.top_mm else 'height unknown'}), flying {travel_mm:.0f} mm up.")
-        from lab import scan as SC
-        state("arm", f"{how} the {th['name']}")
-        if not SC.feed(c, jrows, lambda: queued(c), each=lambda qn: state("arm", f"{how} the {th['name']} ({qn / 10:.0f} s left)")):
-            tell(f"I stopped part-way with the {th['name']}.")
-            continue
-        wait_still(c)
-        done.append(m)
-        if m.get("to"):  # where it now lies (the jaws keep its angle)
-            placed[th["name"]] = _rect(place, s.angle_deg, s.size_mm)
+            if still is not None:
+                tell(f"The {th['name']} is still where it was after a second try. Leaving it.")
+                result = "missed twice"
+                break
+            landed = check_at(c, th, place, out, say, f"{k}_landed", "where it was put", near_m=0.04)
+            if landed is not None:
+                tell(f"Confirmed: the {th['name']} left its spot and is where I put it.")
+                result = "confirmed"
+                place = landed.centre
+            else:
+                tell(f"The {th['name']} left its spot but I don't see it where I put it (it may have rolled or "
+                     f"be hidden in the bin).")
+                result = "not seen at the drop"
+            break
+        say(f"  {th['name']}: {result}")
+        if result in ("confirmed", "not seen at the drop"):
+            done.append(dict(m, result=result))
+            if m.get("to"):  # where it now lies (the jaws keep its angle)
+                placed[th["name"]] = _rect(place, s.angle_deg, s.size_mm)
     return {"plan": plan, "moves_done": done, "seconds": round(time.time() - t0)}
