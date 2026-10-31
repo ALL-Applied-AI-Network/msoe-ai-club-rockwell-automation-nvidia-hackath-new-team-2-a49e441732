@@ -35,8 +35,10 @@ from lab.simcell import SimCell, spread_layout
 from lab.world import World
 from lab.recorder import RUNS
 
-# SAM finds, it does not name: one generic prompt catches everything, the LLM names blobs after.
-WORDS = ["object"]
+# SAM finds, it does not name: generic thingness prompts catch everything, the LLM names blobs after.
+# Two words because SAM's "object" concept is salience-hungry: 19 masks on the cluttered real table,
+# ZERO on a sparse scene of three things, where "small object" finds all of them. Their masks union.
+WORDS = ["object", "small object"]
 
 DECIDE = """You are the mind of a robot arm. SAM found these things (your world model: mm, base frame,
 x away from the base, y left; the photo is the table camera, use it to recognize what each blob is):
