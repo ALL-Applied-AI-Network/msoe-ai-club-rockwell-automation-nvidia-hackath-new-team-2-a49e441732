@@ -150,10 +150,14 @@ class Eyes:
 
     # ---------------- the evidence machinery ----------------
 
-    def _snap(self) -> Shot:
-        from lab import sam
+    def _grab(self) -> tuple[np.ndarray, np.ndarray]:
+        """Just the picture and where it was taken from - no SAM yet, so flights can be batched
+        (move, snap, move, snap; the thinking happens after the moving, Joel's one ok'd hardcode)."""
         obs = self.cell.observe(cams=("wrist",))
-        img, joints = obs["images"]["wrist"], np.asarray(obs["joints"], float)
+        return obs["images"]["wrist"], np.asarray(obs["joints"], float)
+
+    def _see(self, img: np.ndarray, joints: np.ndarray) -> Shot:
+        from lab import sam
         found = sam.segment_many(img, WORDS, scale=2.0)
         masks: list[dict] = []
         for d in sorted(found, key=lambda d: -d["area"]):     # dedupe: two words often find one thing
@@ -166,6 +170,10 @@ class Eyes:
         if self.view:
             self.view.shot(shot, self.cams["wrist"], self.grid)
         return shot
+
+    def _snap(self) -> Shot:
+        img, joints = self._grab()
+        return self._see(img, joints)
 
     def _carve(self, shot: Shot) -> list[Blob]:
         """Apply one shot to every blob (three-valued), then birth blobs for unclaimed masks."""
@@ -181,19 +189,24 @@ class Eyes:
         for c in cones:
             any_mask |= c
 
-        # which mask is which blob: the blob's centre projects inside it
+        # which mask is which blob: the one whose cone overlaps the blob's surviving volume most.
+        # (Projecting the blob's centre point missed side views - the centre sits high in the slack
+        # volume - so a side view birthed a REPLACEMENT instead of intersecting. Overlap is the
+        # 'views work together' rule, literally.)
+        pairs = []
+        for bi, b in enumerate(self.blobs):
+            for ci, c in enumerate(cones):
+                ov = int(np.count_nonzero(b.keep & c))
+                if ov >= max(4, 0.05 * b.keep.sum()):
+                    pairs.append((ov, bi, ci))
         claimed: set[int] = set()
-        for b in self.blobs:
-            c = b.centre(self.grid)
-            if c is None:
+        owner: dict[int, int] = {}
+        for ov, bi, ci in sorted(pairs, reverse=True):
+            if bi in owner or ci in claimed:
                 continue
-            cu, cv_, cf = pixels_of(c[None], cam, shot.joints)
-            own = None
-            if cf[0] and 0 <= cu[0] < w and 0 <= cv_[0] < h:
-                for i, m in enumerate(shot.masks):
-                    if i not in claimed and m["mask"][int(cv_[0] * mh / h), int(cu[0] * mw / w)]:
-                        own, claimed = i, claimed | {i}
-                        break
+            owner[bi], claimed = ci, claimed | {ci}
+        for bi, b in enumerate(self.blobs):
+            own = owner.get(bi)
             if own is not None:
                 b.keep &= cones[own] | ~in_frame | (any_mask & ~cones[own])   # mine, unknown, or occluded
                 b.shots += 1
@@ -251,6 +264,10 @@ class Eyes:
         rep = armcheck.check_joints(np.asarray(rows)[:, :6], 0.0, obstacles=self._obstacles())
         if not rep.ok:
             raise ValueError(f"the move fails the arm check: {rep.problem}")
+        from lab.scan import unsafe   # the padded real-mesh self-collision model (both real faults fail it)
+        for k, r in enumerate(rows):
+            if k % 2 == 0 and (why := unsafe(np.asarray(r, float))):
+                raise ValueError(f"self-collision risk on the way: {why}")
         print(f"fly: cam -> {np.round(eye, 3)} looking at {np.round(target, 3)}, "
               f"{len(rows)} joint rows", flush=True)
         P.send(self.cell, rows)
@@ -327,37 +344,20 @@ class Eyes:
         if b is None:
             return f"there is no blob #{blob_id}; current blobs: " + (
                 ", ".join(f"#{x.id}" for x in self.blobs) or "none")
-        story = []
-        for n, (eye, tgt) in enumerate(self._vantages(b), 1):
+        story, taken = [], []
+        for n, (eye, tgt) in enumerate(self._vantages(b), 1):   # move, snap, move, snap - SAM after
             try:
                 self._fly_cam(eye, tgt)
             except (ValueError, RuntimeError) as e:   # unreachable, or the cell did not follow:
                 story.append(f"vantage {n}: {e}")      # the decider hears the verdict, whole
                 continue
-            shot = self._snap()
-            mine = self._own_cut(b, shot)
-            if mine:                              # its mask hit the frame edge: back up once and retake
-                self._fly_cam(tgt + (eye - tgt) * 1.45, tgt)
-                shot = self._snap()
+            taken.append((n, self._grab()))
+        for n, (img, joints) in taken:
+            shot = self._see(img, joints)
             self._carve(shot)
-            story.append(f"vantage {n}: {len(shot.masks)} region(s)" + (" (backed up: it was cut off)" if mine else ""))
+            story.append(f"vantage {n}: {len(shot.masks)} region(s)")
         story.append(b.summary(self.grid))
         return "\n".join(story)
-
-    def _own_cut(self, b: Blob, shot: Shot) -> bool:
-        c = b.centre(self.grid)
-        if c is None:
-            return False
-        cam = self.cams["wrist"]
-        u, v, f = pixels_of(c[None], cam, shot.joints)
-        w, h = cam["size"]
-        if not (f[0] and 0 <= u[0] < w and 0 <= v[0] < h):
-            return False
-        for m in shot.masks:
-            mh, mw = m["mask"].shape
-            if m["mask"][int(v[0] * mh / h), int(u[0] * mw / w)]:
-                return m["cut"]
-        return False
 
     def state(self) -> str:
         return "\n".join(b.summary(self.grid) for b in self.blobs) or "nothing known yet"

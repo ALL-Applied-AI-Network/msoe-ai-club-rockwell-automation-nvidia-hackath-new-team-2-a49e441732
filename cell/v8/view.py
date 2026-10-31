@@ -28,8 +28,8 @@ def setup() -> None:
 
 
 def clear() -> None:
-    """Every shot pyramid and every blob volume, gone from the viewer: a fresh head."""
-    rr.log("world/shots", rr.Clear(recursive=True))
+    """The shot pyramid and every blob shape, gone from the viewer: a fresh head."""
+    rr.log("world/shot", rr.Clear(recursive=True))
     rr.log("world/blobs", rr.Clear(recursive=True))
 
 
@@ -38,12 +38,14 @@ class View:
         self.step = 0
 
     def shot(self, shot, cam: dict, grid) -> None:
-        """The pyramid: camera pose, pinhole, photo (masks outlined), and the cast rays."""
+        """The pyramid: camera pose, pinhole, photo (masks outlined), and the cast rays.
+        ONE entity, always the latest shot - the trail of old pyramids buried the scene (scrub the
+        'shot' timeline to revisit any earlier view)."""
         self.step += 1
         rr.set_time("shot", sequence=self.step)
         T = flange_pose(shot.joints) @ cam["T"]
         w, h = cam["size"]
-        ent = f"world/shots/{shot.k:03d}"
+        ent = "world/shot"
         rr.log(ent, rr.Transform3D(translation=T[:3, 3], mat3x3=T[:3, :3]))
         ih, iw = shot.image.shape[:2]
         s = iw / w   # the pinhole must match the PHOTO's resolution, or it fills a quadrant of the plane
@@ -81,13 +83,23 @@ class View:
                                                   radii=0.0004))
 
     def blobs(self, blobs: list, grid) -> None:
+        """Each blob as ONE solid carved shape (marching cubes over its surviving voxels): a block
+        of wood being whittled, not a cloud of points - a shape motion planning can reason about."""
+        from skimage.measure import marching_cubes
         rr.set_time("shot", sequence=self.step)
         rr.log("world/blobs", rr.Clear(recursive=True))
+        palette = [(235, 170, 80), (120, 180, 250), (150, 220, 140), (230, 130, 160),
+                   (200, 200, 120), (160, 150, 230)]
+        vox = float(grid.xs[1] - grid.xs[0])
         for b in blobs:
-            p = grid.pts[b.keep]
-            if not len(p):
+            vol = np.pad(b.keep.reshape(grid.shape).astype(np.float32), 1)
+            if vol.max() == 0:
                 continue
-            z = np.clip((p[:, 2] - SURFACE_Z) / 0.08, 0, 1)
-            col = np.stack([255 * z, 90 + 90 * (1 - z), 255 * (1 - z)], -1).astype(np.uint8)
-            rr.log(f"world/blobs/{b.id}", rr.Points3D(p, colors=col, radii=0.002,
-                                                      labels=[f"blob #{b.id}"] + [None] * (len(p) - 1)))
+            verts, faces, normals, _ = marching_cubes(vol, 0.5)
+            verts = (verts - 1) * vox + [grid.xs[0], grid.ys[0], grid.zs[0]]
+            col = palette[b.id % len(palette)]
+            rr.log(f"world/blobs/{b.id}", rr.Mesh3D(vertex_positions=verts, triangle_indices=faces,
+                                                    vertex_normals=normals, albedo_factor=col))
+            top = verts[verts[:, 2].argmax()]
+            rr.log(f"world/blobs/{b.id}/tag", rr.Points3D([top + [0, 0, 0.01]], radii=0.0008,
+                                                          colors=[col], labels=[f"blob #{b.id}"]))
