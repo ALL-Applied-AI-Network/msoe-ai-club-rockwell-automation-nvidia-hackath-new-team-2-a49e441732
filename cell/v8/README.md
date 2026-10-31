@@ -69,7 +69,10 @@ them; V8_MODEL overrides the mind, V8_LABEL_VLM the crop labeler).
 - Restart = kill the process, same command. Reset in the page aborts the running job and
   re-stages; it does NOT need a process restart for code that is imported lazily per run (the
   agent tools are not - agent/eyes import at app start, so CODE changes need a process restart).
-- Known sharp edges: bins are one-way (solid boxes in collision - nothing can reach INTO them);
+- Known sharp edges: wrist side-vantages at low elevations rarely pass joint_move (its
+  come-down-from-above template dislikes near-horizontal wrists, especially near table corners) -
+  heights are carried by the FIXED SIDE CAMERA, which is why they are correct anyway; a proper
+  approach-along-the-view-axis flight template is the known cleanup item. Bins are one-way (solid boxes in collision - nothing can reach INTO them);
   no stacking/tight packing (clearance refuses deliberate contact); no orientation control on
   placement; objects wider than ~16 mm across their narrow side are terrain, not cargo; the far
   bin of the standard row sits at ~510 mm, at/over the envelope - the near-rim release handles it.

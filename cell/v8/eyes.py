@@ -434,7 +434,8 @@ class Eyes:
         # looks a tall thing keeps a pyramid tent over it (steep silhouettes can never cut it off).
         # Low poses fight the 95 mm fingertip floor, so many azimuths are tried to find legal ones.
         base_az = np.arctan2(foot[1], foot[0])
-        for el_deg, quota in ((40.0, 2), (22.0, 2)):
+        for el_deg, quota in ((50.0, 2), (40.0, 2), (22.0, 2)):   # 50 deg is the family that
+            # reliably PLANS (look_at's fallback flew it live); lower is better but rarely flyable
             el, got = np.radians(el_deg), 0
             for a in (np.pi, np.pi * 0.6, -np.pi * 0.6, np.pi * 1.4, 0.0,
                       np.pi * 0.3, -np.pi * 0.3, np.pi * 1.7):   # base side first: reachable
