@@ -256,7 +256,12 @@ def main() -> None:
                 elif self.path == "/trial/start":
                     if st["mode"] != "real":
                         raise RuntimeError("trials are the real cell's; connect to it first")
-                    t = st["cell"].start_trial()
+                    trials = st["cell"].trials()
+                    pick = (next((t for t in trials if t["status"] == "ready"), None)
+                            or next((t for t in trials if t["status"] == "waiting"), None))
+                    if pick is None:
+                        raise RuntimeError("no ready or waiting trial on the cell")
+                    t = st["cell"].start_trial(pick["trial_id"])   # the CLIENT starts it: waiting is fair game
                     msg = f"trial {t['trial_id']} is running"
                 elif self.path == "/chat/clear":
                     wipe()
