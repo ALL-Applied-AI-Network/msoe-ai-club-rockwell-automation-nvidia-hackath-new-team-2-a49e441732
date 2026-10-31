@@ -47,7 +47,7 @@ BIN_MIN_MM, BIN_TOP_MM, WALL_MM = 40.0, 25.0, 12.0  # bin-sized, and how thick i
 SWEEP_MM_S = 250.0  # the opening sweep: one quick pass over the table, then pick
 REAL_DELAY_MS = 90.0  # the real wrist pictures' delay (camera-beat basis): 80-100 ms from the data runs' opposite
 # passes (lab/timing_real.py), 92 from a live twitch: no twitch needed
-REAL_ORBITS = ["--angled"]  # on: every orbit pose passes the padded self-collision check (calibration/selfcollide)
+REAL_ORBITS = []  # off on the real cell: orbits folded the arm into itself twice (Oct 30)
 ORBITS = ["--angled"]  # orbits round each thing (sim, colour match: false matter 16% -> 7%, twice the evidence)
 REAL_SWEEP_MM_S = 75.0  # the real cell: slower, sharper (250 smeared a 15 mm cube to 23 mm, Oct 30), delay measured
 DELAY_MS = 35.0  # the wrist pictures' delay in the sim (measured 32-38 ms by the twitch, Oct 30): no twitch per task

@@ -23,7 +23,7 @@ from calibration.geometry import CHAIN, _rot, load
 
 ARM = Path(__file__).resolve().parent / "arm" / "er4ia_arm.npz"
 LINKS = ["base", "j1", "j2", "j3", "j4", "j5", "j6"]
-PAD_MM = {"j2-j4": 15.0}   # every other pair: DEFAULT_PAD_MM
+PAD_MM = {"j2-j4": 17.0}  # upper arm to forearm: real faults at 13.2 and 15.5 mm (Oct 30), fault-free poses never under 17.2
 DEFAULT_PAD_MM = 10.0
 TOOL_PAD_MM = 10.0         # the gripper and camera against the arm (they're modelled as fat as they are)
 REACH_MM, FAR_MM, FAR_TIP_MM = 495.0, 470.0, 90.0  # fingertips: never further out (fault 1: 509 mm); beyond FAR_MM, at least FAR_TIP_MM up
