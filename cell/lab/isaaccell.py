@@ -143,8 +143,15 @@ class IsaacCell:
         return inside
 
     def _next_id(self, n: int) -> int:
-        """Fresh ids, never reused: a thing taken off the table still exists in Isaac (in Joel's pocket)."""
-        first = max([i.id for i in self.instances] + [getattr(self, "last_id", 0)]) + 1
+        """Fresh ids, never reused: a thing taken off the table still exists in Isaac (in Joel's pocket),
+        and a reconnected client starts empty while the server remembers - so ask the server too (a red
+        cube once reused a parked bin's id and teleported the bin to the table centre instead of appearing)."""
+        have = [i.id for i in self.instances] + [getattr(self, "last_id", 0)]
+        try:
+            have += [int(k) for k in self._post("sim/truth", {}).get("poses", {})]
+        except Exception:
+            pass
+        first = max(have) + 1
         self.last_id = first + n - 1
         return first
 
