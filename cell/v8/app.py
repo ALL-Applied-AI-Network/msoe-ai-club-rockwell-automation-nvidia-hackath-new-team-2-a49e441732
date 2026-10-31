@@ -110,6 +110,9 @@ def main() -> None:
 
     def connect_sim() -> str:
         from lab.isaaccell import IsaacCell
+        from lab import primitives as P
+        from lab.robot import SPEEDS
+        P.TRAVEL, P.APPROACH = SPEEDS["sim"]
         with lock:
             st["cell"] = IsaacCell(staged("chat_table"))
             st["mode"] = "sim"
@@ -125,6 +128,9 @@ def main() -> None:
             url, token = _approved_token(url, ca)
         cell = RealCell(url, token, ca)
         rep = cell.check()
+        from lab import primitives as P
+        from lab.robot import SPEEDS
+        P.TRAVEL, P.APPROACH = SPEEDS["real"]   # the speeds the real arm was tuned with (150/50 mm/s)
         with lock:
             st["cell"], st["mode"] = cell, "real"
             st["eyes"] = Eyes(cell, vw)

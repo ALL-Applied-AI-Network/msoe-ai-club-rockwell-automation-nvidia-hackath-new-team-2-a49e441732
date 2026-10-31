@@ -180,6 +180,12 @@ class Eyes:
 
     # ---------------- the evidence machinery ----------------
 
+    def _joints(self) -> np.ndarray:
+        """Just the joints. The real cell wants a picture in every observation (that is its API),
+        so there we ask for the cheapest one; the sim answers joints alone."""
+        cams = ("wrist",) if hasattr(self.cell, "start_trial") else ()
+        return np.asarray(self.cell.observe(cams=cams)["joints"], float)
+
     def _grab(self) -> tuple[np.ndarray, np.ndarray]:
         """Just the picture and where it was taken from - no SAM yet, so flights can be batched
         (move, snap, move, snap; the thinking happens after the moving, Joel's one ok'd hardcode)."""
@@ -339,7 +345,7 @@ class Eyes:
         from calibration.kinematics import HOME
         from lab import armcheck
         from lab.scan import unsafe
-        q0 = np.asarray(self.cell.observe(cams=())["joints"], float)[:6]
+        q0 = self._joints()[:6]
         tgt = np.asarray(HOME, float)[:6]
         n = max(10, int(np.abs(tgt - q0).max() / 3.0))
         rows = [[*(q0 + (tgt - q0) * k / n).tolist(), 0.0] for k in range(1, n + 1)]
@@ -393,11 +399,11 @@ class Eyes:
 
     def _fly_rows(self, tip: np.ndarray, wpr: np.ndarray, eye: np.ndarray) -> None:
         from lab import primitives as P
-        q_now = np.asarray(self.cell.observe(cams=())["joints"], float)[:6]
+        q_now = self._joints()[:6]
         rows = self._plan_fly(tip, wpr, q_now)
         print(f"fly: cam -> {np.round(eye, 3)}, {len(rows)} joint rows", flush=True)
         P.send(self.cell, rows)
-        j = np.asarray(self.cell.observe(cams=())["joints"], float)
+        j = self._joints()
         cam_now = (flange_pose(j) @ self.cams["wrist"]["T"])[:3, 3]
         off = float(np.linalg.norm(cam_now - eye)) * 1000
         if off > 40:
@@ -662,7 +668,7 @@ class Eyes:
         from calibration.kinematics import tcp_uf0
         from lab import armcheck
         from lab import moves as MV
-        cur_q = np.asarray(self.cell.observe(cams=())["joints"], float)
+        cur_q = self._joints()
         cur = tcp_uf0(cur_q)
         jaw = float(np.degrees(self.yaw_of(b)) + 90.0)
         at = (at_mm[0] / 1000.0, at_mm[1] / 1000.0)
