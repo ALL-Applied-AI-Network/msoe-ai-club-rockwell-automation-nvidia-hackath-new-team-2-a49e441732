@@ -160,6 +160,13 @@ class Eyes:
         self.blobs: list[Blob] = []
         self._ids = itertools.count(1)
         self._shots = itertools.count(1)
+        from lab import primitives as P
+        # the coverage ledger: which patch of the REACHABLE table surface some shot has actually
+        # framed. What was never in any frame has never been looked at - and un-looked-at table is
+        # how whole objects get missed, so scan() chases these holes until none are left.
+        self._reach = np.array([[P.reachable(x, y, margin_mm=15) for y in self.grid.ys]
+                                for x in self.grid.xs])
+        self.seen = np.zeros_like(self._reach)
 
     # ---------------- the evidence machinery ----------------
 
@@ -197,6 +204,7 @@ class Eyes:
         ui = np.clip((u * mw / w), 0, mw - 1).astype(np.int32)
         vi = np.clip((v * mh / h), 0, mh - 1).astype(np.int32)
         in_frame = front & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        self.seen |= in_frame.reshape(self.grid.shape)[:, :, 0]   # this shot's footprint on the table
         cones = [m["mask"][vi, ui] & in_frame for m in shot.masks]
         any_mask = np.zeros(len(self.grid.pts), bool)
         for c in cones:
@@ -402,10 +410,38 @@ class Eyes:
             taken.append(self._grab())
         for img, joints in taken:
             self._carve(self._see(img, joints))
-        lines = [f"scanned the table from above: {len(taken)} shots" +
-                 (f", {len(skipped)} spots unreachable" if skipped else "")]
+        # chase coverage holes: any reachable patch no frame has touched gets its own look,
+        # until the whole reachable surface has been seen (or the holes stop being fixable)
+        chased = 0
+        for _ in range(5):
+            pct, hole = self._coverage()
+            if hole is None:
+                break
+            self.look_at(hole[0], hole[1])
+            chased += 1
+        pct, hole = self._coverage()
+        lines = [f"scanned the table: {len(taken)} sweep shots"
+                 + (f" + {chased} chasing unseen patches" if chased else "")
+                 + f"; {pct:.0f}% of the reachable surface has been looked at"
+                 + (f" (still unseen around ({hole[0]:.0f}, {hole[1]:.0f}))" if hole else "")
+                 + (f"; {len(skipped)} spots unreachable" if skipped else "")]
         lines += [b.summary(self.grid) for b in self.blobs] or ["nothing found"]
         return "\n".join(lines)
+
+    def _coverage(self) -> tuple[float, tuple[float, float] | None]:
+        """(percent of the reachable surface seen, centre of the biggest unseen patch worth a look)."""
+        from scipy import ndimage
+        r = self._reach
+        pct = 100.0 * np.count_nonzero(self.seen & r) / max(1, np.count_nonzero(r))
+        lab, n = ndimage.label(r & ~self.seen)
+        if n == 0:
+            return pct, None
+        sizes = ndimage.sum_labels(np.ones_like(lab), lab, range(1, n + 1))
+        k = int(np.argmax(sizes))
+        if sizes[k] < 150:            # smaller than ~50 x 50 mm: nothing bin-sized hides there
+            return pct, None
+        cx, cy = ndimage.center_of_mass(lab == k + 1)
+        return pct, (float(self.grid.xs[int(cx)]) * 1000, float(self.grid.ys[int(cy)]) * 1000)
 
     def look_at(self, x_mm: float, y_mm: float) -> str:
         """Move the head: hover the camera over that table point (top-down first, a 50-degree
