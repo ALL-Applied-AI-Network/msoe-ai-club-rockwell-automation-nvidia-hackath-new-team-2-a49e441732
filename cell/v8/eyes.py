@@ -547,12 +547,12 @@ class Eyes:
         _, _, vt = np.linalg.svd(q)
         return float(np.ptp(q @ vt[1])) * 1000 + VOX * 1000
 
-    def _hover(self, x_mm: float, y_mm: float) -> None:
+    def _hover(self, x_mm: float, y_mm: float, height: float = 0.25) -> None:
         """The camera above a point, top-down first, tilted fallback (same family as look_at)."""
         tgt = np.array([x_mm / 1000.0, y_mm / 1000.0, SURFACE_Z + 0.01])
         el, az = np.radians(50.0), np.arctan2(tgt[1], tgt[0]) + np.pi
         last: Exception | None = None
-        for eye in [tgt + np.array([0.0, 0.0, 0.25]),
+        for eye in [tgt + np.array([0.0, 0.0, height]),
                     tgt + 0.28 * np.array([np.cos(az) * np.cos(el), np.sin(az) * np.cos(el), np.sin(el)])]:
             try:
                 self._fly_cam(eye, tgt)
@@ -561,11 +561,11 @@ class Eyes:
                 last = e
         raise ValueError(f"can't get the camera over ({x_mm:.0f}, {y_mm:.0f}): {last}")
 
-    def _spot_masks(self, x_mm: float, y_mm: float) -> list[tuple[float, float]]:
+    def _spot_masks(self, x_mm: float, y_mm: float, height: float = 0.25) -> list[tuple[float, float]]:
         """Fly over a point and answer the binary question factory: where are SAM's things near
         here, in mm? Verification only - these shots never carve (updates come from verdicts)."""
         from calibration.geometry import pixel_to_base
-        self._hover(x_mm, y_mm)
+        self._hover(x_mm, y_mm, height)
         img, j = self._grab()
         shot = self._see(img, j)
         cam = self.cams["wrist"]
@@ -618,7 +618,14 @@ class Eyes:
             rad = max(float(np.ptp(po[:, 0])), float(np.ptp(po[:, 1]))) * 500 + 20
             rounds.append((float(po[:, 0].mean()) * 1000, float(po[:, 1].mean()) * 1000, rad))
 
-        def clear(xy) -> bool:   # the slide's entry point must be free of every other believed thing
+        from lab import primitives as P
+
+        def clear(xy) -> bool:
+            # the slide's entry point must be free of every other believed thing AND legal for the
+            # arm: near enough that fingertips may come low (the fitted far-low rule starts ~485 mm
+            # out), so slides naturally come from the base side instead of being refused outright
+            if np.hypot(xy[0], xy[1]) * 1000 > 460 or not P.reachable(xy[0], xy[1], margin_mm=15):
+                return False
             return all(np.hypot(xy[0] * 1000 - ox, xy[1] * 1000 - oy) > orad for ox, oy, orad in rounds)
 
         rows, how = MV.push_grasp(cur, at, jaw, length, place, travel_mm, drop_mm, clear)
@@ -674,12 +681,19 @@ class Eyes:
         print(f"grab: blob #{blob_id} ({gx:.0f}, {gy:.0f}) -> ({x_mm:.0f}, {y_mm:.0f}), {how}, "
               f"{len(jrows)} rows", flush=True)
         self.cell.play(np.asarray(jrows, float), kind="joints")
-        # the verdicts - and ONLY the verdicts - update the world
-        found = [h for h in self._spot_masks(x_mm, y_mm) if np.hypot(h[0] - x_mm, h[1] - y_mm) < 45]
+        # the verdicts - and ONLY the verdicts - update the world. One shot answers both
+        # questions when source and destination fit in one frame (half the verification flights).
+        if np.hypot(x_mm - sx, y_mm - sy) < 200:
+            cents_v = self._spot_masks((sx + x_mm) / 2, (sy + y_mm) / 2, height=0.32)
+            found = [h for h in cents_v if np.hypot(h[0] - x_mm, h[1] - y_mm) < 45]
+            n_after = sum(np.hypot(h[0] - sx, h[1] - sy) < 55 for h in cents_v)
+        else:
+            found = [h for h in self._spot_masks(x_mm, y_mm) if np.hypot(h[0] - x_mm, h[1] - y_mm) < 45]
+            n_after = (sum(np.hypot(h[0] - sx, h[1] - sy) < 55 for h in self._spot_masks(sx, sy))
+                       if found else 99)
         if not found:
             return (f"MISS: nothing found at ({x_mm:.0f}, {y_mm:.0f}) after the {how}. "
                     f"Blob #{blob_id} should still be near ({gx:.0f}, {gy:.0f}): look, then retry.")
-        n_after = sum(np.hypot(h[0] - sx, h[1] - sy) < 55 for h in self._spot_masks(sx, sy))
         self._translate(b, found[0])
         src = ("the old spot is clear" if n_after == 0 else
                f"{n_after} thing(s) still near the old spot (was {n_before})" +
@@ -705,7 +719,10 @@ class Eyes:
                       key=lambda h: np.hypot(h[0] - sx, h[1] - sy))
         if not near:
             return f"blob #{blob_id} is NOT at ({sx:.0f}, {sy:.0f}) any more: look before moving it", None
-        jrows, how = self._grasp_rows(b, near[0], (cx, cy), max(130.0, top + 60.0), drop_mm=top + 15.0)
+        drop = top + 15.0
+        if np.hypot(cx, cy) > 440:   # a far bin: beyond ~485 mm out the fingertips must stay high
+            drop = max(drop, 85.0)   # (the fitted far-low rule) - drop from higher, gravity still lands it
+        jrows, how = self._grasp_rows(b, near[0], (cx, cy), max(130.0, top + 60.0), drop_mm=drop)
         print(f"drop: blob #{blob_id} -> into #{container_id} at ({cx:.0f}, {cy:.0f}), {how}", flush=True)
         self.cell.play(np.asarray(jrows, float), kind="joints")
         self._hover(cx, cy)

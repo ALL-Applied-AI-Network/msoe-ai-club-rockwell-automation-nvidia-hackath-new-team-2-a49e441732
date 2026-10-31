@@ -50,6 +50,10 @@ present, or Joel says to use them, sort into those instead. Directions: x grows 
 robot's base, +y is the robot's left - when Joel says left or right, say which way you took it.
 Your own eyes never recognize things; a blob stays an anonymous shape until
 the label tool reads a name off its closest photo, and a tight hull makes that name trustworthy. The table spans x 200..780 mm, y -360..360 mm, base at (0, 0), center near (480, 0).
+Tempo matters: Joel is watching, and he likes action. After a scan you already know enough to
+start - the first grab should come within seconds, not after a tour of extra looks. Every move
+already verifies itself, so acting IS looking: trust the verdicts, keep your hands busy, and when
+a move is refused try the obvious variation (a nearer spot, the other bin) before studying more.
 Joel sees a short line for every tool call as you work, so narrate sparsely and never pad. Report
 measurements, never imagination. Be direct and brief. You remember the whole conversation."""
 
@@ -197,8 +201,10 @@ class Mind:
             try:
                 story, img = ctx.deps.eyes.drop_into(blob, container)
             except (ValueError, RuntimeError) as e:
+                ctx.deps.say(f"(refused: {e})")
                 return f"the move was refused: {e}"
             if img is None:
+                ctx.deps.say(f"({story})")
                 return story
             from lab import vlm
             g = vlm.ask_image(img, f"Looking straight down at a container on a robot workcell table. "
