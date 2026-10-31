@@ -143,14 +143,13 @@ class IsaacCell:
         return inside
 
     def _next_id(self, n: int) -> int:
-        """Fresh ids, never reused: a thing taken off the table still exists in Isaac (in Joel's pocket),
-        and a reconnected client starts empty while the server remembers - so ask the server too (a red
-        cube once reused a parked bin's id and teleported the bin to the table centre instead of appearing)."""
+        """Fresh ids, never reused: the server is the one id authority. Its truth lists only what's on
+        the table, so ask for every id it knows - things parked in Joel's pocket included (a red cube
+        once took a parked bin's id and teleported the bin to the table centre). No fallback: if the
+        server can't answer, adding fails here, with the real cause."""
+        d = self._post("sim/truth", {})
         have = [i.id for i in self.instances] + [getattr(self, "last_id", 0)]
-        try:
-            have += [int(k) for k in self._post("sim/truth", {}).get("poses", {})]
-        except Exception:
-            pass
+        have += [int(k) for k in (d.get("ids") or list(d.get("poses", {})))]
         first = max(have) + 1
         self.last_id = first + n - 1
         return first
