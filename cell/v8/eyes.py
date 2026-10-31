@@ -200,7 +200,7 @@ class Eyes:
 
     def _see(self, img: np.ndarray, joints: np.ndarray, cam: str = "wrist") -> Shot:
         from lab import sam
-        found = sam.segment_many(img, WORDS, scale=2.0)
+        found = sam.segment_many(img, WORDS, scale=2.0, timeout=90.0)
         masks: list[dict] = []
         for d in sorted(found, key=lambda d: -d["area"]):     # dedupe: two words often find one thing
             m = d["mask"]

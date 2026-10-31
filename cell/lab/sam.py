@@ -56,7 +56,9 @@ def _tunnel() -> None:
 def _local(part: np.ndarray, prompts: list[str], timeout: float) -> dict[str, list[dict]]:
     """The local server: {prompt: [{"box" (part pixels), "mask" (bool, part size)}]}."""
     _tunnel()
-    ok, buf = cv2.imencode(".png", cv2.cvtColor(part, cv2.COLOR_RGB2BGR))
+    # JPEG, not PNG: a scaled-up HD frame as PNG is many MB, and on a thin uplink (the lab's wifi)
+    # the upload alone blew the timeout. SAM's masks don't care about JPEG at this quality.
+    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(part, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 92])
     r = requests.post(f"http://127.0.0.1:{LOCAL_PORT}/segment", timeout=timeout,
                       json={"image": base64.b64encode(buf.tobytes()).decode(), "prompts": list(prompts)})
     r.raise_for_status()
