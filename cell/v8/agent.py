@@ -17,6 +17,10 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+from pydantic_ai import Agent, RunContext  # noqa: E402  (module level: tool annotations resolve here)
+from pydantic_ai.models.openai import OpenAIChatModel  # noqa: E402
+from pydantic_ai.providers.openrouter import OpenRouterProvider  # noqa: E402
+
 PERSONA = """You are the mind of a FANUC ER-4iA robot arm in a small work cell at a hackathon,
 talking with Joel, who built you. You have EYES but no hands: the look tool photographs the table
 from wherever your wrist camera is and finds anonymous regions ("blobs"); the inspect tool flies
@@ -36,10 +40,7 @@ class Mind:
     """The conversation IS the memory: every exchange carries the full history back in."""
 
     def __init__(self, model: str | None = None):
-        from pydantic_ai import Agent, RunContext
         self.model_name = model or os.getenv("V8_MODEL", "openai/gpt-6-luna")
-        from pydantic_ai.models.openai import OpenAIChatModel
-        from pydantic_ai.providers.openrouter import OpenRouterProvider
         m = OpenAIChatModel(self.model_name,
                             provider=OpenRouterProvider(api_key=os.environ["OPENROUTER_API_KEY"]))
         self.agent = Agent(m, instructions=PERSONA, deps_type=Deps)
