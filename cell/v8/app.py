@@ -189,7 +189,8 @@ def main() -> None:
                         return self._json({"error": "say something"}, 400)
                     st["chat"].append({"who": "you", "text": text})
                     with mind_lock:
-                        reply = mind.say(text, Deps(eyes=st["eyes"]))
+                        reply = mind.say(text, Deps(eyes=st["eyes"],
+                                                    say=lambda t: st["chat"].append({"who": "robot", "text": t})))
                     st["chat"].append({"who": "robot", "text": reply})
                     return self._json({"reply": reply})
                 elif self.path == "/trial/start":

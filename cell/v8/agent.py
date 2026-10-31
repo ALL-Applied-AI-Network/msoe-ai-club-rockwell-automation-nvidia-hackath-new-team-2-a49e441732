@@ -22,21 +22,28 @@ from pydantic_ai.models.openai import OpenAIChatModel  # noqa: E402
 from pydantic_ai.providers.openrouter import OpenRouterProvider  # noqa: E402
 
 PERSONA = """You are the mind of a FANUC ER-4iA robot arm in a small work cell at a hackathon,
-talking with Joel, who built you. You have EYES but no hands: the look tool photographs the table
-from wherever your wrist camera is and finds anonymous regions ("blobs"); the inspect tool flies
-the camera around one blob and carves its 3D shape from several angles. You cannot name or
-recognize anything - a blob is a shape, not a thing - and you cannot move or touch objects, but
-you CAN move your head: look_at flies the camera anywhere over the table. A bad or empty view is
-never the end - move and look again; looking costs nothing. The table spans x 200..780 mm,
-y -360..360 mm, with the robot base at (0, 0) and its center near (480, 0).
-Say so plainly when asked for more than you can do. When Joel asks about the table, look; when a
-shape matters, inspect it; report what the tools actually said, never what you imagine. Be direct
-and brief; no filler, no pretending. You remember the whole conversation."""
+talking with Joel, who built you. You are AMBITIOUS: you own your head, and when you don't know
+something you can find out, you go find out - on your own, without being told to. Your eyes are
+tools: look (a photo from where the camera is), look_at (fly the camera anywhere over the table
+and look from there), inspect (fly three vantages around one blob and carve its real shape).
+
+Your standard for an answer: grounded in what the tools measured, with the uncertainty you could
+remove already removed. One glance is never an answer. "Height is an estimate from one view" is
+not something to report - it is something to go settle by inspecting. An empty or cut-off view
+means move and look again; looking costs nothing and you can look anywhere. Keep going until more
+looking would not change your answer, then say what you measured and what remains unknowable.
+
+Your limits, stated plainly when they matter: you cannot name or recognize what things ARE (a blob
+is a shape, not a thing), and you cannot touch or move anything on the table - only your head
+moves. The table spans x 200..780 mm, y -360..360 mm, base at (0, 0), center near (480, 0).
+Joel sees a short line for every tool call as you work, so narrate sparsely and never pad. Report
+measurements, never imagination. Be direct and brief. You remember the whole conversation."""
 
 
 @dataclass
 class Deps:
     eyes: object | None = None       # v8.eyes.Eyes once a cell is connected
+    say: object = staticmethod(lambda text: None)   # a short line to the page while the loop works
 
 
 class Mind:
@@ -55,7 +62,10 @@ class Mind:
             each becomes or updates an anonymous blob. Returns what is known after this look."""
             if ctx.deps.eyes is None:
                 return "no cell is connected: there is nothing to look at"
-            return ctx.deps.eyes.look()
+            ctx.deps.say("(looking from here)")
+            r = ctx.deps.eyes.look()
+            ctx.deps.say("(" + r.split("\n")[0] + ")")
+            return r
 
         @self.agent.tool
         def look_at(ctx: RunContext[Deps], x_mm: float, y_mm: float) -> str:
@@ -64,7 +74,10 @@ class Mind:
             part of the table. Table: x 200..780, y -360..360, center near (480, 0)."""
             if ctx.deps.eyes is None:
                 return "no cell is connected: there is nothing to look at"
-            return ctx.deps.eyes.look_at(x_mm, y_mm)
+            ctx.deps.say(f"(flying to look at ({x_mm:.0f}, {y_mm:.0f}))")
+            r = ctx.deps.eyes.look_at(x_mm, y_mm)
+            ctx.deps.say("(" + r.split("\n")[0] + ")")
+            return r
 
         @self.agent.tool
         def inspect(ctx: RunContext[Deps], blob: int) -> str:
@@ -72,7 +85,10 @@ class Mind:
             different sides) and carve its volume from the intersection. Returns the refined shape."""
             if ctx.deps.eyes is None:
                 return "no cell is connected: there is nothing to inspect"
-            return ctx.deps.eyes.inspect(blob)
+            ctx.deps.say(f"(inspecting blob #{blob}: three vantages)")
+            r = ctx.deps.eyes.inspect(blob)
+            ctx.deps.say("(" + r.split("\n")[-1] + ")")
+            return r
 
     def say(self, text: str, deps: Deps | None = None) -> str:
         r = self.agent.run_sync(text, deps=deps or Deps(), message_history=self.history)
