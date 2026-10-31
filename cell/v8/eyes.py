@@ -104,12 +104,20 @@ def aim(eye: np.ndarray, target: np.ndarray, T_flange_cam: np.ndarray,
     return tip, wpr_of(T_bf[:3, :3] @ FLANGE_FROM_TOOL.T)
 
 
-def ik_for(eye: np.ndarray, target: np.ndarray, T_flange_cam: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def ik_for(eye: np.ndarray, target: np.ndarray, T_flange_cam: np.ndarray,
+           floor_mm: float = 55.0) -> tuple[np.ndarray, np.ndarray]:
     """(tip, wpr) of a REACHABLE pose framing target from eye, spending camera roll to find one.
-    Raises ValueError with the last miss when no roll works."""
+    Camera roll swings the fingertips around the wrist, so the fingertip floor and reach margins
+    are checked INSIDE the roll search: a low camera pose is legal whenever SOME roll keeps the
+    fingers up and in reach. Raises ValueError with the last miss when no roll works."""
+    from lab import primitives as P
     err: Exception | None = None
     for roll in (0.0, np.pi / 2, -np.pi / 2, np.pi, np.pi / 4, -np.pi / 4, 3 * np.pi / 4, -3 * np.pi / 4):
         tip, wpr = aim(eye, target, T_flange_cam, roll)
+        up_mm = (tip[2] - SURFACE_Z) * 1000
+        if up_mm < floor_mm or not P.reachable(tip[0], tip[1], margin_mm=15):
+            err = ValueError(f"fingertips would be {up_mm:.0f} mm up, or out of reach")
+            continue
         try:
             tool_ik(tip, wpr, tol_mm=3.0)
             return tip, wpr
@@ -313,8 +321,6 @@ class Eyes:
         from lab import armcheck
         from lab import primitives as P
         tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])   # ValueError = the caller's verdict
-        if (tip[2] - SURFACE_Z) * 1000 < 95.0 or not P.reachable(*tip[:2], margin_mm=15):
-            raise ValueError(f"fingertips would be {(tip[2] - SURFACE_Z) * 1000:.0f} mm up, or out of reach")
         q_now = np.asarray(self.cell.observe(cams=())["joints"], float)[:6]
         q = tool_ik(tip, wpr, q_now)
         T_now = tool_pose(q_now)
