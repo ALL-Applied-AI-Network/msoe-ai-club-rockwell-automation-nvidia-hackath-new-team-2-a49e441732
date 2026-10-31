@@ -217,24 +217,30 @@ class Eyes:
     # ---------------- aiming: motion planning, not the LLM ----------------
 
     def _fly_cam(self, eye: np.ndarray, target: np.ndarray) -> None:
-        """Put the WRIST CAMERA at eye, looking at target - and VERIFY it arrived (observed joints,
-        not hope). A flight that ends somewhere else is a crash with a cause, never a silent shrug:
-        every carve afterwards would otherwise be a lie told from the wrong place."""
-        from calibration.kinematics import tcp_uf0
+        """Put the WRIST CAMERA at eye, looking at target - the datarun's proven way: planned in
+        JOINT space (tcp rows to tilted poses make the wrist writhe near J5=0 and the controller
+        refuses them - joint_move's own docstring), armchecked, then sent. Works on the Isaac twin
+        and the real cell alike (P.send speaks both). Verifies arrival from observed joints."""
+        from calibration.kinematics import tool_ik, tool_pose
+        from lab import armcheck
+        from lab import primitives as P
         tip, wpr = ik_for(eye, target, self.cams["wrist"]["T"])   # ValueError = the caller's verdict
-        cur = np.array(tcp_uf0(self.cell.observe(cams=())["joints"]), float)
-        row = np.array([tip[0] * 1000, tip[1] * 1000, tip[2] * 1000 + UF0_Z_MM, *wpr, 0.0])
-        lift = max(cur[2], row[2], SURFACE_Z * 1000 + UF0_Z_MM + 220)
-        up_row = np.array([cur[0], cur[1], lift, *cur[3:6], 0.0])
-        over = np.array([row[0], row[1], lift, *row[3:6], 0.0])
-        rows = [r for r in (up_row, over, row) for _ in range(12)]
-        print(f"fly: cam -> {np.round(eye, 3)} looking at {np.round(target, 3)}; "
-              f"tip row {np.round(row[:6], 1)}", flush=True)
-        self.cell.play([list(r) for r in rows])
+        q_now = np.asarray(self.cell.observe(cams=())["joints"], float)[:6]
+        q = tool_ik(tip, wpr, q_now)
+        T_now = tool_pose(q_now)
+        rows = P.joint_move(q_now, T_now[:3, 3], wpr_of(T_now[:3, :3]), q, tip, wpr,
+                            height_mm=95.0, settle=5)
+        if rows is None:
+            raise ValueError("no safe joint path to that vantage")
+        rep = armcheck.check_joints(np.asarray(rows)[:, :6], 0.0)
+        if not rep.ok:
+            raise ValueError(f"the move fails the arm check: {rep.problem}")
+        print(f"fly: cam -> {np.round(eye, 3)} looking at {np.round(target, 3)}, "
+              f"{len(rows)} joint rows", flush=True)
+        P.send(self.cell, rows)
         j = np.asarray(self.cell.observe(cams=())["joints"], float)
         cam_now = (flange_pose(j) @ self.cams["wrist"]["T"])[:3, 3]
         off = float(np.linalg.norm(cam_now - eye)) * 1000
-        print(f"fly: arrived, camera {off:.0f} mm from asked", flush=True)
         if off > 40:
             raise RuntimeError(f"flight failed: asked the camera to {np.round(eye, 3)}, it is at "
                                f"{np.round(cam_now, 3)} ({off:.0f} mm away) - the cell did not follow")
