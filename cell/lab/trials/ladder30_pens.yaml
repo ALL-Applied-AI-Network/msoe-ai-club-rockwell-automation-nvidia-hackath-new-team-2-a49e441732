@@ -1,0 +1,9 @@
+# Ladder 30 (ours): a handful of pens, sorted by color - elongated objects, yaw-aware slides.
+instruction: Sort the pens into piles by color.
+layout: spread
+seed: 30
+objects:
+  - {kind: marker, color: black, count: 2}
+  - {kind: marker, color: red, count: 2}
+goal:
+  - {what: {kind: marker}, piles: by_color}

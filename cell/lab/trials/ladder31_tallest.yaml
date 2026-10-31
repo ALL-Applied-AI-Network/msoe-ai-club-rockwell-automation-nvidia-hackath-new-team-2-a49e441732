@@ -1,0 +1,12 @@
+# Ladder 31 (ours): the height thesis as a task - only carved 3D height can answer it.
+instruction: Find the tallest block on the table and put it in the bin. Leave the others.
+layout: spread
+seed: 31
+objects:
+  - {kind: cube_10, color: green, count: 1}
+  - {kind: cube_16, color: yellow, count: 1}
+  - {kind: d6, color: white, count: 1}
+fixtures:
+  - {kind: box_60, color: white, at: [0.36, -0.24]}
+goal:
+  - {what: {kind: cube_16}, into: any}

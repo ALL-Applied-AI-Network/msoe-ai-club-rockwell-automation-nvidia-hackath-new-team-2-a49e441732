@@ -1,0 +1,10 @@
+# Ladder 32 (ours): pure perception - count and describe everything, touch nothing.
+instruction: Count what is on the table and describe each thing (kind, color, footprint, height). Touch nothing.
+layout: spread
+seed: 32
+objects:
+  - {kind: cube_10, color: red, count: 2}
+  - {kind: marker, color: black, count: 1}
+  - {kind: screw_m6x30, color: steel, count: 1}
+  - {kind: d6, color: white, count: 1}
+goal: []
