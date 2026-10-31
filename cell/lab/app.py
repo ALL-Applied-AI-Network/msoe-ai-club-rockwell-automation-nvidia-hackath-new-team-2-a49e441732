@@ -220,9 +220,27 @@ def main() -> None:
                 text = (body.get("text") or "").strip()
                 if text:
                     board.add("you", text)
-                    if state["distract"]:
-                        robot.distract(2.0)
-                    threading.Thread(target=chat.user, args=(text,), daemon=True).start()
+                    if text.lower().startswith("v7:"):  # the new robot: lab/v7run.run on this cell
+                        wish = text[3:].strip() or "look around and say what you see"
+                        if getattr(robot, "v7_busy", False):
+                            board.add("robot", "(v7 is already running: one task at a time)")
+                        else:
+                            def _v7(wish=wish):
+                                robot.v7_busy = True
+                                board.add("robot", "v7: looking around - watch the Rerun window for my head")
+                                try:
+                                    from lab import v7run
+                                    v7run.run(robot.cell, wish, headless=False, tag="v7")
+                                    board.add("robot", "v7: done (the whole story is in the Rerun window)")
+                                except Exception as e:
+                                    board.add("robot", f"v7 stopped: {e}")
+                                finally:
+                                    robot.v7_busy = False
+                            threading.Thread(target=_v7, daemon=True).start()
+                    else:
+                        if state["distract"]:
+                            robot.distract(2.0)
+                        threading.Thread(target=chat.user, args=(text,), daemon=True).start()
                 self._json({})
             elif self.path == "/hands":
                 try:

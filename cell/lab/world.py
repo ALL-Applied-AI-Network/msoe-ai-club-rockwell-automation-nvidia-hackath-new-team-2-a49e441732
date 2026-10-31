@@ -41,6 +41,8 @@ class Thing:
     state: str = "solid"           # "solid" (seen there) | "ghost" (predicted there)
     seen: float = 0.0              # when a camera last confirmed it
     of: int | None = None          # a ghost remembers which solid it is the prediction of
+    views: int = 1                 # how many outlines have constrained it: 1 = a one-glance prism,
+                                   # its height is slack for the agent to tighten when an action needs it
     note: str = ""
 
     def dist_mm(self, x: float, y: float) -> float:
@@ -72,11 +74,13 @@ class World:
                     claimed.add(t.id)
                     t.x_mm, t.y_mm, t.yaw = ob["x_mm"], ob["y_mm"], ob.get("yaw", t.yaw)
                     t.size_mm, t.top_mm, t.seen = tuple(ob["size_mm"]), ob["top_mm"], now
-                    if names_too and ob.get("name") and ob["name"] != "?":
+                    t.views = max(t.views, int(ob.get("views", 1)))
+                    if names_too and ob.get("name") and ob["name"] not in ("?", "blob"):
                         t.name = ob["name"]
                 else:
-                    t = Thing(next(self._ids), ob.get("name", "?"), ob["x_mm"], ob["y_mm"],
-                              tuple(ob["size_mm"]), ob["top_mm"], ob.get("yaw", 0.0), seen=now)
+                    t = Thing(next(self._ids), ob.get("name") or "blob", ob["x_mm"], ob["y_mm"],
+                              tuple(ob["size_mm"]), ob["top_mm"], ob.get("yaw", 0.0), seen=now,
+                              views=int(ob.get("views", 1)))
                     claimed.add(t.id)
                     self.things.append(t)
                     self._say(f"new: {t.name} #{t.id} at ({t.x_mm:.0f}, {t.y_mm:.0f})")
@@ -118,6 +122,13 @@ class World:
         with self._lock:
             self.things = [t for t in self.things if t.id != tid and t.of != tid]
 
+    def rename(self, tid: int, name: str) -> None:
+        """The LLM recognizes a blob and names it; from then on everyone speaks that name."""
+        with self._lock:
+            t = self[tid]
+            self._say(f"named: {t.name} #{t.id} is now {name!r}")
+            t.name = name
+
     # ---- what everyone else reads ----
 
     def boxes(self, ignore: tuple[int, ...] = ()) -> list[Box]:
@@ -144,9 +155,10 @@ class World:
             for t in sorted(self.things, key=lambda t: t.id):
                 age = f"{time.time() - t.seen:.0f}s ago" if t.seen else "never"
                 tag = "" if t.state == "solid" else f"  GHOST of #{t.of}, not yet checked"
+                sure = "" if t.views >= 2 else "  (one glance: height is a guess, look closer to be sure)"
                 lines.append(f"{t.name} #{t.id}: ({t.x_mm:.0f}, {t.y_mm:.0f}) mm, "
                              f"{t.size_mm[0]:.0f} x {t.size_mm[1]:.0f} mm, {t.top_mm:.0f} mm tall, "
-                             f"seen {age}{tag}{'  - ' + t.note if t.note else ''}")
+                             f"seen {age}{tag}{sure}{'  - ' + t.note if t.note else ''}")
             return "\n".join(lines)
 
     def __getitem__(self, tid: int) -> Thing:

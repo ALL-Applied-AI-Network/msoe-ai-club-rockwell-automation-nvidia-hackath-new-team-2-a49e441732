@@ -55,12 +55,12 @@ def _axes(vox: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def carve(views: list[View], vox: float = VOX, dilate_px: int = DILATE_PX,
-          min_views: int = MIN_VIEWS) -> tuple[np.ndarray, tuple]:
-    """-> (solid bool (nx, ny, nz), (xs, ys, zs) voxel-centre axes in base metres)."""
+          min_views: int = MIN_VIEWS) -> tuple[np.ndarray, tuple, np.ndarray]:
+    """-> (solid bool (nx, ny, nz), (xs, ys, zs) voxel-centre axes in base metres, support: how many
+    views put each voxel inside an outline - 1 is a one-glance prism, more means tighter)."""
     xs, ys, zs = _axes(vox)
     pts = np.stack(np.meshgrid(xs, ys, zs, indexing="ij"), -1).reshape(-1, 3)
     near_kill = np.zeros(len(pts), bool)   # a view that saw the thing said: outside it
-    far_out = np.zeros(len(pts), np.uint8)  # views with no outline near: "nothing here at all"
     in_k = np.zeros(len(pts), np.uint8)
     for v in views:
         T = np.linalg.inv(v.T_base_cam()).astype(np.float32)
@@ -84,9 +84,12 @@ def carve(views: list[View], vox: float = VOX, dilate_px: int = DILATE_PX,
         near = np.zeros(len(pts), bool)
         near[inb] = dt[vi[inb], ui[inb]] <= NEAR_PX * mw / w
         near_kill |= inb & ~inside & near
-        far_out += (inb & ~inside & ~near).astype(np.uint8)
-    solid = (~near_kill & (far_out <= 1) & (in_k >= min_views)).reshape(len(xs), len(ys), len(zs))
-    return solid, (xs, ys, zs)
+    # One mask births a thing: existence takes a single look, and a view that didn't see it is
+    # silence, not testimony (two cubes once died of procedural skepticism). Only a view whose
+    # outline is NEAR a voxel saw the thing and may shave it; the remaining slack is honest
+    # uncertainty for the agent to tighten with a closer look when an action needs it.
+    solid = (~near_kill & (in_k >= 1)).reshape(len(xs), len(ys), len(zs))
+    return solid, (xs, ys, zs), in_k.reshape(solid.shape)
 
 
 def on_table(mask: np.ndarray, cam: dict, joints=None) -> bool:
@@ -103,7 +106,8 @@ def on_table(mask: np.ndarray, cam: dict, joints=None) -> bool:
     return GRID_X[0] - 0.05 < p[0] < GRID_X[1] + 0.05 and GRID_Y[0] - 0.05 < p[1] < GRID_Y[1] + 0.05
 
 
-def objects(solid: np.ndarray, axes: tuple, min_voxels: int = MIN_VOXELS) -> list[dict]:
+def objects(solid: np.ndarray, axes: tuple, min_voxels: int = MIN_VOXELS,
+            support: np.ndarray | None = None) -> list[dict]:
     """Connected clumps of solid voxels -> one dict each: where it is and how big (mm, base frame)."""
     xs, ys, zs = axes
     lab, n = ndimage.label(solid, structure=np.ones((3, 3, 3)))  # diagonals connect: no twin objects from one clump
@@ -112,6 +116,7 @@ def objects(solid: np.ndarray, axes: tuple, min_voxels: int = MIN_VOXELS) -> lis
         ix, iy, iz = np.nonzero(lab == i)
         if len(ix) < min_voxels:
             continue
+        views_seen = int(support[ix, iy, iz].max()) if support is not None else 1
         px, py, pz = xs[ix], ys[iy], zs[iz]
         xy = np.stack([px, py], -1) * 1000.0
         c = xy.mean(0)
@@ -123,6 +128,7 @@ def objects(solid: np.ndarray, axes: tuple, min_voxels: int = MIN_VOXELS) -> lis
             "top_mm": round(float(pz.max() - SURFACE_Z) * 1000.0 + vox / 2, 1),
             "size_mm": (round(float(ext[0]) + vox, 1), round(float(ext[1]) + vox, 1)),
             "yaw": round(float(np.arctan2(vt[0, 1], vt[0, 0])), 3),
+            "views": views_seen,
             "voxels": len(ix),
             "ixyz": (ix, iy, iz),
         })

@@ -70,8 +70,8 @@ def main(run_dir: str, words: list[str] = WORDS) -> None:
             panels.append(cv2.resize(over, (480, 480 * img.shape[0] // img.shape[1])))
 
     t0 = time.time()
-    solid, axes = carve(views)
-    obs = objects(solid, axes)
+    solid, axes, support = carve(views)
+    obs = objects(solid, axes, support=support)
     if naming:
         name_objects(obs, axes, *naming)
     print(f"carved {len(views)} views in {time.time() - t0:.1f}s -> {len(obs)} objects", flush=True)

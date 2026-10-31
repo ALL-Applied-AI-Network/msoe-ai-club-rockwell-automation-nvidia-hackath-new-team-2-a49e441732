@@ -35,36 +35,26 @@ from lab.simcell import SimCell, spread_layout
 from lab.world import World
 from lab.recorder import RUNS
 
-NAME_WORDS = """List every kind of thing sitting on the table in this photo, as JSON:
-{"words": ["cube", "screw"]}
-One or two plain words per kind, the words a person would use to find one in a picture.
-Leave out the robot, the gripper and the table itself."""
+# SAM finds, it does not name: one generic prompt catches everything, the LLM names blobs after.
+WORDS = ["object"]
 
-
-def llm_words(table_img: np.ndarray) -> list[str]:
-    """Nothing hard-coded: the LLM looks at the table and names what SAM should find."""
-    worldview.trace("think", "naming the table: " + NAME_WORDS.split("\n")[0])
-    r = vlm.ask_image(table_img, NAME_WORDS) or {}
-    worldview.trace("think", "reply: " + (r.get("text") or "(nothing)")[:300])
-    d = r.get("json") or {}
-    ws = [w.strip() for w in d.get("words", []) if isinstance(w, str) and w.strip()][:8]
-    return ws or ["object"]
-
-
-DECIDE = """You are the planner of a robot arm. Its world model (mm, base frame, x away from the base,
-y left; the photo is the table camera, for context only - trust the model's numbers):
+DECIDE = """You are the mind of a robot arm. SAM found these things (your world model: mm, base frame,
+x away from the base, y left; the photo is the table camera, use it to recognize what each blob is):
 {mirror}
 
 Instruction: {instruction}
 
 Done so far: {done}
 
-Answer ONE next change of the world as JSON:
-  {{"say": "<one short line of what you're doing and why>", "move": {{"thing": <id>, "to": [x_mm, y_mm]}}}}
-or, when the instruction is satisfied (or nothing useful is left):
-  {{"say": "<one line>", "done": true}}
-Rules: only move solid things. Destinations on clear table: at least 40 mm from everything else,
-x between 260 and 500, y between -280 and 280. A thing that failed to confirm is where the model says."""
+Answer ONE action as JSON, nothing else:
+  {{"say": "<one short line>", "do": {{"name": {{"thing": <id>, "name": "<what it clearly is, e.g. red cube 1>"}}}}}}
+  {{"say": "<one short line>", "do": {{"look": {{"at": [x_mm, y_mm]}}}}}}   fresh close outlines there: finds what was missed, tightens a one-glance blob
+  {{"say": "<one short line>", "do": {{"move": {{"thing": <id>, "to": [x_mm, y_mm]}}}}}}   pick it up, set it down there
+  {{"say": "<one short line>", "done": true}}   the instruction is satisfied, or nothing useful is left
+
+You are curious: name blobs you recognize in the photo before moving them; look closer when unsure.
+Only move things that exist in the model. Destinations on clear table, 40 mm from everything else,
+x 260-500, y -280-280. If the model is empty, say the eyes have failed and stop: do not invent things."""
 
 
 def decide(w: World, instruction: str, done: list[str], table_img: np.ndarray) -> dict:
@@ -134,23 +124,19 @@ def row_points(rows) -> np.ndarray:
     return np.stack([a[:, 0] / 1000, a[:, 1] / 1000, (a[:, 2] - UF0_Z_MM) / 1000], -1)
 
 
-def main(headless: bool = False,
-         instruction: str = "line the cubes up in a row near the base, and leave the screw alone") -> None:
-    run = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_v7sim"
-    run.mkdir(parents=True)
+def run(cell, instruction: str, headless: bool = False, tag: str = "v7") -> None:
+    """The V7 loop on any cell that speaks observe/play/tip: the MuJoCo sim, the Isaac twin through
+    the cell API (lab/realcell.py), and one day the real arm - same loop, same trace."""
+    out = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_{tag}"
+    out.mkdir(parents=True)
     rr.init("v7", spawn=not headless)
-    rr.save(str(run / "v7.rrd"))
+    rr.save(str(out / "v7.rrd"))
     rr.log("world/table", rr.Boxes3D(centers=[[0.49, 0.0, SURFACE_Z - 0.002]],
                                      half_sizes=[[0.29, 0.36, 0.002]],
                                      colors=[(235, 235, 235)], fill_mode="solid"), static=True)
 
-    rng = np.random.default_rng(3)
-    cell = SimCell(spread_layout([("cube_10", "red"), ("cube_10", "blue"), ("cube_10", "yellow"),
-                                  ("screw_m6x30", "gray")], rng), "v7 demo", seed=3)
-    cell.settle()
     cams = load()
-    words = llm_words(cell.observe()["images"]["table"])
-    print(f"the LLM's words for SAM: {words}", flush=True)
+    words = WORDS
     w = World()
     views: list[View] = []
     step = 0
@@ -165,12 +151,9 @@ def main(headless: bool = False,
         except ValueError as e:
             print(f"stop {sid} skipped: {e}", flush=True)
             continue
-        n = one_look(cell, cams, views, first=(sid == STOP_IDS[0]), words=words)
-        naming = n or naming
-        solid, axes = carve(views)
-        obs_list = objects(solid, axes)
-        if naming:
-            name_objects(obs_list, axes, *naming)
+        one_look(cell, cams, views, first=(sid == STOP_IDS[0]), words=words)
+        solid, axes, support = carve(views)
+        obs_list = objects(solid, axes, support=support)
         w.look(obs_list)
         rr.set_time("step", sequence=step); step += 1
         worldview.voxels(solid, axes)
@@ -192,9 +175,44 @@ def main(headless: bool = False,
         if r.get("say"):
             worldview.trace("say", r["say"])
             print("robot:", r["say"], flush=True)
-        m = r.get("move")
-        if r.get("done") or not isinstance(m, dict):
+        do = r.get("do") or {}
+        if r.get("done") or not do:
             break
+        if "name" in do:
+            try:
+                w.rename(int(do["name"]["thing"]), str(do["name"]["name"])[:40])
+                done.append(f"named #{do['name']['thing']} {do['name']['name']!r}")
+            except (KeyError, TypeError, ValueError) as e:
+                worldview.trace("plan", f"bad name {do['name']}: {e}", "WARN")
+                done.append(f"your name call {do['name']} made no sense")
+            for e2 in w.events[said:]:
+                worldview.trace("world", e2)
+            said = len(w.events)
+            worldview.mind(w)
+            continue
+        if "look" in do:
+            at = do["look"].get("at") or [430, 0]
+            fly(cell, np.array([float(at[0]), float(at[1]),
+                                SURFACE_Z * 1000 + UF0_Z_MM + 250, *DOWN], float))
+            fresh: list[View] = []
+            one_look(cell, cams, fresh, first=True, words=words)
+            solid, axes, support = carve(fresh)
+            obs_list = objects(solid, axes, support=support)
+            w.look(obs_list)
+            rr.set_time("step", sequence=step); step += 1
+            worldview.voxels(solid, axes)
+            worldview.things(w)
+            worldview.mind(w)
+            for e2 in w.events[said:]:
+                worldview.trace("world", e2)
+            said = len(w.events)
+            done.append(f"looked at ({at[0]:.0f}, {at[1]:.0f})")
+            continue
+        m = do.get("move")
+        if not isinstance(m, dict):
+            worldview.trace("plan", f"unknown action {do}", "WARN")
+            done.append(f"your action {do} made no sense")
+            continue
         try:
             t = w[int(m["thing"])]
             to = (float(m["to"][0]), float(m["to"][1]))
@@ -237,7 +255,11 @@ def main(headless: bool = False,
             worldview.trace("world", e)
         said = len(w.events)
 
-    # ---- the honest ending: the robot's world against the sim's truth ----
+    # ---- the honest ending: the robot's world against the sim's truth (sim only: Isaac and the
+    # real cell keep their truth to themselves) ----
+    if not hasattr(cell, "body_positions"):
+        print(f"\nsaved {out / 'v7.rrd'}", flush=True)
+        return
     truth = cell.body_positions()
     print("\nworld vs truth (mm):", flush=True)
     for t in w.things:
@@ -247,13 +269,26 @@ def main(headless: bool = False,
         err = np.hypot(best[0] * 1000 - t.x_mm, best[1] * 1000 - t.y_mm)
         print(f"  {t.name} #{t.id}: world ({t.x_mm:6.0f}, {t.y_mm:6.0f})  truth ({best[0]*1000:6.0f}, "
               f"{best[1]*1000:6.0f})  off {err:5.1f}", flush=True)
-    print(f"\nsaved {run / 'v7.rrd'}", flush=True)
+    print(f"\nsaved {out / 'v7.rrd'}", flush=True)
+
+
+def main(headless: bool = False,
+         instruction: str = "line the cubes up in a row near the base, and leave the screw alone",
+         things: str = "cube_10:red,cube_10:blue,cube_10:yellow,screw_m6x30:gray") -> None:
+    rng = np.random.default_rng(3)
+    order = [tuple(t.strip().split(":")) for t in things.split(",") if t.strip()]
+    cell = SimCell(spread_layout(order, rng), "v7", seed=3)
+    cell.settle()
+    run(cell, instruction, headless, tag="v7sim")
 
 
 if __name__ == "__main__":
     import sys
-    words_args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    if words_args:
-        main(headless="--headless" in sys.argv, instruction=words_args[0])
-    else:
-        main(headless="--headless" in sys.argv)
+    kw: dict = {"headless": "--headless" in sys.argv}
+    plain = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if plain:
+        kw["instruction"] = plain[0]
+    for a in sys.argv[1:]:
+        if a.startswith("--things="):
+            kw["things"] = a.split("=", 1)[1]
+    main(**kw)
