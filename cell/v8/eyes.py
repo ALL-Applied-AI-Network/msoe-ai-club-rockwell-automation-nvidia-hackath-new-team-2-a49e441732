@@ -126,10 +126,11 @@ def ik_for(eye: np.ndarray, target: np.ndarray, T_flange_cam: np.ndarray,
     raise ValueError(f"no camera roll reaches that vantage: {err}")
 
 
-def pixels_of(pts: np.ndarray, cam: dict, joints) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def pixels_of(pts: np.ndarray, cam: dict, joints=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Base-frame points -> (u, v in calibration pixels, in_front). Same pinhole + one radial term
-    as calibration.geometry.project, done here so we also get the depth sign."""
-    T = np.linalg.inv(flange_pose(joints) @ cam["T"])
+    as calibration.geometry.project, done here so we also get the depth sign.
+    joints: pass them for the wrist camera (its T is flange->cam); None for a fixed camera."""
+    T = np.linalg.inv(cam["T"] if joints is None else flange_pose(joints) @ cam["T"])
     pc = pts @ T[:3, :3].T + T[:3, 3]
     z = pc[:, 2]
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -141,11 +142,13 @@ def pixels_of(pts: np.ndarray, cam: dict, joints) -> tuple[np.ndarray, np.ndarra
 
 @dataclass
 class Shot:
-    """One wrist photo and what SAM said about it, with the pose it was ACTUALLY taken from."""
+    """One photo and what SAM said about it, with the pose it was ACTUALLY taken from.
+    cam "wrist" uses the observed joints; "table"/"side" are fixed and need none."""
     k: int
     image: np.ndarray
     joints: np.ndarray
     masks: list[dict]                # [{"mask" bool HxW, "cut": touches the frame edge}]
+    cam: str = "wrist"
 
 
 class Eyes:
@@ -176,7 +179,7 @@ class Eyes:
         obs = self.cell.observe(cams=("wrist",))
         return obs["images"]["wrist"], np.asarray(obs["joints"], float)
 
-    def _see(self, img: np.ndarray, joints: np.ndarray) -> Shot:
+    def _see(self, img: np.ndarray, joints: np.ndarray, cam: str = "wrist") -> Shot:
         from lab import sam
         found = sam.segment_many(img, WORDS, scale=2.0)
         masks: list[dict] = []
@@ -186,9 +189,9 @@ class Eyes:
                 continue
             edge = m[0].any() or m[-1].any() or m[:, 0].any() or m[:, -1].any()
             masks.append({"mask": m, "cut": bool(edge)})
-        shot = Shot(next(self._shots), img, joints, masks)
+        shot = Shot(next(self._shots), img, joints, masks, cam=cam)
         if self.view:
-            self.view.shot(shot, self.cams["wrist"], self.grid)
+            self.view.shot(shot, self.cams[cam], self.grid)
         return shot
 
     def _snap(self) -> Shot:
@@ -197,14 +200,16 @@ class Eyes:
 
     def _carve(self, shot: Shot) -> list[Blob]:
         """Apply one shot to every blob (three-valued), then birth blobs for unclaimed masks."""
-        cam = self.cams["wrist"]
-        u, v, front = pixels_of(self.grid.pts, cam, shot.joints)
+        cam = self.cams[shot.cam]
+        jnts = shot.joints if shot.cam == "wrist" else None
+        u, v, front = pixels_of(self.grid.pts, cam, jnts)
         w, h = cam["size"]
         mh, mw = (shot.masks[0]["mask"].shape if shot.masks else (720, 1280))
         ui = np.clip((u * mw / w), 0, mw - 1).astype(np.int32)
         vi = np.clip((v * mh / h), 0, mh - 1).astype(np.int32)
         in_frame = front & (u >= 0) & (u < w) & (v >= 0) & (v < h)
-        self.seen |= in_frame.reshape(self.grid.shape)[:, :, 0]   # this shot's footprint on the table
+        if shot.cam == "wrist":   # the ledger counts only the aimable eye's own looks
+            self.seen |= in_frame.reshape(self.grid.shape)[:, :, 0]
         cones = [m["mask"][vi, ui] & in_frame for m in shot.masks]
         any_mask = np.zeros(len(self.grid.pts), bool)
         for c in cones:
@@ -395,6 +400,12 @@ class Eyes:
     def scan(self) -> str:
         """The opening move, hardcoded on purpose (we are on the clock): a few top-down shots
         covering the table, flown first, SAM'd after - finds the columns of stuff in one sweep."""
+        # the fixed cameras first: the table cam births everything (nothing can be missed),
+        # the side cam bounds every height with one standing low profile
+        obs = self.cell.observe(cams=("table", "side"))
+        for name in ("table", "side"):
+            if obs["images"].get(name) is not None:
+                self._carve(self._see(obs["images"][name], np.asarray(obs["joints"], float), cam=name))
         flights = [((x, y, SURFACE_Z + 0.33), (x, y, SURFACE_Z + 0.01))
                    for x, y in ((0.34, -0.17), (0.34, 0.17), (0.52, -0.17), (0.52, 0.17))]
         # plus two borderline-horizontal looks across the table: they bound every height at once

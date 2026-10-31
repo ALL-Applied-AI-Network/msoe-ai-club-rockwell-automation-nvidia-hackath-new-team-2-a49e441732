@@ -43,9 +43,10 @@ class View:
         'shot' timeline to revisit any earlier view)."""
         self.step += 1
         rr.set_time("shot", sequence=self.step)
-        T = flange_pose(shot.joints) @ cam["T"]
+        fixed = getattr(shot, "cam", "wrist") != "wrist"
+        T = cam["T"] if fixed else flange_pose(shot.joints) @ cam["T"]
         w, h = cam["size"]
-        ent = "world/shot"
+        ent = f"world/cams/{shot.cam}" if fixed else "world/shot"
         rr.log(ent, rr.Transform3D(translation=T[:3, 3], mat3x3=T[:3, :3]))
         ih, iw = shot.image.shape[:2]
         s = iw / w   # the pinhole must match the PHOTO's resolution, or it fills a quadrant of the plane
