@@ -27,6 +27,19 @@ def setup() -> None:
                                      colors=[(235, 235, 235)], fill_mode="solid"), static=True)
 
 
+def flash(blob, grid) -> None:
+    """A bright wireframe around one blob, so a click in the page finds it in the 3D view."""
+    p = grid.pts[blob.keep]
+    if not len(p):
+        rr.log("world/flash", rr.Clear(recursive=True))
+        return
+    c = (p.min(0) + p.max(0)) / 2
+    half = (p.max(0) - p.min(0)) / 2 + 0.006
+    tag = f"{blob.name} #{blob.id}" if getattr(blob, "name", "") else f"blob #{blob.id}"
+    rr.log("world/flash", rr.Boxes3D(centers=[c], half_sizes=[half], colors=[(255, 255, 255)],
+                                     labels=[tag], fill_mode="densewireframe"))
+
+
 def clear() -> None:
     """The shot pyramid and every blob shape, gone from the viewer: a fresh head."""
     rr.log("world/shot", rr.Clear(recursive=True))

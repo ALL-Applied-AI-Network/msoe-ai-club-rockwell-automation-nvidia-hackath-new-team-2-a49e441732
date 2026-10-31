@@ -506,5 +506,18 @@ class Eyes:
         story.append(b.summary(self.grid))
         return "\n".join(story)
 
+    def roster(self) -> list[dict]:
+        """What the robot believes, as rows for the page: one per blob, numbers in mm."""
+        out = []
+        for b in self.blobs:
+            p = self.grid.pts[b.keep]
+            if not len(p):
+                continue
+            out.append({"id": b.id, "name": b.name or "blob",
+                        "x": round(float(p[:, 0].mean()) * 1000), "y": round(float(p[:, 1].mean()) * 1000),
+                        "sx": round(float(np.ptp(p[:, 0])) * 1000 + 4), "sy": round(float(np.ptp(p[:, 1])) * 1000 + 4),
+                        "top": round(float(p[:, 2].max() - SURFACE_Z) * 1000), "shots": b.shots})
+        return out
+
     def state(self) -> str:
         return "\n".join(b.summary(self.grid) for b in self.blobs) or "nothing known yet"

@@ -85,6 +85,11 @@
       </div>
     </details>
 
+    <details open>
+      <summary>What it sees</summary>
+      <div id="objects"><span class="muted">nothing yet - scan or ask it to look</span></div>
+    </details>
+
     <details>
       <summary>Log</summary>
       <div id="log"></div>
@@ -151,6 +156,15 @@ function render() {
     for (const b of $("table").querySelectorAll("button"))
       b.onclick = () => post("/hands", {action: b.dataset.a, id: +b.dataset.id});
   }
+
+  const obs = S.objects || [];
+  $("objects").innerHTML = obs.length ? obs.map(o =>
+    `<div class="item" style="cursor:pointer" data-id="${o.id}">
+       <span>${o.name} #${o.id} <small>(${o.x}, ${o.y}) · ${o.sx}×${o.sy}, ≤${o.top} tall · ${o.shots} views</small></span>
+     </div>`).join("") : `<span class="muted">nothing yet - scan or ask it to look</span>`;
+  for (const el of $("objects").querySelectorAll(".item"))
+    el.onclick = () => fetch("/flash", {method:"POST", headers:{"Content-Type":"application/json"},
+                                        body:JSON.stringify({id:+el.dataset.id})});
 
   $("log").innerHTML = S.log.slice(-12).reverse().map(l =>
     `<div class="${/Error|couldn|unreachable|refused/.test(l.text)?"err":""}">${l.text}</div>`).join("");

@@ -160,6 +160,8 @@ def main() -> None:
                        "kinds": [k for k in KINDS if not k.startswith("box")],
                        "boxes": [k for k in KINDS if k.startswith("box")],
                        "colors": sorted(COLORS), "log": st["log"]}
+                if st["eyes"] is not None:
+                    out["objects"] = st["eyes"].roster()
                 if st["mode"] == "real":
                     try:
                         out["trials"] = [{"id": t["trial_id"], "status": t["status"]}
@@ -193,6 +195,13 @@ def main() -> None:
                                                     say=lambda t: st["chat"].append({"who": "robot", "text": t})))
                     st["chat"].append({"who": "robot", "text": reply})
                     return self._json({"reply": reply})
+                elif self.path == "/flash":
+                    from v8 import view as _v
+                    b = next((b for b in (st["eyes"].blobs if st["eyes"] else []) if b.id == int(body["id"])), None)
+                    if b is None:
+                        return self._json({"error": "no such blob"}, 404)
+                    _v.flash(b, st["eyes"].grid)
+                    return self._json({"ok": True})
                 elif self.path == "/trial/start":
                     if st["mode"] != "real":
                         raise RuntimeError("trials are the real cell's; connect to it first")
