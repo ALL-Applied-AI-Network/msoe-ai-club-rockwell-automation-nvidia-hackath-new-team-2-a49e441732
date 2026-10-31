@@ -93,13 +93,14 @@ def objects(solid: np.ndarray, axes: tuple, min_voxels: int = MIN_VOXELS) -> lis
         px, py, pz = xs[ix], ys[iy], zs[iz]
         xy = np.stack([px, py], -1) * 1000.0
         c = xy.mean(0)
-        u, s, _ = np.linalg.svd(xy - c, full_matrices=False)
+        u, s, vt = np.linalg.svd(xy - c, full_matrices=False)
         ext = np.ptp(u * s, 0) if len(xy) > 1 else np.zeros(2)
         vox = float(xs[1] - xs[0]) * 1000.0
         out.append({
             "x_mm": round(float(c[0]), 1), "y_mm": round(float(c[1]), 1),
             "top_mm": round(float(pz.max() - SURFACE_Z) * 1000.0 + vox / 2, 1),
             "size_mm": (round(float(ext[0]) + vox, 1), round(float(ext[1]) + vox, 1)),
+            "yaw": round(float(np.arctan2(vt[0, 1], vt[0, 0])), 3),
             "voxels": len(ix),
             "ixyz": (ix, iy, iz),
         })
