@@ -25,6 +25,19 @@ SOLID = (90, 160, 255)
 GHOST = (255, 80, 80)
 
 
+def trace(path: str, text: str, level: str = "INFO") -> None:
+    """One line of the agent's stack trace: agent/see (SAM), agent/think (LLM), agent/world (state
+    events), agent/plan (collision verdicts), agent/do (rows sent), agent/check (confirm looks),
+    agent/say (its own words). Each path is its own entity in the viewer: collapse what you trust,
+    open what you suspect."""
+    rr.log(f"agent/{path}", rr.TextLog(text, level=level))
+
+
+def mind(w: World) -> None:
+    """The LLM's mirror of the state, as a document that updates in place."""
+    rr.log("agent/mind", rr.TextDocument(w.mirror()))
+
+
 def start(run: Path, name: str = "worldview") -> None:
     rr.init(name, spawn=False)
     rr.save(str(Path(run) / "worldview.rrd"))

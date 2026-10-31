@@ -106,7 +106,7 @@ def on_table(mask: np.ndarray, cam: dict, joints=None) -> bool:
 def objects(solid: np.ndarray, axes: tuple, min_voxels: int = MIN_VOXELS) -> list[dict]:
     """Connected clumps of solid voxels -> one dict each: where it is and how big (mm, base frame)."""
     xs, ys, zs = axes
-    lab, n = ndimage.label(solid)
+    lab, n = ndimage.label(solid, structure=np.ones((3, 3, 3)))  # diagonals connect: no twin objects from one clump
     out = []
     for i in range(1, n + 1):
         ix, iy, iz = np.nonzero(lab == i)
