@@ -265,7 +265,28 @@ class Mind:
             return r
 
     def say(self, text: str, deps: Deps | None = None) -> str:
-        r = self.agent.run_sync(text, deps=deps or Deps(), message_history=self.history)
+        from openai import APIStatusError
+        try:
+            r = self.agent.run_sync(text, deps=deps or Deps(), message_history=self.history)
+        except APIStatusError as e:
+            if e.status_code < 500:
+                raise
+            # the provider choked on this request; the history is resent every turn, so a request
+            # it cannot digest wedges the whole session. One plain retry for a transient blip -
+            # then drop the chat memory and carry on: the WORLD lives in the eyes, not in the chat.
+            try:
+                r = self.agent.run_sync(text, deps=deps or Deps(), message_history=self.history)
+            except APIStatusError as e2:
+                if e2.status_code < 500:
+                    raise
+                if deps and deps.say:
+                    deps.say("(the language provider failed on our conversation; I dropped my chat "
+                             "memory and kept going - the world model is intact)")
+                self.history = []
+                r = self.agent.run_sync(
+                    "(Your chat memory was just lost to a provider error; the world model and all "
+                    "blobs are intact - check state with your tools if unsure.) " + text,
+                    deps=deps or Deps(), message_history=[])
         self.history = r.all_messages()
         return r.output
 

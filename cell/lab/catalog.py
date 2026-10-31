@@ -161,7 +161,7 @@ KINDS: dict[str, Kind] = {k.name: k for k in [
     Kind("lego_2x4", lego(4, 2), "yellow", notes="15.6 mm wide: push it", tags=["lego"]),
     Kind("soldier", soldier(), "olive", notes="grip the rifle or an arm", tags=["toy", "grippable"]),
     Kind("dowel", [Part("cylinder", (4, 30), rot=(0, 90, 0))], "wood", "wood", notes="rolls", tags=["rolls", "grippable"]),
-    Kind("marker", [Part("cylinder", (7, 120), rot=(0, 90, 0))], "black", notes="14 mm: rolls, push it", tags=["rolls"]),
+    Kind("marker", [Part("cylinder", (5, 120), rot=(0, 90, 0))], "black", notes="10 mm: rolls; fits the jaws longways", tags=["rolls"]),
     Kind("tongue_depressor", [Part("box", (150, 18, 2))], "wood", "wood", notes="flat: push to an edge", tags=["flat"]),
     Kind("cup", cup(), "white", "ceramic", notes="container; grip the brim", tags=["container"]),
     Kind("bin", bin_box(), "yellow", notes="the cell's 50x50x55 mm bin", tags=["container"]),
