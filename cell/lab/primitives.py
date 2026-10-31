@@ -61,6 +61,13 @@ def hold(p, r, g, n=HOLD) -> list[list[float]]:
     return [_row(p, r, g)] * n
 
 
+def open_first(cur, n_close: int = 3, n_open: int = 10) -> list[list[float]]:
+    """Close, then open the gripper where the arm is: a real change for the cell to act on, so the fingers are open
+    before a pick even if a fault left them shut while the cell thought they were open (Oct 30, the real cell)."""
+    p0, r0 = np.asarray(cur[:3], float), float(cur[5])
+    return hold(p0, r0, 1, n_close) + hold(p0, r0, 0, n_open)
+
+
 def travel(cur, goal_xy_m, r1, g, height_mm=SAFE_MM) -> list[list[float]]:
     """Up to the safe height, across, (no descent). cur: [x, y, z mm UF0, w, p, r]."""
     p0 = np.asarray(cur[:3], float)
@@ -82,7 +89,7 @@ def pick_and_place(cur, grip_xy_m, grip_mm, grip_yaw, place_xy_m, place_yaw=None
     over_g, at_g = uf0(*grip_xy_m, safe_mm), uf0(*grip_xy_m, grip_mm)
     over_p = uf0(*place_xy_m, safe_mm)
     at_p = uf0(*place_xy_m, grip_mm + 1.5 if drop_mm is None else drop_mm + grip_mm)
-    rows = travel(cur, grip_xy_m, grip_yaw, 0, safe_mm)
+    rows = open_first(cur) + travel(cur, grip_xy_m, grip_yaw, 0, safe_mm)                          # open, for sure
     rows += line(over_g, at_g, grip_yaw, grip_yaw, 0, APPROACH) + hold(at_g, grip_yaw, 0)          # arrive, then
     rows += hold(at_g, grip_yaw, 1, 8)                                                              # close
     rows += line(at_g, over_g, grip_yaw, grip_yaw, 1, APPROACH)                                     # lift

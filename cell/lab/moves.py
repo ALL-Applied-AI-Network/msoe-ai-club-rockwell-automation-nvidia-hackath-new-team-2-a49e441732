@@ -49,7 +49,7 @@ def _carry(rows, at_g, over_g, place, r, travel_mm, drop_mm):
 def pick_top(cur, at, jaw: float, place, travel_mm: float, drop_mm: float | None = None) -> list:
     r = tool_r(jaw)
     over_g, at_g = uf0(*at, travel_mm), uf0(*at, GRIP_MM)
-    rows = travel(cur, at, r, 0, travel_mm)
+    rows = P.open_first(cur) + travel(cur, at, r, 0, travel_mm)  # the gripper opened for sure, then over it
     rows += line(over_g, at_g, r, r, 0, APPROACH) + hold(at_g, r, 0)
     return _carry(rows, at_g, over_g, place, r, travel_mm, drop_mm)
 
@@ -67,7 +67,7 @@ def push_grasp(cur, at, jaw: float, length_mm: float, place, travel_mm: float, d
     else:
         return [], "no free spot beside it for the fingers to come down"
     over_s, at_s, at_g = uf0(*start, travel_mm), uf0(*start, GRIP_MM), uf0(*at, GRIP_MM)
-    rows = travel(cur, start, r, 0, travel_mm)
+    rows = P.open_first(cur) + travel(cur, start, r, 0, travel_mm)              # the gripper opened for sure
     rows += line(over_s, at_s, r, r, 0, APPROACH) + hold(at_s, r, 0, 4)          # down beside it, jaws open
     rows += line(at_s, at_g, r, r, 0, SLIDE_MM_S) + hold(at_g, r, 0, 3)          # slide: it ends between the fingers
     return _carry(rows, at_g, uf0(*at, travel_mm), place, r, travel_mm, drop_mm), "ok"
