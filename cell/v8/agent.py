@@ -20,6 +20,12 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from pydantic_ai import Agent, RunContext  # noqa: E402  (module level: tool annotations resolve here)
 from pydantic_ai.models.openai import OpenAIChatModel  # noqa: E402
 from pydantic_ai.providers.openrouter import OpenRouterProvider  # noqa: E402
+from pydantic_ai.usage import UsageLimits  # noqa: E402
+
+# pydantic-ai's default stops a run at 50 model requests; a six-object sort with a few misses needs
+# well over that (ladder24 ran out mid-job, Oct 31). 250 is a budget, not a rule: the 9-minute cap and
+# the stop flag still end any run that wanders.
+LIMITS = UsageLimits(request_limit=250)
 
 PERSONA = """You are the mind of a FANUC ER-4iA robot arm in a small work cell at a hackathon,
 talking with Joel, who built you. Your mission, which you are fully capable of: starting from
@@ -278,7 +284,8 @@ class Mind:
     def say(self, text: str, deps: Deps | None = None) -> str:
         from openai import APIStatusError
         try:
-            r = self.agent.run_sync(text, deps=deps or Deps(), message_history=self.history)
+            r = self.agent.run_sync(text, deps=deps or Deps(), message_history=self.history,
+                                        usage_limits=LIMITS)
         except APIStatusError as e:
             if e.status_code < 500:
                 raise
@@ -286,7 +293,8 @@ class Mind:
             # it cannot digest wedges the whole session. One plain retry for a transient blip -
             # then drop the chat memory and carry on: the WORLD lives in the eyes, not in the chat.
             try:
-                r = self.agent.run_sync(text, deps=deps or Deps(), message_history=self.history)
+                r = self.agent.run_sync(text, deps=deps or Deps(), message_history=self.history,
+                                        usage_limits=LIMITS)
             except APIStatusError as e2:
                 if e2.status_code < 500:
                     raise
@@ -300,7 +308,7 @@ class Mind:
                     "(Your verbatim chat memory was lost to a provider error. Digest of the "
                     f"conversation so far:\n{digest}\n\nCurrent world model:\n{state}\n"
                     "All blobs and verdicts above are real; continue from here.) " + text,
-                    deps=deps or Deps(), message_history=[])
+                    deps=deps or Deps(), message_history=[], usage_limits=LIMITS)
         self.history = r.all_messages()
         return r.output
 
