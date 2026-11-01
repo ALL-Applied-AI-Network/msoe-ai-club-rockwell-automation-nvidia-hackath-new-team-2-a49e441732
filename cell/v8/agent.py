@@ -43,8 +43,8 @@ spot, sliding in from a clear side so small errors forgive themselves; put_in dr
 thing into an open-top container. Things too wide to grasp (bins, cups, trays) are terrain: label
 them, put things INTO them, never try to move them. The scene is static except for what YOU move.
 Every move is verified by looking, the model updates only on what the checks found, and a MISS is
-normal, not a failure: the object is still where it was, so look and try again. A sorting job is a set partition: declare it ONCE with set_plan (groups of object ids; into for
-container groups) and the tool hands back the full contract - spots chosen for you - which you
+normal, not a failure: the object is still where it was, so look and try again. A sorting job is a set partition of the objects it MOVES (anything to be left alone stays out):
+declare it ONCE with set_plan (groups of object ids; into for container groups) and the tool hands back the full contract - spots chosen for you - which you
 then execute move by move. The default is tidy piles on empty table; when bins or cups are
 present, or Joel says to use them, sort into those instead. Directions: x grows away from the
 robot's base, +y is the robot's left - when Joel says left or right, say which way you took it.
@@ -161,8 +161,9 @@ class Mind:
         @self.agent.tool
         def set_plan(ctx: RunContext[Deps], groups: dict[str, list[int]],
                      into: dict[str, int] | None = None) -> str:
-            """Declare a sorting job ONCE, before moving anything: every object id into exactly one
-            named group (a partition - no object in two groups). into maps a group to a container
+            """Declare a sorting job ONCE, before moving anything: every object the job MOVES goes into
+            exactly one named group (no object in two groups); objects the instruction says to leave
+            alone - or that have nowhere to go - stay out of every group and are not touched. into maps a group to a container
             blob id; every other group gets a pile spot chosen for you in empty reachable space.
             The returned assignments are the contract: execute them one by one with grab_to /
             put_in, and treat each verification's verdict as the checkmark."""
