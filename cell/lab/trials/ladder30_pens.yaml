@@ -6,4 +6,4 @@ objects:
   - {kind: marker, color: black, count: 2}
   - {kind: marker, color: red, count: 2}
 goal:
-  - {what: {kind: marker}, piles: by_color}
+  - {what: {kind: marker}, piles_by: color}

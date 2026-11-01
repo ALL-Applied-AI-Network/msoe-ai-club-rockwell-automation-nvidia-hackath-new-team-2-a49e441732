@@ -114,8 +114,8 @@ def run_one(task: str, out: Path, log) -> dict:
     goals = t.get("goal") or []
     lines = LD.check(goals, truth0, before, after) if goals else []
     acts = [c["text"] for c in chat if c["text"].startswith("(")]
-    res = {"task": task, "instruction": t["instruction"], "scored": bool(goals),
-           "ok": (all(x for x, _ in lines) if goals else None),
+    res = {"task": task, "instruction": t["instruction"], "scored": bool(lines),
+           "ok": (all(x for x, _ in lines) if lines else None),   # goals the checker can't read score as None, never as a pass
            "checks": [{"ok": bool(x), "says": s} for x, s in lines],
            "seconds": round(secs), "capped": eyes.stop_now and not crash, "crash": crash,
            "grabs": sum("grabbing" in a for a in acts), "drops": sum("dropping" in a for a in acts),
