@@ -146,6 +146,15 @@ class Mind:
             if ctx.deps.eyes.view:
                 ctx.deps.eyes.view.blobs(ctx.deps.eyes.blobs, ctx.deps.eyes.grid)
             ctx.deps.say(f"(blob #{blob} looks like: {b.name})")
+            # the label is a JUDGMENT, the carved height is a MEASUREMENT: when they disagree, the
+            # measurement wins (a 10 mm cube seen from 7 angles is not a sticker, whatever a crop suggests)
+            p = ctx.deps.eyes.grid.pts[b.keep]
+            from calibration.geometry import SURFACE_Z
+            top_mm = float(p[:, 2].max() - SURFACE_Z) * 1000 if len(p) else 0.0
+            if flat and b.shots >= 2 and top_mm >= 6.0:
+                return (f"blob #{blob} is labeled: {b.name}. The vision model called it flat, but the carve "
+                        f"MEASURES it {top_mm:.0f} mm tall from {b.shots} angles: it is a solid object, movable "
+                        "if it fits the jaws - trust the measurement")
             return f"blob #{blob} is labeled: {b.name}" + (", flat on the table (a marking, not a thing)"
                                                            if flat else "")
 
