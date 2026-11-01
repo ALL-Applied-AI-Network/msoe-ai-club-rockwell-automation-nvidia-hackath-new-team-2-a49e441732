@@ -33,8 +33,19 @@ def main() -> None:
 
     # The empty viewer: served so the page can embed it, with nothing in it. That is the honest
     # state of V8's head right now.
+    from lab.recorder import RUNS
+    run_dir = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}_v8"
+    run_dir.mkdir(parents=True, exist_ok=True)
     rr.init("v8")
-    rr.set_sinks(rr.GrpcServerSink(bind_ip="127.0.0.1", port=GRPC))
+    # live for the page AND saved: every session is a replayable recording (`rerun runs/<dir>/replay.rrd`)
+    rr.set_sinks(rr.GrpcServerSink(bind_ip="127.0.0.1", port=GRPC), rr.FileSink(str(run_dir / "replay.rrd")))
+
+    class ChatLog(list):
+        """The chat, mirrored line by line to runs/<dir>/chat.jsonl (timestamped) for the record."""
+        def append(self, item):
+            super().append(item)
+            with open(run_dir / "chat.jsonl", "a") as f:
+                f.write(json.dumps({"t": time.time(), **item}) + "\n")
     uri = f"rerun+http://127.0.0.1:{GRPC}/proxy"
     rr.serve_web_viewer(web_port=WEB, open_browser=False, connect_to=uri)
     viewer = f"http://127.0.0.1:{WEB}/?url={quote(uri, safe='')}"
@@ -42,7 +53,7 @@ def main() -> None:
     build = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
                            text=True, cwd=HERE).stdout.strip() or "?"
 
-    st = {"mode": None, "cell": None, "task": None, "log": [], "chat": [], "busy": False}
+    st = {"mode": None, "cell": None, "task": None, "log": [], "chat": ChatLog(), "busy": False}
     lock = threading.Lock()
 
     from v8.agent import Deps, Mind
@@ -55,6 +66,8 @@ def main() -> None:
 
     def say(text: str) -> None:
         st["log"] = (st["log"] + [{"t": time.time(), "text": text}])[-30:]
+        with open(run_dir / "events.jsonl", "a") as f:
+            f.write(json.dumps({"t": time.time(), "text": text}) + "\n")
         print(text, flush=True)
 
     def table() -> list[dict]:
@@ -80,7 +93,7 @@ def main() -> None:
         if st["eyes"] is not None:
             st["eyes"].stop_now = True    # the running job halts at its next motion gate
         mind.forget()
-        st["chat"] = []
+        st["chat"].clear()
         v8view.clear()
         if st["cell"] is not None:          # BOTH cells: a stale stop flag must never outlive a wipe
             st["eyes"] = Eyes(st["cell"], vw)
@@ -288,7 +301,7 @@ def main() -> None:
                         st["mode"] = "sim"
                         st["eyes"] = Eyes(st["cell"], vw)
                     mind.forget()
-                    st["chat"] = []
+                    st["chat"].clear()
                     v8view.clear()
                     v8view.setup()
                     st["task"] = name
